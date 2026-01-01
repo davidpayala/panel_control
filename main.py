@@ -54,7 +54,7 @@ def check_password():
             password = st.text_input("Contraseña", type="password", key="password")
             recordarme = st.checkbox("💾 Mantener sesión iniciada (30 días)")
             
-            submit_btn = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
+            submit_btn = st.form_submit_button("Ingresar", type="primary", width='stretch')
             
             if submit_btn:
                 user_env = os.getenv("ADMIN_USER")
@@ -124,6 +124,35 @@ def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=N
     })
     st.success(f"Añadido: {nombre}")
 
+# --- FUNCIÓN AUXILIAR PARA GUARDAR CAMBIOS (Pégalo al final del archivo, sin sangría) ---
+def actualizar_estados(df_modificado):
+    """
+    Recorre el DataFrame modificado por el usuario y actualiza 
+    el estado y fecha de cada cliente en la base de datos.
+    """
+    if df_modificado.empty:
+        return
+
+    with engine.connect() as conn:
+        trans = conn.begin()
+        try:
+            for idx, row in df_modificado.iterrows():
+                conn.execute(
+                    text("UPDATE Clientes SET estado=:e, fecha_seguimiento=:f WHERE id_cliente=:id"),
+                    {
+                        "e": row['estado'], 
+                        "f": row['fecha_seguimiento'], 
+                        "id": row['id_cliente']
+                    }
+                )
+            trans.commit()
+            st.success("✅ Estados actualizados correctamente.")
+            time.sleep(0.5)
+            st.rerun()
+        except Exception as e:
+            trans.rollback()
+            st.error(f"Error al actualizar: {e}")
+
 # --- INTERFAZ ---
 st.title("🛒 KMLentes - Punto de Venta v2")
 st.markdown("---")
@@ -134,7 +163,7 @@ ESTADOS_CLIENTE = [
     "Proveedor nacional", "Proveedor internacional", 
     "Venta motorizado", "Venta agencia", "Venta express moto",
     "En camino moto", "En camino agencia", "Contraentrega agencia", 
-    "Pendiente agradecer", "Problema post", "Cliente Finalizado"
+    "Pendiente agradecer", "Problema post"
 ]
 MEDIOS_CONTACTO = ["Wsp 941380271", "Wsp 936041531", "Facebook-Instagram", "TikTok", "Físico/Tienda"]
 
@@ -468,9 +497,7 @@ with tabs[1]:
             
             with c_acciones:
                 st.write("")
-                # NOTA: st.button SÍ usa use_container_width (boolean), eso está bien. 
-                # El cambio a width='stretch' es solo para dataframes.
-                if st.button("🔄 Actualizar Datos", type="primary", use_container_width=True):
+                if st.button("🔄 Actualizar Datos", type="primary", width='stretch'):
                     st.rerun()
 
         # 2. DEFINIR AÑOS DINÁMICAMENTE
@@ -570,7 +597,6 @@ with tabs[1]:
                     use_container_width=True # En botones sí se usa este nombre
                 )
 
-        # CORRECCIÓN AQUÍ: width='stretch' en lugar de use_container_width=True para dataframe
         st.dataframe(
             df_reco,
             column_config={
@@ -614,7 +640,7 @@ with tabs[1]:
                     
                     nota_ingreso = st.text_input("Nota / Proveedor:")
                     
-                    if st.form_submit_button("💾 Registrar Entrada y Actualizar", use_container_width=True):
+                    if st.form_submit_button("💾 Registrar Entrada y Actualizar", width='stretch'):
                         with engine.connect() as conn:
                             trans = conn.begin()
                             try:
@@ -1024,145 +1050,128 @@ with tabs[3]:
                         st.rerun()
 
 # ==============================================================================
-# PESTAÑA 5: HISTORIAL VENTAS (NUEVO)
-# ==============================================================================
-with tabs[4]:
-    st.subheader("📜 Historial de Ventas")
-    if st.button("Cargar Ventas"):
-        with engine.connect() as conn:
-            # Query poderosa: Ventas + Nombre Cliente
-            q = """
-                SELECT v.id_venta, v.fecha_venta, c.nombre_corto as Cliente, 
-                       v.total_venta, v.tipo_envio, v.nota
-                FROM Ventas v
-                JOIN Clientes c ON v.id_cliente = c.id_cliente
-                ORDER BY v.id_venta DESC LIMIT 50
-            """
-            df_v = pd.read_sql(text(q), conn)
-        st.dataframe(df_v, width='stretch')
-        
-        # Ver detalles de una venta
-        id_ver = st.number_input("Ver detalles de Venta ID:", min_value=1, step=1)
-        if id_ver:
-             with engine.connect() as conn:
-                q_det = "SELECT descripcion, cantidad, precio_unitario, subtotal FROM DetalleVenta WHERE id_venta = :id"
-                df_det = pd.read_sql(text(q_det), conn, params={"id": id_ver})
-             if not df_det.empty:
-                 st.write(f"**Items de la Venta #{id_ver}:**")
-                 st.dataframe(df_det)
-             else:
-                 st.warning("No se encontraron detalles o venta no existe.")
-
-# ==============================================================================
-# PESTAÑA 6: SEGUIMIENTO (CRM) - Lógica Inteligente
+# PESTAÑA 5: SEGUIMIENTO (LIMPIO Y ZONIFICADO)
 # ==============================================================================
 with tabs[5]:
-    col_head, col_action = st.columns([3, 1])
-    with col_head:
-        st.subheader("📆 Calendario de Seguimiento")
-        st.info("💡 Nota: Los clientes en estado **'Sin empezar'** se ocultarán de esta lista automáticamente.")
-    with col_action:
-        if st.button("🔄 Actualizar Lista"):
-            if 'df_crm' in st.session_state: del st.session_state['df_crm']
-            st.rerun()
+    st.subheader("🎯 Tablero de Seguimiento de Pedidos")
 
-    # 1. CARGA DE DATOS (FILTRADA)
-    if 'df_crm' not in st.session_state:
-        with engine.connect() as conn:
-            # CAMBIO AQUÍ: Filtramos para NO traer a los "Sin empezar"
-            # Solo traemos gente que requiere atención activa
-            q_crm = """
-                SELECT id_cliente, nombre_corto, telefono, estado, fecha_seguimiento, medio_contacto
-                FROM Clientes 
-                WHERE estado != 'Sin empezar'
-                ORDER BY fecha_seguimiento ASC
-            """
-            st.session_state.df_crm = pd.read_sql(text(q_crm), conn)
-    
-    df_show_crm = st.session_state.df_crm.copy()
+    # --- 1. DEFINICIÓN DE ETAPAS ---
+    ETAPAS = {
+        "ETAPA_0": ["Sin empezar"],
+        "ETAPA_1": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
+        "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"],
+        "ETAPA_3": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
+        "ETAPA_4": ["Pendiente agradecer", "Problema post"]
+    }
+    TODOS_LOS_ESTADOS = [e for lista in ETAPAS.values() for e in lista]
 
-    if not df_show_crm.empty:
-        # 2. EDITOR INTERACTIVO
-        cambios_crm = st.data_editor(
-            df_show_crm,
-            key="editor_crm",
-            column_config={
-                "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
-                "telefono": st.column_config.TextColumn("Teléfono", disabled=True),
-                "medio_contacto": st.column_config.TextColumn("Origen", disabled=True),
-                "estado": st.column_config.SelectboxColumn(
-                    "Estado Actual",
-                    options=ESTADOS_CLIENTE, 
-                    width="medium",
-                    required=True
-                ),
-                "fecha_seguimiento": st.column_config.DateColumn(
-                    "📅 Próx. Contacto",
-                    min_value=date(2023, 1, 1),
-                    format="DD/MM/YYYY",
-                    step=1
-                )
-            },
-            hide_index=True,
-            width='stretch', # Recuerda usar width='stretch' si aplicaste el fix del inicio
-            num_rows="fixed"
-        )
+    # --- 2. CONSULTA SQL ---
+    with engine.connect() as conn:
+        query_seg = text("""
+            SELECT 
+                c.id_cliente, c.nombre_corto, c.telefono, c.estado, c.fecha_seguimiento, 
+                c.medio_contacto, c.codigo_contacto,
+                v.clave_seguridad as ultima_clave,
+                v.total_venta as ultimo_total,
+                (
+                    SELECT STRING_AGG(d.cantidad || 'x ' || d.descripcion, ', ')
+                    FROM DetalleVenta d
+                    WHERE d.id_venta = v.id_venta
+                ) as resumen_items
+            FROM Clientes c
+            LEFT JOIN LATERAL (
+                SELECT * FROM Ventas v2
+                WHERE v2.id_cliente = c.id_cliente
+                ORDER BY v2.id_venta DESC
+                LIMIT 1
+            ) v ON TRUE
+            WHERE c.activo = TRUE 
+            ORDER BY c.fecha_seguimiento ASC
+        """)
+        df_seg = pd.read_sql(query_seg, conn)
 
-        # 3. GUARDAR CAMBIOS (LÓGICA MEJORADA)
-        edited_rows_crm = st.session_state["editor_crm"].get("edited_rows")
+    # --- 3. PROCESAMIENTO ---
+    if not df_seg.empty:
+        # Filtramos DataFrames (Ignoramos Etapa 0 completamente)
+        df_e1 = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_1"])].copy()
+        df_e2 = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_2"])].copy()
+        df_e3 = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_3"])].copy()
+        df_e4 = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_4"])].copy()
 
-        if edited_rows_crm:
-            st.warning(f"Tienes {len(edited_rows_crm)} cambios pendientes.")
-            
-            if st.button("💾 Guardar Seguimiento"):
-                with engine.connect() as conn:
-                    trans = conn.begin()
-                    try:
-                        count = 0
-                        for idx, updates in edited_rows_crm.items():
-                            id_cliente_real = df_show_crm.iloc[idx]['id_cliente']
-                            
-                            sql_parts = []
-                            params = {"id": int(id_cliente_real)}
-                            
-                            # --- LÓGICA ESPECIAL "SIN EMPEZAR" ---
-                            # Si el usuario cambia el estado a "Sin empezar", forzamos borrar la fecha
-                            nuevo_estado = updates.get("estado")
-                            
-                            if nuevo_estado == "Sin empezar":
-                                sql_parts.append("estado = :est")
-                                params["est"] = "Sin empezar"
-                                # Forzamos fecha NULL en la base de datos
-                                sql_parts.append("fecha_seguimiento = NULL")
-                            else:
-                                # Comportamiento normal
-                                if "estado" in updates:
-                                    sql_parts.append("estado = :est")
-                                    params["est"] = updates["estado"]
-                                
-                                if "fecha_seguimiento" in updates:
-                                    sql_parts.append("fecha_seguimiento = :fec")
-                                    params["fec"] = updates["fecha_seguimiento"]
-                            
-                            if sql_parts:
-                                query = text(f"UPDATE Clientes SET {', '.join(sql_parts)} WHERE id_cliente = :id")
-                                conn.execute(query, params)
-                                count += 1
-                        
-                        trans.commit()
-                        st.success(f"¡{count} registros actualizados!")
-                        
-                        # Limpiamos caché para que al recargar DESAPAREZCAN los "Sin empezar"
-                        del st.session_state['df_crm'] 
-                        time.sleep(1)
-                        st.rerun()
-                        
-                    except Exception as e:
-                        trans.rollback()
-                        st.error(f"Error guardando: {e}")
+        # --- MÉTRICAS (SOLO LO IMPORTANTE) ---
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🔥 Por Despachar", len(df_e2), border=True)
+        c2.metric("🚚 En Ruta", len(df_e3), border=True)
+        c3.metric("💬 Cotizando", len(df_e1))
+        c4.metric("✨ Post-Venta", len(df_e4))
+        
+        st.divider()
+
+        # --- CONFIGURACIÓN DE COLUMNAS ---
+        cfg_cols = {
+            "id_cliente": None, "telefono": None,
+            "nombre_corto": st.column_config.TextColumn("Cliente", width="medium"),
+            "medio_contacto": st.column_config.TextColumn("Medio", width="small"),
+            "codigo_contacto": st.column_config.TextColumn("Link/Código", width="small"),
+            "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS, width="medium", required=True),
+            "fecha_seguimiento": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
+            "ultima_clave": st.column_config.TextColumn("🔐 Clave", disabled=True, width="small"),
+            "ultimo_total": st.column_config.NumberColumn("💰 Total", format="S/ %.2f", disabled=True),
+            "resumen_items": st.column_config.TextColumn("🛒 Historial / Últ. Compra", width="large", disabled=True)
+        }
+
+        # ==================================================================
+        # 🚨 ZONA ROJA: OPERACIONES (VISIBLES SIEMPRE)
+        # ==================================================================
+        
+        # --- ZONA 2: POR DESPACHAR ---
+        st.markdown("### 🔥 Zona Operativa: Por Despachar")
+        if not df_e2.empty:
+            edit_e2 = st.data_editor(df_e2, key="ed_e2", column_config=cfg_cols, hide_index=True, width='stretch')
+            if st.button("💾 Guardar Cambios (Despacho)"): actualizar_estados(edit_e2)
+        else:
+            st.info("✅ Bandeja de despacho vacía.")
+
+        st.divider()
+
+        # --- ZONA 3: EN RUTA ---
+        st.markdown("### 🚚 Zona Logística: En Ruta")
+        if not df_e3.empty:
+            edit_e3 = st.data_editor(df_e3, key="ed_e3", column_config=cfg_cols, hide_index=True, width='stretch')
+            if st.button("💾 Guardar Cambios (Ruta)"): actualizar_estados(edit_e3)
+        else:
+            st.info("✅ No hay pedidos en tránsito.")
+
+        st.divider()
+
+        # ==================================================================
+        # 📂 ZONA DE GESTIÓN (OCULTAS EN ACORDEÓN)
+        # ==================================================================
+        st.markdown("### 📂 Bandejas de Gestión")
+
+        # --- ZONA 1: CONVERSACIÓN ---
+        with st.expander(f"💬 Etapa 1: En Conversación / Cotizando ({len(df_e1)})", expanded=False):
+            if not df_e1.empty:
+                st.caption("Prospectos interesados o proveedores.")
+                edit_e1 = st.data_editor(df_e1, key="ed_e1", column_config=cfg_cols, hide_index=True, width='stretch')
+                if st.button("💾 Guardar (Conversación)"): actualizar_estados(edit_e1)
+            else:
+                st.info("No hay clientes en esta etapa.")
+
+        # --- ZONA 4: POST-VENTA ---
+        with st.expander(f"✨ Etapa 4: Post-Venta y Fidelización ({len(df_e4)})", expanded=False):
+            if not df_e4.empty:
+                st.caption("Clientes que ya recibieron.")
+                edit_e4 = st.data_editor(df_e4, key="ed_e4", column_config=cfg_cols, hide_index=True, width='stretch')
+                if st.button("💾 Guardar (Post-Venta)"): actualizar_estados(edit_e4)
+            else:
+                st.info("No hay pendientes de post-venta.")
+
+        # --- AQUÍ TERMINA EL CÓDIGO (Ya no hay calendario ni etapa 0) ---
+
     else:
-        st.info("👏 ¡No tienes seguimientos pendientes! Todos tus clientes están 'Sin empezar' o finalizados.")
+        st.info("No hay clientes activos en la base de datos.")
+
 # ==============================================================================
 # PESTAÑA 7: GESTIÓN DE CATÁLOGO (FINAL)
 # ==============================================================================
