@@ -1,19 +1,90 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
-import os
-from dotenv import load_dotenv
-import urllib.parse
+from datetime import date, datetime
 import time
-import random 
-from datetime import date
-from datetime import datetime # Asegúrate de tener este import arriba
+import os
+import urllib.parse 
+import extra_streamlit_components as stx
+from dotenv import load_dotenv
 
+# Cargar variables de entorno (Local y Nube)
 load_dotenv()
 
-st.set_page_config(page_title="POS KMLentes", page_icon="🛒", layout="wide")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
 
-# --- CONEXIÓN ---
+# --- SISTEMA DE LOGIN CON COOKIES (RECORDAR SESIÓN) ---
+def check_password():
+    """Maneja el login con persistencia de Cookies."""
+    
+    # 1. Configuramos el Gestor de Cookies
+    cookie_manager = stx.CookieManager()
+    
+    # Intentamos leer la cookie 'kmlentes_auth_token'
+    # NOTA: A veces requiere recargar la página una vez para leerla
+    cookie_val = cookie_manager.get(cookie="kmlentes_auth_token")
+
+    # A) Si la cookie existe y es correcta -> PASE DIRECTO
+    if cookie_val == os.getenv("ADMIN_PASS"):
+        st.session_state["password_correct"] = True
+        return True
+
+    # B) Si ya validamos en esta sesión -> PASE
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # C) Si no hay cookie ni sesión, MOSTRAR LOGIN
+    st.markdown(
+        """
+        <style>
+        .stTextInput {max-width: 400px; margin: auto;}
+        .stForm {max-width: 400px; margin: auto;}
+        </style>
+        """, unsafe_allow_html=True
+    )
+    
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.title("🔒 Acceso Restringido")
+        st.caption("Sistema de Gestión K&M Ventas Virtuales")
+        
+        with st.form("login_form"):
+            st.text_input("Usuario", key="username")
+            password = st.text_input("Contraseña", type="password", key="password")
+            recordarme = st.checkbox("💾 Mantener sesión iniciada (30 días)")
+            
+            submit_btn = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
+            
+            if submit_btn:
+                user_env = os.getenv("ADMIN_USER")
+                pass_env = os.getenv("ADMIN_PASS")
+                
+                if st.session_state["username"] == user_env and password == pass_env:
+                    st.session_state["password_correct"] = True
+                    del st.session_state["password"]
+                    del st.session_state["username"]
+                    
+                    # SI MARCÓ "RECORDARME", GUARDAMOS LA COOKIE
+                    if recordarme:
+                        cookie_manager.set("kmlentes_auth_token", pass_env, expires_at=datetime.now() + pd.Timedelta(days=30))
+                        # ⚠️ TRUCO CLAVE: Damos 1 segundo al navegador para que guarde la cookie
+                        time.sleep(1)
+                    
+                    st.rerun()
+                else:
+                    st.error("😕 Usuario o contraseña incorrectos")
+    return False
+
+# --- BLOQUEO DE LA APLICACIÓN ---
+if not check_password():
+    st.stop()  # 🛑 AQUÍ SE DETIENE TODO SI NO HAY LOGIN 🛑
+
+# ==============================================================================
+# 🚀 A PARTIR DE AQUÍ VA TU CÓDIGO DEL SISTEMA (BASE DE DATOS Y PESTAÑAS)
+# ==============================================================================
+
+# --- CONEXIÓN BASE DE DATOS ---
 def get_connection():
     try:
         user = os.getenv('DB_USER')
@@ -375,7 +446,7 @@ with tabs[0]:
         if st.button("🗑️ Limpiar Todo"):
             st.session_state.carrito = []
             st.rerun()
-            
+
 # ==============================================================================
 # PESTAÑA 2: COMPRAS (CORREGIDO: 2026 + NUMPY + WIDTH STRETCH)
 # ==============================================================================
