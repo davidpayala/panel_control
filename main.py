@@ -380,7 +380,7 @@ def actualizar_en_google(google_id, nombre, apellido, telefono):
     
 
 # --- INTERFAZ ---
-st.title("🛒 KMLentes - Punto de Venta v2")
+st.title("🛒 KM - Punto de Venta")
 st.markdown("---")
 
     # --- CONSTANTES (TUS ESTADOS) ---
@@ -394,7 +394,13 @@ ESTADOS_CLIENTE = [
 MEDIOS_CONTACTO = ["Wsp 941380271", "Wsp 936041531", "Facebook-Instagram", "TikTok", "Físico/Tienda"]
 
 # AHORA SON 7 PESTAÑAS
-tabs = st.tabs(["🛒 VENTA (POS)", "📦 Compras", "🔎 Inventario", "👤 Clientes", "📜 Historial", "📆 Seguimiento", "🔧 Catálogo"])
+tabs = st.tabs(["🛒 VENTA (POS)", 
+                "📦 Compras", 
+                "🔎 Inventario", 
+                "👤 Clientes", 
+                "📆 Seguimiento", 
+                "🔧 Catálogo",
+                "💰 Facturación"])
 
 # ==============================================================================
 # PESTAÑA 1: VENTAS / SALIDAS (CON MULTI-DIRECCIÓN)
@@ -820,7 +826,7 @@ with tabs[1]:
                     data=buffer.getvalue(),
                     file_name=f"Reposicion_{date.today()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True # En botones sí se usa este nombre
+                    width='stretch' # En botones sí se usa este nombre
                 )
 
         st.dataframe(
@@ -1143,7 +1149,7 @@ with tabs[3]:
                 "telefono": st.column_config.TextColumn("Teléfono", required=True)
             },
             hide_index=True,
-            use_container_width=True
+            width='stretch'
         )
 
         if st.button("💾 Guardar Cambios"):
@@ -1176,18 +1182,10 @@ with tabs[3]:
     elif busqueda:
         st.warning("No se encontraron clientes con esos datos.")
 
- # --- HERRAMIENTA DE SINCRONIZACIÓN REAL (DESDE GOOGLE) ---
-    with st.expander("🛠️ Herramientas Administrativas (Sincronizar Nombres)"):
-        st.write("Usa este botón para traer el Nombre y Apellido real desde Google Contacts para tus clientes antiguos.")
-        
-        if st.button("☁️ Traer Nombres desde Google"):
-            sincronizar_desde_google_batch()
-        
-
 # ==============================================================================
-# PESTAÑA 6: SEGUIMIENTO (LIMPIO Y ZONIFICADO)
+# PESTAÑA 5: SEGUIMIENTO (LIMPIO Y ZONIFICADO)
 # ==============================================================================
-with tabs[5]:
+with tabs[4]:
     st.subheader("🎯 Tablero de Seguimiento de Pedidos")
 
     # --- 1. DEFINICIÓN DE ETAPAS ---
@@ -1308,9 +1306,9 @@ with tabs[5]:
         st.info("No hay clientes activos en la base de datos.")
 
 # ==============================================================================
-# PESTAÑA 7: GESTIÓN DE CATÁLOGO (FINAL)
+# PESTAÑA 6: GESTIÓN DE CATÁLOGO (FINAL)
 # ==============================================================================
-with tabs[6]:
+with tabs[5]:
     st.subheader("🔧 Administración de Productos y Variantes")
     
     # --- BARRA LATERAL: BUSCADOR RÁPIDO DE SKU (Para verificar duplicados) ---
@@ -1545,4 +1543,175 @@ with tabs[6]:
             else:
                 st.warning("SKU no encontrado.")
 
+# ==============================================================================
+# PESTAÑA 7: FACTURACIÓN PENDIENTE 
+# ==============================================================================
+with tabs[6]: 
+    st.subheader("🧾 Facturación Individual")
+    st.info("Sistema protegido: No permite boletas duplicadas y formatea los nombres automáticamente.")
 
+    # --- 1. CARGAR LISTA DE VENTAS PENDIENTES ---
+    with engine.connect() as conn:
+        query_pendientes = text("""
+            SELECT 
+                v.id_venta,
+                c.nombre || ' ' || c.apellido as nombre_completo,
+                v.fecha_venta,
+                v.total_venta
+            FROM Ventas v
+            JOIN Clientes c ON v.id_cliente = c.id_cliente
+            WHERE v.facturado = FALSE
+            ORDER BY v.id_venta ASC
+        """)
+        df_pendientes = pd.read_sql(query_pendientes, conn)
+
+    if df_pendientes.empty:
+        st.success("🎉 ¡Felicidades! No hay facturas pendientes.")
+    else:
+        # --- 2. SELECTOR DE VENTA ---
+        opciones_venta = df_pendientes['id_venta'].tolist()
+        
+        def formato_opcion(id_v):
+            fila = df_pendientes[df_pendientes['id_venta'] == id_v]
+            if not fila.empty:
+                row = fila.iloc[0]
+                return f"🆔 {row['id_venta']} | 📅 {row['fecha_venta']} | 👤 {row['nombre_completo']} | 💰 S/ {row['total_venta']}"
+            return f"Venta {id_v}"
+
+        seleccion_id = st.selectbox(
+            "👇 Elige la venta a procesar:", 
+            options=opciones_venta, 
+            format_func=formato_opcion
+        )
+
+        st.divider()
+
+        # --- 3. CARGAR DETALLES ---
+        if seleccion_id:
+            with engine.connect() as conn:
+                # A) Datos Cliente
+                query_cliente = text("""
+                    SELECT c.id_cliente, c.nombre, c.apellido, c.dni, c.google_id, c.telefono 
+                    FROM Ventas v JOIN Clientes c ON v.id_cliente = c.id_cliente 
+                    WHERE v.id_venta = :id
+                """)
+                cliente_data = pd.read_sql(query_cliente, conn, params={"id": int(seleccion_id)}).iloc[0]
+
+                # B) Ítems
+                query_items = text("""
+                    SELECT 
+                        d.sku as "Código",
+                        d.descripcion as "Descripción",
+                        d.cantidad as "Cant.",
+                        d.precio_unitario as "P.Unit",
+                        (d.cantidad * d.precio_unitario) as "Total"
+                    FROM DetalleVenta d
+                    WHERE d.id_venta = :id
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        'ENVIO' as "Código",
+                        'Servicio de Envío' as "Descripción",
+                        1 as "Cant.",
+                        v.costo_envio as "P.Unit",
+                        v.costo_envio as "Total"
+                    FROM Ventas v
+                    WHERE v.id_venta = :id AND v.costo_envio > 0
+                """)
+                df_items = pd.read_sql(query_items, conn, params={"id": int(seleccion_id)})
+
+            # --- 4. INTERFAZ DE REGISTRO ---
+            col_datos, col_tabla = st.columns([1, 2])
+            
+            with col_datos:
+                st.markdown("#### 👤 Datos del Cliente")
+                with st.form("form_facturacion"):
+                    val_nombre = cliente_data['nombre'] if cliente_data['nombre'] else ""
+                    val_apellido = cliente_data['apellido'] if cliente_data['apellido'] else ""
+                    val_dni = cliente_data['dni'] if cliente_data['dni'] else ""
+
+                    nuevo_nombre = st.text_input("Nombre", value=val_nombre)
+                    nuevo_apellido = st.text_input("Apellido", value=val_apellido)
+                    nuevo_dni = st.text_input("DNI / RUC", value=val_dni)
+                    
+                    st.markdown("---")
+                    st.markdown("#### 🧾 Datos de Factura")
+                    numero_boleta = st.text_input("N° Boleta (EB01...)", placeholder="Ingresa el número")
+                    
+                    btn_guardar = st.form_submit_button("✅ Guardar y Archivar", type="primary")
+            
+            with col_tabla:
+                st.markdown(f"#### 🛒 Detalle de Items (Venta {seleccion_id})")
+                st.dataframe(df_items, hide_index=True, width='stretch')
+                st.caption("👆 Copia estas filas y pégalas en tu sistema contable.")
+
+            # --- 5. LÓGICA DE GUARDADO (CORREGIDA) ---
+            if btn_guardar:
+                if not numero_boleta:
+                    st.warning("⚠️ Debes ingresar el Número de Boleta para continuar.")
+                else:
+                    nombre_formateado = nuevo_nombre.strip().title() if nuevo_nombre else ""
+                    apellido_formateado = nuevo_apellido.strip().title() if nuevo_apellido else ""
+                    boleta_limpia = numero_boleta.strip().upper() 
+
+                    with engine.connect() as conn:
+                        # --- CAMBIO CLAVE: Abrimos transacción AL PRINCIPIO ---
+                        trans = conn.begin() 
+                        try:
+                            # 1. VERIFICAR DUPLICADOS DENTRO DE LA TRANSACCIÓN
+                            existe_boleta = conn.execute(
+                                text("SELECT id_venta FROM Ventas WHERE numero_boleta = :b"),
+                                {"b": boleta_limpia}
+                            ).fetchone()
+
+                            if existe_boleta:
+                                # Si existe, no hacemos nada y mostramos error
+                                st.error(f"⛔ ¡ERROR! La boleta '{boleta_limpia}' ya está registrada en la Venta #{existe_boleta[0]}.")
+                                # No hace falta rollback porque solo leímos, pero salimos limpio.
+                            else:
+                                # 2. SI NO EXISTE, PROCEDEMOS A GUARDAR TODO
+                                
+                                # A. Actualizar Cliente
+                                conn.execute(text("""
+                                    UPDATE Clientes 
+                                    SET nombre = :n, apellido = :a, dni = :d 
+                                    WHERE id_cliente = :cid
+                                """), {
+                                    "n": nombre_formateado, 
+                                    "a": apellido_formateado, 
+                                    "d": nuevo_dni, 
+                                    "cid": int(cliente_data['id_cliente'])
+                                })
+
+                                # B. Sincronizar Google
+                                if cliente_data['google_id']:
+                                    actualizar_en_google(
+                                        cliente_data['google_id'], 
+                                        nombre_formateado, 
+                                        apellido_formateado, 
+                                        cliente_data['telefono']
+                                    )
+
+                                # C. Actualizar Venta
+                                conn.execute(text("""
+                                    UPDATE Ventas 
+                                    SET facturado = TRUE, 
+                                        fecha_facturacion = CURRENT_DATE,
+                                        numero_boleta = :bol
+                                    WHERE id_venta = :vid
+                                """), {
+                                    "bol": boleta_limpia, 
+                                    "vid": int(seleccion_id)
+                                })
+                                
+                                # D. Confirmar todo
+                                trans.commit()
+                                st.balloons()
+                                st.success(f"¡Correcto! Venta guardada con boleta {boleta_limpia}.")
+                                time.sleep(1.5)
+                                st.rerun()
+                                
+                        except Exception as e:
+                            trans.rollback()
+                            st.error(f"Error al guardar: {e}")
