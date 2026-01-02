@@ -7,3 +7,4 @@ extra-streamlit-components
 google-api-python-client
 google-auth-oauthlib
 google-auth
+openpyxl
