@@ -7,6 +7,9 @@ import os
 import urllib.parse 
 import extra_streamlit_components as stx
 from dotenv import load_dotenv
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
 
 # Cargar variables de entorno (Local y Nube)
 load_dotenv()
@@ -104,7 +107,12 @@ engine = get_connection()
 if 'carrito' not in st.session_state:
     st.session_state.carrito = []
 
-# --- FUNCIONES AUXILIARES ---
+
+
+# ==============================================================================
+# FUNCIONES AUXILIARES
+# ==============================================================================
+
 def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
     # Validar stock si es de inventario
     if es_inventario:
@@ -152,6 +160,224 @@ def actualizar_estados(df_modificado):
         except Exception as e:
             trans.rollback()
             st.error(f"Error al actualizar: {e}")
+
+
+def sincronizar_desde_google_batch():
+    """Recorre clientes con nombre vacío, los busca en Google y actualiza sus datos reales."""
+    service = get_google_service()
+    if not service:
+        st.error("No hay conexión con Google (token.json).")
+        return
+
+    with engine.connect() as conn:
+        # 1. Buscamos clientes pendientes
+        # (Esta lectura inicia la transacción automática)
+        df_pendientes = pd.read_sql("""
+            SELECT id_cliente, telefono, nombre_corto, google_id 
+            FROM Clientes 
+            WHERE (nombre IS NULL OR nombre = '') AND activo = TRUE
+        """, conn)
+        
+        if df_pendientes.empty:
+            st.success("¡Todos tus clientes ya tienen nombre y apellido!")
+            return
+
+        st.info(f"Sincronizando {len(df_pendientes)} contactos con Google...")
+        progress_bar = st.progress(0)
+        total = len(df_pendientes)
+        actualizados = 0
+
+        # 2. Descargamos agenda de Google
+        agenda_google = {}
+        try:
+            page_token = None
+            while True:
+                results = service.people().connections().list(
+                    resourceName='people/me',
+                    pageSize=1000, 
+                    personFields='names,phoneNumbers',
+                    pageToken=page_token
+                ).execute()
+                
+                for person in results.get('connections', []):
+                    phones = person.get('phoneNumbers', [])
+                    names = person.get('names', [])
+                    
+                    if phones and names:
+                        g_nombre = names[0].get('givenName', '')
+                        g_apellido = names[0].get('familyName', '')
+                        g_id = person.get('resourceName')
+                        
+                        for phone in phones:
+                            clean_num = normalizar_celular(phone.get('value'))
+                            if clean_num:
+                                agenda_google[clean_num] = {
+                                    'nombre': g_nombre,
+                                    'apellido': g_apellido,
+                                    'google_id': g_id
+                                }
+                
+                page_token = results.get('nextPageToken')
+                if not page_token: break
+        except Exception as e:
+            st.error(f"Error descargando agenda de Google: {e}")
+            return
+
+        # 3. Cruzamos la información
+        # --- ELIMINADO: trans = conn.begin() ---
+        try:
+            for idx, row in df_pendientes.iterrows():
+                telefono_db = normalizar_celular(row['telefono'])
+                
+                if telefono_db in agenda_google:
+                    datos_google = agenda_google[telefono_db]
+                    
+                    conn.execute(text("""
+                        UPDATE Clientes 
+                        SET nombre=:n, apellido=:a, google_id=:gid 
+                        WHERE id_cliente=:id
+                    """), {
+                        "n": datos_google['nombre'],
+                        "a": datos_google['apellido'],
+                        "gid": datos_google['google_id'],
+                        "id": row['id_cliente']
+                    })
+                    actualizados += 1
+                
+                progress_bar.progress((idx + 1) / total)
+            
+            # --- AGREGADO: Confirmamos todo al final ---
+            conn.commit() 
+            
+            st.success(f"✅ Éxito: Se actualizaron {actualizados} clientes desde Google.")
+            time.sleep(2)
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Error actualizando DB: {e}")
+
+# --- AGREGAR ESTO AL INICIO DEL ARCHIVO (DESPUÉS DE LOS IMPORTS) ---
+
+def normalizar_celular(numero):
+    """
+    Convierte cualquier formato (+51 999..., 999-999, etc) 
+    a un formato limpio de 9 dígitos para comparar.
+    """
+    if not numero: return ""
+    
+    # 1. Dejar solo números (borrar +, espacios, guiones)
+    solo_numeros = "".join(filter(str.isdigit, str(numero)))
+    
+    # 2. Si tiene 11 dígitos y empieza con 51 (ej: 51999888777), quitar el 51
+    if len(solo_numeros) == 11 and solo_numeros.startswith("51"):
+        return solo_numeros[2:]
+        
+    # 3. Si tiene más dígitos, intentamos tomar los últimos 9
+    if len(solo_numeros) > 9:
+        return solo_numeros[-9:]
+        
+    return solo_numeros
+
+# ==============================================================================
+# LÓGICA GOOGLE: SINCRONIZACIÓN REAL-TIME
+# ==============================================================================
+# --- BUSCA ESTA PARTE EN TU CÓDIGO Y ACTUALÍZALA ---
+
+def get_google_service():
+    # 1. SI ESTAMOS EN LA NUBE Y NO EXISTE EL ARCHIVO, LO CREAMOS DESDE LA VARIABLE SECRETA
+    if not os.path.exists('token.json'):
+        token_content = os.getenv("GOOGLE_TOKEN_JSON")
+        if token_content:
+            with open("token.json", "w") as f:
+                f.write(token_content)
+    
+    # 2. AHORA SÍ, LEEMOS EL ARCHIVO COMO SIEMPRE
+    if os.path.exists('token.json'):
+        try:
+            creds = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/contacts'])
+            return build('people', 'v1', credentials=creds)
+        except Exception as e:
+            # Si el token falló, mejor lo borramos para no causar errores infinitos
+            # os.remove('token.json') 
+            return None
+    return None
+
+def buscar_contacto_google(telefono):
+    """Busca si existe un contacto en Google por teléfono y devuelve su ID y datos."""
+    service = get_google_service()
+    if not service: return None
+    
+    # Normalizamos para buscar
+    tel_busqueda = normalizar_celular(telefono)
+    if len(tel_busqueda) < 7: return None
+
+    # Descargamos agenda (paginada) para buscar
+    # NOTA: La API de People no permite buscar directo por teléfono fácilmente, 
+    # así que iteramos (es rápido para <5000 contactos)
+    page_token = None
+    while True:
+        results = service.people().connections().list(
+            resourceName='people/me',
+            pageSize=1000, 
+            personFields='names,phoneNumbers',
+            pageToken=page_token
+        ).execute()
+        
+        for person in results.get('connections', []):
+            for phone in person.get('phoneNumbers', []):
+                if normalizar_celular(phone.get('value', '')) == tel_busqueda:
+                    return {
+                        'resourceName': person.get('resourceName'), # El ID de Google
+                        'etag': person.get('etag') # Necesario para editar
+                    }
+        
+        page_token = results.get('nextPageToken')
+        if not page_token: break
+    return None
+
+def crear_en_google(nombre, apellido, telefono):
+    """Crea el contacto en Google y retorna su google_id."""
+    service = get_google_service()
+    if not service: return None
+    
+    try:
+        resultado = service.people().createContact(body={
+            "names": [{"givenName": nombre, "familyName": apellido}],
+            "phoneNumbers": [{"value": telefono}]
+        }).execute()
+        return resultado.get('resourceName')
+    except Exception as e:
+        st.error(f"Error Google Create: {e}")
+        return None
+
+def actualizar_en_google(google_id, nombre, apellido, telefono):
+    """Actualiza un contacto existente en Google."""
+    service = get_google_service()
+    if not service: return False
+
+    try:
+        # 1. Obtenemos el contacto actual para sacar su 'etag' (obligatorio para editar)
+        contacto = service.people().get(
+            resourceName=google_id,
+            personFields='names,phoneNumbers'
+        ).execute()
+        
+        # 2. Preparamos la actualización
+        contacto['names'] = [{"givenName": nombre, "familyName": apellido}]
+        contacto['phoneNumbers'] = [{"value": telefono}]
+        
+        # 3. Enviamos cambios
+        service.people().updateContact(
+            resourceName=google_id,
+            updatePersonFields='names,phoneNumbers',
+            body=contacto
+        ).execute()
+        return True
+    except Exception as e:
+        # Si falla (ej: fue borrado), intentamos crearlo de nuevo o buscarlo
+        st.warning(f"No se pudo actualizar en Google (¿Quizás se borró?): {e}")
+        return False
+    
 
 # --- INTERFAZ ---
 st.title("🛒 KMLentes - Punto de Venta v2")
@@ -811,246 +1037,155 @@ with tabs[2]:
 # PESTAÑA 4: GESTIÓN DE CLIENTES (COMPLETA)
 # ==============================================================================
 with tabs[3]:
-    col_c1, col_c2 = st.columns([1, 2])
+    st.subheader("👥 Gestión de Clientes")
+
+    # --- SECCIÓN 1: CREAR NUEVO CLIENTE ---
+    with st.expander("➕ Nuevo Cliente (Sincronizado)", expanded=True):
+        with st.form("form_nuevo_cliente"):
+            col1, col2 = st.columns(2)
+            with col1:
+                # Campos Base + Google
+                nombre_real = st.text_input("Nombre (Google y Base)")
+                apellido_real = st.text_input("Apellido (Google y Base)")
+                telefono = st.text_input("Teléfono Principal (Google y Base)")
+            with col2:
+                # Campos Solo Base
+                nombre_corto = st.text_input("Nombre Corto (Alias/Rápido)")
+                medio = st.selectbox("Medio de Contacto", ["WhatsApp", "Instagram", "Facebook", "TikTok", "Recomendado", "Web"])
+                codigo = st.text_input("Código Principal (DNI/RUC/Otro)")
+                estado_ini = st.selectbox("Estado Inicial", ["Interesado en venta", "Responder duda", "Proveedor nacional"])
+            
+            btn_crear = st.form_submit_button("💾 Guardar y Sincronizar", type="primary")
+
+            if btn_crear:
+                if not telefono or not nombre_corto:
+                    st.error("El Teléfono y el Nombre Corto son obligatorios.")
+                else:
+                    # 1. VERIFICAR DUPLICADOS (Base de Datos)
+                    with engine.connect() as conn:
+                        existe_db = conn.execute(text("SELECT COUNT(*) FROM Clientes WHERE telefono = :t"), {"t": telefono}).scalar()
+                    
+                    # 2. VERIFICAR DUPLICADOS (Google)
+                    existe_google = buscar_contacto_google(telefono)
+
+                    if existe_db > 0:
+                        st.error("⚠️ Este teléfono ya existe en la Base de Datos.")
+                    elif existe_google:
+                        st.error(f"⚠️ Este teléfono ya existe en Google Contacts (ID: {existe_google['resourceName']}).")
+                    else:
+                        # 3. CREAR EN GOOGLE
+                        google_id = crear_en_google(nombre_real, apellido_real, telefono)
+                        
+                        # 4. CREAR EN BASE DE DATOS
+                        with engine.connect() as conn:
+                            trans = conn.begin()
+                            try:
+                                conn.execute(text("""
+                                    INSERT INTO Clientes (
+                                        nombre_corto, nombre, apellido, telefono, medio_contacto, 
+                                        codigo_contacto, estado, fecha_seguimiento, google_id, activo
+                                    ) VALUES (
+                                        :nc, :nom, :ape, :tel, :medio, :cod, :est, CURRENT_DATE, :gid, TRUE
+                                    )
+                                """), {
+                                    "nc": nombre_corto, "nom": nombre_real, "ape": apellido_real,
+                                    "tel": telefono, "medio": medio, "cod": codigo,
+                                    "est": estado_ini, "gid": google_id
+                                })
+                                trans.commit()
+                                st.success(f"✅ Cliente creado en Sistema y Google.")
+                                time.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                trans.rollback()
+                                st.error(f"Error DB: {e}")
+
+    st.divider()
+
+# --- SECCIÓN 2: BUSCADOR Y EDICIÓN RÁPIDA ---
+    st.divider()
+    st.subheader("🔍 Buscar y Editar Clientes")
     
-    # --- A) FORMULARIO NUEVO CLIENTE (IZQUIERDA) ---
-    with col_c1:
-        st.subheader("👤 Nuevo Cliente")
-        with st.container(border=True):
-            with st.form("form_cliente"):
-                nombre = st.text_input("Nombre Corto / Alias")
-                medio = st.selectbox("Medio de Contacto", MEDIOS_CONTACTO)
-                contacto = st.text_input("Código/Link (Wsp/FB)")
-                telf = st.text_input("Teléfono Principal")
-                estado = st.selectbox("Estado Inicial", ESTADOS_CLIENTE)
-                f_seguimiento = st.date_input("Fecha Seguimiento", value=date.today())
-                
-                if st.form_submit_button("💾 Guardar Nuevo Cliente"):
-                    if nombre:
-                        with engine.connect() as conn:
-                            # Insertamos por defecto como activo=TRUE
-                            conn.execute(text("""
-                                INSERT INTO Clientes (nombre_corto, medio_contacto, codigo_contacto, telefono, estado, fecha_seguimiento, activo)
-                                VALUES (:n, :m, :c, :t, :e, :f, TRUE)
-                            """), {"n": nombre, "m": medio, "c": contacto, "t": telf, "e": estado, "f": f_seguimiento})
-                            conn.commit()
-                        st.success(f"Cliente '{nombre}' creado.")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("El nombre es obligatorio.")
+    col_search, col_btn = st.columns([3, 1])
+    with col_search:
+        # Buscador: Permite buscar por nombre o teléfono
+        busqueda = st.text_input("Escribe el nombre o teléfono del cliente:", placeholder="Ej: Maria, 999...")
 
-    # --- B) DIRECTORIO Y EDICIÓN (DERECHA) ---
-    with col_c2:
-        st.subheader("📂 Directorio y Edición")
-        
-        # 1. BUSCADOR (Solo mostramos clientes ACTIVOS)
-        search_cli = st.text_input("🔍 Buscar Cliente:", placeholder="Nombre, Teléfono...")
-        
+    # LOGICA DE BÚSQUEDA
+    df_resultados = pd.DataFrame()
+    
+    if busqueda:
         with engine.connect() as conn:
-            q_cli = "SELECT * FROM Clientes WHERE activo = TRUE"
-            params_cli = {}
-            if search_cli:
-                q_cli += " AND (nombre_corto ILIKE :s OR telefono ILIKE :s)"
-                params_cli = {"s": f"%{search_cli}%"}
-            q_cli += " ORDER BY id_cliente DESC LIMIT 20"
-            df_cli = pd.read_sql(text(q_cli), conn, params=params_cli)
+            # Usamos ILIKE para que no importen mayúsculas/minúsculas
+            query = text("""
+                SELECT id_cliente, nombre_corto, nombre, apellido, telefono, google_id 
+                FROM Clientes 
+                WHERE (nombre_corto ILIKE :b OR telefono ILIKE :b) AND activo = TRUE 
+                ORDER BY nombre_corto ASC LIMIT 20
+            """)
+            df_resultados = pd.read_sql(query, conn, params={"b": f"%{busqueda}%"})
+    else:
+        st.info("👆 Escribe arriba para buscar. (La lista completa está oculta para mayor velocidad)")
 
-        # Mostramos la lista para seleccionar
-        st.dataframe(df_cli[['id_cliente', 'nombre_corto', 'telefono', 'estado']], width='stretch', hide_index=True)
+    # MOSTRAR RESULTADOS SI HAY
+    if not df_resultados.empty:
+        st.caption(f"Se encontraron {len(df_resultados)} resultados.")
+        
+        cambios = st.data_editor(
+            df_resultados,
+            key="editor_busqueda",
+            column_config={
+                "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                "google_id": None, # Oculto
+                "nombre_corto": st.column_config.TextColumn("Nombre Completo (Base)", disabled=True),
+                "nombre": st.column_config.TextColumn("Nombre (Google)", required=True),
+                "apellido": st.column_config.TextColumn("Apellido (Google)", required=True),
+                "telefono": st.column_config.TextColumn("Teléfono", required=True)
+            },
+            hide_index=True,
+            use_container_width=True
+        )
 
-        # --- C) ZONA DE EDICIÓN DEL CLIENTE SELECCIONADO ---
-        if not df_cli.empty:
-            st.divider()
-            
-            # Selector del cliente a trabajar
-            opciones_cli = df_cli.set_index('id_cliente')['nombre_corto'].to_dict()
-            id_sel = st.selectbox("Seleccionar Cliente para Editar/Ver:", options=opciones_cli.keys(), format_func=lambda x: opciones_cli[x])
-            
-            # Traemos datos frescos de ese cliente
-            cliente_data = df_cli[df_cli['id_cliente'] == id_sel].iloc[0]
-
-            # --- SECCIÓN 1: MODIFICAR DATOS DEL CLIENTE ---
-            with st.expander(f"📝 Editar Datos de: {cliente_data['nombre_corto']}", expanded=False):
-                with st.form("form_edit_cli"):
-                    c_e1, c_e2 = st.columns(2)
-                    new_nombre = c_e1.text_input("Nombre", value=cliente_data['nombre_corto'])
-                    new_telf = c_e2.text_input("Teléfono", value=cliente_data['telefono'])
-                    new_medio = c_e1.selectbox("Medio", MEDIOS_CONTACTO, index=MEDIOS_CONTACTO.index(cliente_data['medio_contacto']) if cliente_data['medio_contacto'] in MEDIOS_CONTACTO else 0)
-                    new_estado = c_e2.selectbox("Estado", ESTADOS_CLIENTE, index=ESTADOS_CLIENTE.index(cliente_data['estado']) if cliente_data['estado'] in ESTADOS_CLIENTE else 0)
-                    
-                    col_btn_save, col_btn_del = st.columns([3, 1])
-                    guardar = col_btn_save.form_submit_button("✅ Actualizar Datos")
-                    # Botón truco para borrar (requiere confirmación visual)
-                    eliminar = col_btn_del.checkbox("🗑️ Eliminar Cliente")
-
-                    if guardar:
-                        with engine.connect() as conn:
-                            trans = conn.begin()
-                            try:
-                                if eliminar:
-                                    # SOFT DELETE: Solo cambiamos activo = False
-                                    conn.execute(text("UPDATE Clientes SET activo = FALSE WHERE id_cliente = :id"), {"id": id_sel})
-                                    st.warning("Cliente eliminado (oculto).")
-                                else:
-                                    conn.execute(text("""
-                                        UPDATE Clientes SET nombre_corto=:n, telefono=:t, medio_contacto=:m, estado=:e 
-                                        WHERE id_cliente=:id
-                                    """), {"n": new_nombre, "t": new_telf, "m": new_medio, "e": new_estado, "id": id_sel})
-                                    st.success("Datos actualizados.")
-                                trans.commit()
-                                time.sleep(1)
-                                st.rerun()
-                            except Exception as e:
-                                trans.rollback()
-                                st.error(f"Error: {e}")
-
-            # --- SECCIÓN 2: GESTIONAR DIRECCIONES ---
-            st.write("📍 **Gestión de Direcciones de Envío**")
-            
+        if st.button("💾 Guardar Cambios"):
             with engine.connect() as conn:
-                # Traemos direcciones activas e incluimos observación
-                q_dir = """
-                    SELECT id_direccion, tipo_envio, direccion_texto, distrito, referencia, 
-                           agencia_nombre, sede_entrega, dni_receptor, nombre_receptor, telefono_receptor, 
-                           observacion 
-                    FROM Direcciones 
-                    WHERE id_cliente = :id AND activo = TRUE
-                    ORDER BY id_direccion DESC
-                """
-                df_dirs = pd.read_sql(text(q_dir), conn, params={"id": id_sel})
+                trans = conn.begin()
+                try:
+                    for idx, row in cambios.iterrows():
+                        # 1. Actualizamos la Base de Datos
+                        conn.execute(text("""
+                            UPDATE Clientes 
+                            SET nombre=:n, apellido=:a, telefono=:t
+                            WHERE id_cliente=:id
+                        """), {
+                            "n": row['nombre'], "a": row['apellido'], 
+                            "t": row['telefono'], "id": row['id_cliente']
+                        })
+                        
+                        # 2. Sincronizamos con Google (Si tiene ID)
+                        if row['google_id']:
+                            actualizar_en_google(row['google_id'], row['nombre'], row['apellido'], row['telefono'])
+                            
+                    trans.commit()
+                    st.success("✅ Datos actualizados correctamente.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    trans.rollback()
+                    st.error(f"Error al guardar: {e}")
+    
+    elif busqueda:
+        st.warning("No se encontraron clientes con esos datos.")
 
-            if not df_dirs.empty:
-                # Agregamos columna falsa para el checkbox de eliminar
-                df_dirs["¿Eliminar?"] = False
-                
-                # EDITOR DE DATOS
-                st.caption("Edita las celdas directamente. Marca '¿Eliminar?' para borrar una fila.")
-                cambios_dir = st.data_editor(
-                    df_dirs,
-                    key="editor_direcciones",
-                    column_config={
-                        "id_direccion": None, # Ocultar ID
-                        "tipo_envio": st.column_config.SelectboxColumn("Tipo", options=["MOTO", "AGENCIA"], width="small"),
-                        "direccion_texto": st.column_config.TextColumn("Dirección", width="medium"),
-                        "observacion": st.column_config.TextColumn("Observaciones 👀", width="medium"),
-                        "¿Eliminar?": st.column_config.CheckboxColumn("¿Borrar?", help="Marca y guarda para eliminar")
-                    },
-                    hide_index=True,
-                    num_rows="fixed",
-                    width='stretch'
-                )
-                
-                # BOTÓN GUARDAR CAMBIOS DIRECCIONES
-                edited_rows = st.session_state["editor_direcciones"].get("edited_rows")
-                
-                # Solo mostramos el botón si hay cambios detectados
-                if edited_rows: 
-                    if st.button("💾 Guardar Cambios en Direcciones"):
-                        with engine.connect() as conn:
-                            trans = conn.begin()
-                            try:
-                                count = 0
-                                for idx, updates in edited_rows.items():
-                                    id_dir_real = df_dirs.iloc[idx]['id_direccion']
-                                    
-                                    # 1. Chequear si se marcó eliminar
-                                    if updates.get("¿Eliminar?") is True:
-                                        conn.execute(text("UPDATE Direcciones SET activo = FALSE WHERE id_direccion = :id"), {"id": id_dir_real})
-                                        count += 1
-                                    else:
-                                        # 2. Actualizar campos modificados
-                                        # Filtramos solo las columnas que existen en la BD (quitamos la columna checkbox)
-                                        campos_validos = [k for k in updates.keys() if k != "¿Eliminar?"]
-                                        if campos_validos:
-                                            set_clause = ", ".join([f"{col} = :{col}" for col in campos_validos])
-                                            query = text(f"UPDATE Direcciones SET {set_clause} WHERE id_direccion = :id_dir")
-                                            # Unimos los nuevos valores con el ID para los parametros
-                                            params = updates.copy()
-                                            params["id_dir"] = id_dir_real
-                                            if "¿Eliminar?" in params: del params["¿Eliminar?"] # Limpieza
-                                            
-                                            conn.execute(query, params)
-                                            count += 1
-                                
-                                trans.commit()
-                                st.success(f"Procesados {count} cambios.")
-                                time.sleep(1)
-                                st.rerun()
-                            except Exception as e:
-                                trans.rollback()
-                                st.error(f"Error al guardar: {e}")
-
-            else:
-                st.info("Este cliente no tiene direcciones registradas.")
-# --- SECCIÓN 3: AGREGAR NUEVA DIRECCIÓN (DINÁMICA) ---
-            with st.expander("➕ Agregar Nueva Dirección", expanded=False):
-                # 1. Selector de Tipo
-                tipo_envio = st.radio("Tipo de Envío:", ["MOTO", "AGENCIA"], horizontal=True, key="new_tipo_envio")
-                
-                # Inicializamos variables vacías para evitar errores en el INSERT
-                recibe, telf_recibe = "", ""
-                direcc, dist, ref = "", "", ""
-                dni, agencia, sede = "", "", ""
-                obs = ""
-
-                # 2. Formulario Dinámico
-                if tipo_envio == "MOTO":
-                    st.caption("🛵 Datos para envío local (Motorizado)")
-                    c_m1, c_m2 = st.columns(2)
-                    recibe = c_m1.text_input("Nombre quien recibe:", value=cliente_data['nombre_corto'])
-                    telf_recibe = c_m2.text_input("Teléfono contacto:", value=cliente_data['telefono'])
-                    
-                    direcc = st.text_input("Dirección Exacta (Calle/Av + Número):")
-                    c_m3, c_m4 = st.columns(2)
-                    dist = c_m3.text_input("Distrito:")
-                    obs = c_m4.text_input("Observaciones (Fachada, timbre, etc):")
-                    
-                    # Campos de Agencia quedan vacíos
-                    dni, agencia, sede = "", "", ""
-
-                else: # AGENCIA
-                    st.caption("🚛 Datos para envío provincial (Encomienda)")
-                    c_a1, c_a2, c_a3 = st.columns(3)
-                    recibe = c_a1.text_input("Nombre quien recibe:", value=cliente_data['nombre_corto'])
-                    dni = c_a2.text_input("DNI Receptor:")
-                    telf_recibe = c_a3.text_input("Teléfono contacto:", value=cliente_data['telefono'])
-                    
-                    c_a4, c_a5 = st.columns(2)
-                    agencia = c_a4.text_input("Agencia:", value="Shalom") # Por defecto Shalom
-                    sede = c_a5.text_input("Sede / Ciudad Destino:")
-                    obs = st.text_input("Observaciones (Ej: Pago en destino):")
-                    
-                    # Campos de Moto quedan vacíos
-                    direcc, dist, ref = "", "", ""
-
-                # 3. Botón de Guardado
-                if st.button("💾 Guardar Dirección"):
-                    # Validación mínima
-                    if not recibe or not telf_recibe:
-                        st.error("El nombre y teléfono son obligatorios.")
-                    elif tipo_envio == "MOTO" and not direcc:
-                         st.error("Para Moto debes poner la dirección.")
-                    elif tipo_envio == "AGENCIA" and (not dni or not sede):
-                         st.error("Para Agencia el DNI y la Sede son obligatorios.")
-                    else:
-                        with engine.connect() as conn:
-                            conn.execute(text("""
-                                INSERT INTO Direcciones (id_cliente, tipo_envio, nombre_receptor, telefono_receptor, 
-                                    direccion_texto, distrito, referencia, dni_receptor, agencia_nombre, sede_entrega, observacion, activo)
-                                VALUES (:id, :tipo, :nom, :tel, :dir, :dist, '', :dni, :age, :sede, :obs, TRUE)
-                            """), {
-                                "id": int(id_sel), "tipo": tipo_envio, "nom": recibe, "tel": telf_recibe,
-                                "dir": direcc, "dist": dist, 
-                                "dni": dni, "age": agencia, "sede": sede, "obs": obs
-                            })
-                            conn.commit()
-                        st.success("✅ Dirección agregada correctamente.")
-                        time.sleep(1)
-                        st.rerun()
+ # --- HERRAMIENTA DE SINCRONIZACIÓN REAL (DESDE GOOGLE) ---
+    with st.expander("🛠️ Herramientas Administrativas (Sincronizar Nombres)"):
+        st.write("Usa este botón para traer el Nombre y Apellido real desde Google Contacts para tus clientes antiguos.")
+        
+        if st.button("☁️ Traer Nombres desde Google"):
+            sincronizar_desde_google_batch()
+        
 
 # ==============================================================================
-# PESTAÑA 5: SEGUIMIENTO (LIMPIO Y ZONIFICADO)
+# PESTAÑA 6: SEGUIMIENTO (LIMPIO Y ZONIFICADO)
 # ==============================================================================
 with tabs[5]:
     st.subheader("🎯 Tablero de Seguimiento de Pedidos")
@@ -1409,3 +1544,5 @@ with tabs[6]:
                                 st.error(f"Error: {e}")
             else:
                 st.warning("SKU no encontrado.")
+
+
