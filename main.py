@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import requests # Necesario para hablar con la API de Meta
-from streamlit_autorefresh import st_autorefresh # Necesario para el auto-refresco
 
 # Cargar variables de entorno (Local y Nube)
 load_dotenv()
