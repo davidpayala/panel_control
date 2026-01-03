@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
-from datetime import date, datetime
+from datetime import date, datetime, timedelta # <--- Agrega ", timedelta"
 import time
 import os
 import urllib.parse 
@@ -9,7 +9,8 @@ import extra_streamlit_components as stx
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-
+import requests # Necesario para hablar con la API de Meta
+from streamlit_autorefresh import st_autorefresh # Necesario para el auto-refresco
 
 # Cargar variables de entorno (Local y Nube)
 load_dotenv()
@@ -161,7 +162,52 @@ def actualizar_estados(df_modificado):
             trans.rollback()
             st.error(f"Error al actualizar: {e}")
 
+# ==============================================================================
+# FUNCIÓN DE ENVÍO A WHATSAPP (MODO SEGURO / RAILWAY)
+# ==============================================================================
+def enviar_mensaje_whatsapp(numero, texto):
+    # 1. Credenciales (Asegúrate de que estas sean las correctas y SIN comillas en el .env)
+    TOKEN = os.getenv("WHATSAPP_TOKEN")
+    PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
 
+    if not TOKEN or not PHONE_ID:
+        return False, "⚠️ Faltan credenciales en .env"
+
+    url = f"https://graph.facebook.com/v17.0/{PHONE_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    # --- 2. LIMPIEZA Y FORMATO DEL NÚMERO (AQUÍ ESTÁ LA SOLUCIÓN) ---
+    # Paso A: Quitar espacios, guiones y símbolos '+'
+    numero_limpio = str(numero).replace("+", "").replace(" ", "").replace("-", "").strip()
+    
+    # Paso B: Lógica para Perú (Si tiene 9 dígitos, le falta el 51)
+    if len(numero_limpio) == 9:
+        numero_final = f"51{numero_limpio}"
+    else:
+        # Si ya tiene 11 dígitos (519...) o es otro caso, lo dejamos tal cual
+        numero_final = numero_limpio
+    # ----------------------------------------------------------------
+    
+    data = {
+        "messaging_product": "whatsapp",
+        "to": numero_final,
+        "type": "text",
+        "text": {"body": texto}
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            return True, response.json()
+        else:
+            return False, response.text
+    except Exception as e:
+        return False, str(e)
+    
+    
 def sincronizar_desde_google_batch():
     """Recorre clientes con nombre vacío, los busca en Google y actualiza sus datos reales."""
     service = get_google_service()
@@ -393,6 +439,17 @@ ESTADOS_CLIENTE = [
 ]
 MEDIOS_CONTACTO = ["Wsp 941380271", "Wsp 936041531", "Facebook-Instagram", "TikTok", "Físico/Tienda"]
 
+# --- 1. CALCULAR NOTIFICACIONES GLOBALES ---
+# Hacemos esto ANTES de crear las tabs para poner el número en el título
+with engine.connect() as conn:
+    # Contamos cuántos mensajes ENTRANTES tienen leido = FALSE
+    n_no_leidos = conn.execute(text(
+        "SELECT COUNT(*) FROM mensajes WHERE leido = FALSE AND tipo = 'ENTRANTE'"
+    )).scalar()
+
+# --- 2. DEFINIR PESTAÑAS CON ICONO ---
+titulo_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
+
 # AHORA SON 7 PESTAÑAS
 tabs = st.tabs(["🛒 VENTA (POS)", 
                 "📦 Compras", 
@@ -400,7 +457,8 @@ tabs = st.tabs(["🛒 VENTA (POS)",
                 "👤 Clientes", 
                 "📆 Seguimiento", 
                 "🔧 Catálogo",
-                "💰 Facturación"])
+                "💰 Facturación",
+                titulo_chat])
 
 # ==============================================================================
 # PESTAÑA 1: VENTAS / SALIDAS (CON MULTI-DIRECCIÓN)
@@ -1715,3 +1773,160 @@ with tabs[6]:
                         except Exception as e:
                             trans.rollback()
                             st.error(f"Error al guardar: {e}")
+
+# ==============================================================================
+# PESTAÑA 8: CHAT CRM (BETA)
+# ==============================================================================
+with tabs[7]: 
+    st.subheader("💬 Chat Center")
+    
+    # Preparamos las columnas
+    col_lista, col_chat = st.columns([1, 2])
+
+    # --- 1. IZQUIERDA: LISTA DE CONTACTOS (FRAGMENTO AUTÓNOMO) ---
+    with col_lista:
+        st.markdown("#### 📩 Bandeja")
+        
+        # Esta función se ejecuta sola cada 10 segundos SIN recargar la página entera
+        @st.fragment(run_every=10)
+        def mostrar_bandeja():
+            with engine.connect() as conn:
+                # Consulta para traer contactos y contar no leídos
+                query_chats = text("""
+                    SELECT 
+                        COALESCE(m.id_cliente, -1) as id_cliente_raw,
+                        m.telefono,
+                        COALESCE(c.nombre || ' ' || c.apellido, m.cliente_nombre, m.telefono) as nombre_completo,
+                        MAX(m.fecha) as ultima_fecha,
+                        SUM(CASE WHEN m.leido = FALSE AND m.tipo = 'ENTRANTE' THEN 1 ELSE 0 END) as no_leidos
+                    FROM mensajes m
+                    LEFT JOIN Clientes c ON m.id_cliente = c.id_cliente
+                    GROUP BY COALESCE(m.id_cliente, -1), m.telefono, COALESCE(c.nombre || ' ' || c.apellido, m.cliente_nombre, m.telefono)
+                    ORDER BY ultima_fecha DESC
+                """)
+                df_chats = pd.read_sql(query_chats, conn)
+
+            if not df_chats.empty:
+                # Crear ID único
+                df_chats['id_unico'] = df_chats.apply(
+                    lambda x: f"ID-{int(x['id_cliente_raw'])}" if x['id_cliente_raw'] != -1 else f"TEL-{x['telefono']}", 
+                    axis=1
+                )
+                
+                # Formateador visual (Rojo si hay mensajes nuevos)
+                def formatear_opcion(id_u):
+                    row = df_chats[df_chats['id_unico'] == id_u].iloc[0]
+                    notif = f"🔴 ({row['no_leidos']})" if row['no_leidos'] > 0 else ""
+                    icono = "🔔" if row['no_leidos'] > 0 else "👤"
+                    hora = row['ultima_fecha'].strftime('%d/%m %H:%M')
+                    return f"{icono} {row['nombre_completo']} {notif} | {hora}"
+
+                # SELECTOR: Al cambiar, Streamlit actualiza el session_state automáticamente
+                # Usamos 'key' para guardar la selección en la memoria global
+                st.radio(
+                    "Selecciona:",
+                    options=df_chats['id_unico'],
+                    format_func=formatear_opcion,
+                    label_visibility="collapsed",
+                    key="chat_selector_key" 
+                )
+            else:
+                st.info("📭 Vacío")
+
+        # Llamamos a la función para que se renderice
+        mostrar_bandeja()
+
+    # --- 2. DERECHA: VENTANA DE CHAT ---
+    with col_chat:
+        # Verificamos si hay algo seleccionado en la memoria (session_state)
+        # Esto conecta el fragmento de la izquierda con la vista de la derecha
+        if "chat_selector_key" in st.session_state and st.session_state.chat_selector_key:
+            
+            # Recuperamos el ID seleccionado de la memoria
+            id_seleccionado = st.session_state.chat_selector_key
+            
+            # Recuperamos los metadatos de ese chat (necesario porque estamos fuera del fragmento de la lista)
+            with engine.connect() as conn:
+                # Decodificamos el ID único (ID-123 o TEL-999)
+                es_id_cliente = id_seleccionado.startswith("ID-")
+                valor_id = id_seleccionado.split("-")[1]
+
+                if es_id_cliente:
+                    target_id = int(valor_id)
+                    # Consultamos datos frescos del cliente
+                    meta_chat = conn.execute(text("SELECT telefono, nombre || ' ' || apellido FROM Clientes WHERE id_cliente = :id"), {"id": target_id}).fetchone()
+                    target_tel = meta_chat[0] if meta_chat else "Desconocido"
+                    nombre_show = meta_chat[1] if meta_chat else "Cliente"
+                    
+                    # Marcar como leído
+                    conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE id_cliente = :id AND tipo='ENTRANTE'"), {"id": target_id})
+                    conn.commit()
+                else:
+                    target_id = -1
+                    target_tel = valor_id # El valor es el teléfono
+                    nombre_show = target_tel
+                    
+                    # Marcar como leído
+                    conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :tel AND tipo='ENTRANTE'"), {"tel": target_tel})
+                    conn.commit()
+
+            # Cabecera
+            st.markdown(f"### 💬 **{nombre_show}**")
+            st.caption(f"📱 {target_tel}")
+            st.divider()
+
+            # --- FRAGMENTO DE HISTORIAL (Refresco Rápido 3s) ---
+            # Este ya lo tenías, y está perfecto aquí para dar velocidad
+            @st.fragment(run_every=3)
+            def renderizar_historial(t_id, t_tel):
+                contenedor = st.container(height=400)
+                with engine.connect() as conn:
+                    if t_id != -1:
+                        historial = pd.read_sql(text("SELECT tipo, contenido, fecha FROM mensajes WHERE id_cliente = :id ORDER BY fecha ASC"), conn, params={"id": t_id})
+                    else:
+                        historial = pd.read_sql(text("SELECT tipo, contenido, fecha FROM mensajes WHERE telefono = :tel ORDER BY fecha ASC"), conn, params={"tel": t_tel})
+                
+                with contenedor:
+                    if historial.empty: st.write("Inicia la conversación...")
+                    for _, row in historial.iterrows():
+                        role = "user" if row['tipo'] == 'ENTRANTE' else "assistant"
+                        avatar = "👤" if row['tipo'] == 'ENTRANTE' else "🛍️"
+                        with st.chat_message(role, avatar=avatar):
+                            st.markdown(row['contenido'])
+                            st.caption(f"_{row['fecha'].strftime('%H:%M')}_")
+
+            renderizar_historial(target_id, target_tel)
+
+            # --- INPUT DE RESPUESTA (MODIFICADO PARA SINCRONIZAR HORA Y NÚMERO) ---
+            if prompt := st.chat_input("Escribe tu respuesta..."):
+                
+                # 1. ENVIAR A META (Tu función ya se encarga de agregar el 51 para el envío si falta)
+                enviado_ok, resp = enviar_mensaje_whatsapp(target_tel, prompt)
+                
+                if enviado_ok:
+                    # 2. PREPARAR NÚMERO PARA BASE DE DATOS (Estandarización)
+                    # Limpiamos el número y forzamos el 51 si tiene 9 dígitos
+                    # Esto es crucial para que coincida con lo que guarda el Webhook
+                    telefono_para_db = str(target_tel).replace(" ", "").replace("+", "").strip()
+                    if len(telefono_para_db) == 9:
+                        telefono_para_db = f"51{telefono_para_db}"
+                    
+                    # 3. GUARDAR EN BD (CON HORA UTC-5)
+                    # Aquí usamos (NOW() - INTERVAL '5 hours') para igualar la lógica del Webhook
+                    with engine.connect() as conn:
+                        conn.execute(text("""
+                            INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido)
+                            VALUES (:id, :tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
+                        """), {
+                            "id": int(target_id) if target_id != -1 else None,
+                            "tel": telefono_para_db,  # <--- Número corregido (51...)
+                            "txt": prompt
+                        })
+                        conn.commit()
+                    
+                    # Recargamos para ver el mensaje enviado
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error WhatsApp: {resp}")
+        else:
+            st.markdown("<div style='text-align: center; color: gray; margin-top: 50px;'>👈 Selecciona un chat para comenzar</div>", unsafe_allow_html=True)
