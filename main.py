@@ -132,6 +132,30 @@ def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=N
     })
     st.success(f"Añadido: {nombre}")
 
+# Función para descargar fotos de WhatsApp (Con caché para velocidad)
+@st.cache_data(show_spinner=False)
+def obtener_imagen_whatsapp(media_id):
+    token = os.getenv("WHATSAPP_TOKEN")
+    if not token: return None
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    try:
+        # 1. Pedimos a Facebook la URL real de la imagen
+        url_info = f"https://graph.facebook.com/v17.0/{media_id}"
+        r_info = requests.get(url_info, headers=headers)
+        
+        if r_info.status_code == 200:
+            url_descarga = r_info.json().get("url")
+            
+            # 2. Descargamos los bytes de la imagen
+            r_img = requests.get(url_descarga, headers=headers)
+            if r_img.status_code == 200:
+                return r_img.content
+    except:
+        pass
+    return None
+
 # --- FUNCIÓN AUXILIAR PARA GUARDAR CAMBIOS (Pégalo al final del archivo, sin sangría) ---
 def actualizar_estados(df_modificado):
     """
@@ -1835,24 +1859,19 @@ with tabs[7]:
         # Llamamos a la función para que se renderice
         mostrar_bandeja()
 
-    # --- 2. DERECHA: VENTANA DE CHAT ---
+# --- 2. DERECHA: VENTANA DE CHAT ---
     with col_chat:
-        # Verificamos si hay algo seleccionado en la memoria (session_state)
-        # Esto conecta el fragmento de la izquierda con la vista de la derecha
         if "chat_selector_key" in st.session_state and st.session_state.chat_selector_key:
             
-            # Recuperamos el ID seleccionado de la memoria
             id_seleccionado = st.session_state.chat_selector_key
             
-            # Recuperamos los metadatos de ese chat (necesario porque estamos fuera del fragmento de la lista)
+            # --- Lógica para obtener datos del cliente ---
             with engine.connect() as conn:
-                # Decodificamos el ID único (ID-123 o TEL-999)
                 es_id_cliente = id_seleccionado.startswith("ID-")
                 valor_id = id_seleccionado.split("-")[1]
 
                 if es_id_cliente:
                     target_id = int(valor_id)
-                    # Consultamos datos frescos del cliente
                     meta_chat = conn.execute(text("SELECT telefono, nombre || ' ' || apellido FROM Clientes WHERE id_cliente = :id"), {"id": target_id}).fetchone()
                     target_tel = meta_chat[0] if meta_chat else "Desconocido"
                     nombre_show = meta_chat[1] if meta_chat else "Cliente"
@@ -1862,70 +1881,88 @@ with tabs[7]:
                     conn.commit()
                 else:
                     target_id = -1
-                    target_tel = valor_id # El valor es el teléfono
+                    target_tel = valor_id 
                     nombre_show = target_tel
-                    
-                    # Marcar como leído
                     conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :tel AND tipo='ENTRANTE'"), {"tel": target_tel})
                     conn.commit()
 
-            # Cabecera
+            # Cabecera del chat
             st.markdown(f"### 💬 **{nombre_show}**")
             st.caption(f"📱 {target_tel}")
             st.divider()
 
-            # --- FRAGMENTO DE HISTORIAL (Refresco Rápido 3s) ---
-            # Este ya lo tenías, y está perfecto aquí para dar velocidad
+            # --- AQUÍ EMPIEZA LA FUNCIÓN ÚNICA Y CORRECTA ---
             @st.fragment(run_every=3)
             def renderizar_historial(t_id, t_tel):
                 contenedor = st.container(height=400)
+                
+                # 1. Obtenemos los mensajes
                 with engine.connect() as conn:
                     if t_id != -1:
                         historial = pd.read_sql(text("SELECT tipo, contenido, fecha FROM mensajes WHERE id_cliente = :id ORDER BY fecha ASC"), conn, params={"id": t_id})
                     else:
                         historial = pd.read_sql(text("SELECT tipo, contenido, fecha FROM mensajes WHERE telefono = :tel ORDER BY fecha ASC"), conn, params={"tel": t_tel})
                 
+                # 2. Dibujamos los mensajes
                 with contenedor:
-                    if historial.empty: st.write("Inicia la conversación...")
+                    if historial.empty:
+                        st.write("Inicia la conversación...")
+                    
                     for _, row in historial.iterrows():
                         role = "user" if row['tipo'] == 'ENTRANTE' else "assistant"
                         avatar = "👤" if row['tipo'] == 'ENTRANTE' else "🛍️"
+                        
                         with st.chat_message(role, avatar=avatar):
-                            st.markdown(row['contenido'])
+                            contenido_msg = row['contenido']
+                            
+                            # --- DETECTOR DE FOTOS (Lógica Visual) ---
+                            if "|ID:" in contenido_msg:
+                                try:
+                                    partes = contenido_msg.split("|ID:")
+                                    texto_visible = partes[0]
+                                    media_id_oculto = partes[1].replace("|", "").strip()
+                                    
+                                    st.markdown(texto_visible)
+                                    
+                                    # Llamamos a la función global de descarga (definida al inicio del archivo)
+                                    imagen_bytes = obtener_imagen_whatsapp(media_id_oculto)
+                                    if imagen_bytes:
+                                        st.image(imagen_bytes, width=250)
+                                    else:
+                                        st.caption("🚫 Imagen no disponible")
+                                except:
+                                    st.markdown(contenido_msg)
+                            else:
+                                st.markdown(contenido_msg)
+                            
                             st.caption(f"_{row['fecha'].strftime('%H:%M')}_")
 
+            # Llamamos a la función para que se ejecute
             renderizar_historial(target_id, target_tel)
 
-            # --- INPUT DE RESPUESTA (MODIFICADO PARA SINCRONIZAR HORA Y NÚMERO) ---
+            # --- INPUT DE RESPUESTA ---
             if prompt := st.chat_input("Escribe tu respuesta..."):
-                
-                # 1. ENVIAR A META (Tu función ya se encarga de agregar el 51 para el envío si falta)
                 enviado_ok, resp = enviar_mensaje_whatsapp(target_tel, prompt)
                 
                 if enviado_ok:
-                    # 2. PREPARAR NÚMERO PARA BASE DE DATOS (Estandarización)
-                    # Limpiamos el número y forzamos el 51 si tiene 9 dígitos
-                    # Esto es crucial para que coincida con lo que guarda el Webhook
+                    # Limpieza del número para guardar (agregando 51)
                     telefono_para_db = str(target_tel).replace(" ", "").replace("+", "").strip()
                     if len(telefono_para_db) == 9:
                         telefono_para_db = f"51{telefono_para_db}"
                     
-                    # 3. GUARDAR EN BD (CON HORA UTC-5)
-                    # Aquí usamos (NOW() - INTERVAL '5 hours') para igualar la lógica del Webhook
                     with engine.connect() as conn:
                         conn.execute(text("""
                             INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido)
                             VALUES (:id, :tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
                         """), {
                             "id": int(target_id) if target_id != -1 else None,
-                            "tel": telefono_para_db,  # <--- Número corregido (51...)
+                            "tel": telefono_para_db,
                             "txt": prompt
                         })
                         conn.commit()
-                    
-                    # Recargamos para ver el mensaje enviado
                     st.rerun()
                 else:
                     st.error(f"❌ Error WhatsApp: {resp}")
+
         else:
             st.markdown("<div style='text-align: center; color: gray; margin-top: 50px;'>👈 Selecciona un chat para comenzar</div>", unsafe_allow_html=True)
