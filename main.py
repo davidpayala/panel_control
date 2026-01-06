@@ -1152,14 +1152,13 @@ with tabs[2]:
                 except Exception as e:
                     trans.rollback()
                     st.error(f"Error: {e}")
-
 # ==============================================================================
-# PESTAÑA 4: GESTIÓN DE CLIENTES (COMPLETA)
+# PESTAÑA 4: GESTIÓN DE CLIENTES (ACTUALIZADA Y EDITABLE)
 # ==============================================================================
 with tabs[3]:
     st.subheader("👥 Gestión de Clientes")
 
-    # --- SECCIÓN 1: CREAR NUEVO CLIENTE ---
+    # --- SECCIÓN 1: CREAR NUEVO CLIENTE (Se mantiene igual) ---
     with st.expander("➕ Nuevo Cliente (Sincronizado)", expanded=True):
         with st.form("form_nuevo_cliente"):
             col1, col2 = st.columns(2)
@@ -1222,32 +1221,37 @@ with tabs[3]:
 
     st.divider()
 
-# --- SECCIÓN 2: BUSCADOR Y EDICIÓN RÁPIDA ---
-    st.divider()
+    # --- SECCIÓN 2: BUSCADOR Y EDICIÓN RÁPIDA (MODIFICADA ⭐) ---
     st.subheader("🔍 Buscar y Editar Clientes")
     
     col_search, col_btn = st.columns([3, 1])
     with col_search:
-        # Buscador: Permite buscar por nombre o teléfono
         busqueda = st.text_input("Escribe el nombre o teléfono del cliente:", placeholder="Ej: Maria, 999...")
 
-    # LOGICA DE BÚSQUEDA
+    # Lista completa de estados para el desplegable
+    OPCIONES_ESTADO = [
+        "Sin empezar", "Responder duda", "Interesado en venta", 
+        "Proveedor nacional", "Proveedor internacional", 
+        "Venta motorizado", "Venta agencia", "Venta express moto",
+        "En camino moto", "En camino agencia", "Contraentrega agencia",
+        "Pendiente agradecer", "Problema post"
+    ]
+
     df_resultados = pd.DataFrame()
     
     if busqueda:
         with engine.connect() as conn:
-            # Usamos ILIKE para que no importen mayúsculas/minúsculas
+            # AHORA INCLUIMOS 'estado' EN LA CONSULTA
             query = text("""
-                SELECT id_cliente, nombre_corto, nombre, apellido, telefono, google_id 
+                SELECT id_cliente, nombre_corto, estado, nombre, apellido, telefono, google_id 
                 FROM Clientes 
                 WHERE (nombre_corto ILIKE :b OR telefono ILIKE :b) AND activo = TRUE 
                 ORDER BY nombre_corto ASC LIMIT 20
             """)
             df_resultados = pd.read_sql(query, conn, params={"b": f"%{busqueda}%"})
     else:
-        st.info("👆 Escribe arriba para buscar. (La lista completa está oculta para mayor velocidad)")
+        st.info("👆 Escribe arriba para buscar.")
 
-    # MOSTRAR RESULTADOS SI HAY
     if not df_resultados.empty:
         st.caption(f"Se encontraron {len(df_resultados)} resultados.")
         
@@ -1257,13 +1261,18 @@ with tabs[3]:
             column_config={
                 "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                 "google_id": None, # Oculto
-                "nombre_corto": st.column_config.TextColumn("Nombre Completo (Base)", disabled=True),
+                
+                # AHORA SON EDITABLES:
+                "nombre_corto": st.column_config.TextColumn("Nombre Corto (Alias)", required=True),
+                "estado": st.column_config.SelectboxColumn("Estado Actual", options=OPCIONES_ESTADO, width="medium", required=True),
+                
+                # Datos Personales
                 "nombre": st.column_config.TextColumn("Nombre (Google)", required=True),
                 "apellido": st.column_config.TextColumn("Apellido (Google)", required=True),
                 "telefono": st.column_config.TextColumn("Teléfono", required=True)
             },
             hide_index=True,
-            width='stretch'
+            use_container_width=True
         )
 
         if st.button("💾 Guardar Cambios"):
@@ -1271,17 +1280,18 @@ with tabs[3]:
                 trans = conn.begin()
                 try:
                     for idx, row in cambios.iterrows():
-                        # 1. Actualizamos la Base de Datos
+                        # 1. Actualizamos la Base de Datos (Ahora incluye nombre_corto y estado)
                         conn.execute(text("""
                             UPDATE Clientes 
-                            SET nombre=:n, apellido=:a, telefono=:t
+                            SET nombre=:n, apellido=:a, telefono=:t, nombre_corto=:nc, estado=:est
                             WHERE id_cliente=:id
                         """), {
                             "n": row['nombre'], "a": row['apellido'], 
-                            "t": row['telefono'], "id": row['id_cliente']
+                            "t": row['telefono'], "nc": row['nombre_corto'], 
+                            "est": row['estado'], "id": row['id_cliente']
                         })
                         
-                        # 2. Sincronizamos con Google (Si tiene ID)
+                        # 2. Sincronizamos con Google (Solo datos personales, Google no tiene "estado" ni "alias")
                         if row['google_id']:
                             actualizar_en_google(row['google_id'], row['nombre'], row['apellido'], row['telefono'])
                             
