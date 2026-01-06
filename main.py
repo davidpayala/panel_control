@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import requests # Necesario para hablar con la API de Meta
+import random
 
 # Cargar variables de entorno (Local y Nube)
 load_dotenv()
@@ -113,6 +114,80 @@ if 'carrito' not in st.session_state:
 # FUNCIONES AUXILIARES
 # ==============================================================================
 
+# --- FUNCIÓN 1 (MODIFICADA PARA VER EL ID) ---
+def subir_archivo_meta(archivo_bytes, mime_type):
+    token = os.getenv("WHATSAPP_TOKEN")
+    phone_id = os.getenv("WHATSAPP_PHONE_ID")
+    
+    # 1. Validación Previa
+    if not token:
+        return None, "❌ Error: Variable WHATSAPP_TOKEN está vacía o no existe."
+    if not phone_id:
+        return None, "❌ Error: Variable WHATSAPP_PHONE_ID está vacía o no existe."
+
+    # Limpiamos el ID por si tiene espacios accidentales
+    phone_id = str(phone_id).strip()
+
+    url = f"https://graph.facebook.com/v17.0/{phone_id}/media"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    files = {
+        'file': ('archivo', archivo_bytes, mime_type),
+        'messaging_product': (None, 'whatsapp')
+    }
+    
+    try:
+        # Imprimimos en la consola de Railway para tener registro
+        print(f"📡 Subiendo archivo a URL: {url}")
+        
+        r = requests.post(url, headers=headers, files=files)
+        
+        if r.status_code == 200:
+            return r.json().get("id"), None
+        else:
+            # AQUÍ ESTÁ LA CLAVE: Devolvemos el ID usado en el mensaje de error
+            return None, f"⚠️ Falló usando ID: '{phone_id}'. Meta dice: {r.text}"
+            
+    except Exception as e:
+        return None, f"Excepción crítica usando ID '{phone_id}': {str(e)}"
+    
+
+# --- FUNCIÓN 2: ENVIAR EL MENSAJE CON EL ARCHIVO ---
+def enviar_mensaje_media(telefono, media_id, tipo_archivo, caption="", filename="archivo"):
+    token = os.getenv("WHATSAPP_TOKEN")
+    phone_id = os.getenv("WHATSAPP_PHONE_ID")
+    url = f"https://graph.facebook.com/v17.0/{phone_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    
+    # Determinar si es imagen o documento
+    tipo_payload = "image" if "image" in tipo_archivo else "document"
+    
+    data = {
+        "messaging_product": "whatsapp",
+        "to": telefono,
+        "type": tipo_payload,
+        tipo_payload: {
+            "id": media_id,
+            "caption": caption
+        }
+    }
+    
+    # Si es documento, agregamos el nombre del archivo para que se vea bonito
+    if tipo_payload == "document":
+        data["document"]["filename"] = filename
+
+    try:
+        r = requests.post(url, headers=headers, json=data)
+        if r.status_code == 200:
+            return True, r.json()
+        else:
+            return False, r.text
+    except Exception as e:
+        return False, str(e)
+    
 def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
     # Validar stock si es de inventario
     if es_inventario:
@@ -484,9 +559,12 @@ tabs = st.tabs(["🛒 VENTA (POS)",
                 titulo_chat])
 
 # ==============================================================================
-# PESTAÑA 1: VENTAS / SALIDAS (CON MULTI-DIRECCIÓN)
+# PESTAÑA 1: VENTAS / SALIDAS (CORREGIDO)
 # ==============================================================================
 with tabs[0]:
+    # Importamos random aquí por seguridad por si falta arriba
+    import random 
+
     # --- CABECERA ---
     col_modo, col_titulo = st.columns([1, 3])
     with col_modo:
@@ -502,7 +580,7 @@ with tabs[0]:
     col_izq, col_der = st.columns([1, 1])
 
     # ------------------------------------------------------------------
-    # COLUMNA IZQUIERDA: BUSCADOR (Igual que antes)
+    # COLUMNA IZQUIERDA: BUSCADOR
     # ------------------------------------------------------------------
     with col_izq:
         st.caption("1. Buscar Productos")
@@ -520,7 +598,6 @@ with tabs[0]:
                 
                 if not res.empty:
                     prod = res.iloc[0]
-                    # Nombre compuesto mejorado
                     nombre_full = f"{prod['modelo']} {prod['color']} ({prod['medida']})"
                     
                     if prod['stock_interno'] <= 0:
@@ -549,7 +626,7 @@ with tabs[0]:
             if st.button("➕ Agregar Manual"):
                 if desc_manual: agregar_al_carrito(None, desc_manual, cant_manual, precio_manual, False)
 
-# ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # COLUMNA DERECHA: PROCESAR
     # ------------------------------------------------------------------
     with col_der:
@@ -557,7 +634,7 @@ with tabs[0]:
         
         if len(st.session_state.carrito) > 0:
             df_cart = pd.DataFrame(st.session_state.carrito)
-            st.dataframe(df_cart[['descripcion', 'cantidad', 'subtotal']], hide_index=True, width='stretch')
+            st.dataframe(df_cart[['descripcion', 'cantidad', 'subtotal']], hide_index=True, use_container_width=True)
             
             suma_subtotal = float(df_cart['subtotal'].sum())
             
@@ -581,7 +658,7 @@ with tabs[0]:
                 nombre_cli = st.selectbox("Cliente:", options=list(lista_cli.keys()))
                 id_cliente = lista_cli[nombre_cli]
 
-                # 2. TIPO DE ENVÍO (AGREGADO: Envío Lima)
+                # 2. TIPO DE ENVÍO
                 col_e1, col_e2 = st.columns(2)
                 tipo_envio = col_e1.selectbox("Método Envío", ["Gratis", "🚚 Envío Lima", "Express (Moto)", "Agencia (Pago Destino)", "Agencia (Pagado)"])
                 costo_envio = col_e2.number_input("Costo Envío", value=0.0)
@@ -590,9 +667,8 @@ with tabs[0]:
                 es_agencia = "Agencia" in tipo_envio
                 es_envio_lima = tipo_envio == "🚚 Envío Lima" or tipo_envio == "Express (Moto)"
                 
-                # Definimos categoría para filtrar en BD
                 if es_agencia: cat_direccion = "AGENCIA"
-                elif es_envio_lima: cat_direccion = "MOTO" # Usamos MOTO para Lima también
+                elif es_envio_lima: cat_direccion = "MOTO"
                 else: cat_direccion = "OTROS"
 
                 # Buscamos direcciones guardadas
@@ -608,7 +684,6 @@ with tabs[0]:
                 datos_nuevos = {} 
                 texto_direccion_final = ""
                 
-                # Preparamos opciones visuales
                 opciones_visuales = {}
                 if not df_dirs.empty:
                     for idx, row in df_dirs.iterrows():
@@ -616,7 +691,6 @@ with tabs[0]:
                             lbl = f"🏢 {row['agencia_nombre']} - {row['sede_entrega']}"
                         else:
                             lbl = f"🏠 {row['direccion_texto']} ({row['distrito']})"
-                        
                         if row['observacion']: lbl += f" | 👁️ {row['observacion'][:20]}..."
                         opciones_visuales[lbl] = row
 
@@ -626,12 +700,9 @@ with tabs[0]:
                 st.markdown("📍 **Datos de Entrega:**")
                 seleccion_dir = st.selectbox("Elige destino:", options=lista_desplegable, label_visibility="collapsed")
                 
-                # --- FORMULARIO DE DIRECCIÓN ---
                 if seleccion_dir != KEY_NUEVA:
-                    # USAR GUARDADA
                     usar_guardada = True
                     dir_data = opciones_visuales[seleccion_dir]
-                    
                     if es_agencia:
                         texto_direccion_final = f"{dir_data['agencia_nombre']} - {dir_data['sede_entrega']} [{dir_data['dni_receptor']}]"
                         st.info(f"📦 Destino: **{texto_direccion_final}**")
@@ -639,35 +710,22 @@ with tabs[0]:
                         texto_direccion_final = f"{dir_data['direccion_texto']} - {dir_data['distrito']}"
                         st.info(f"🏠 Destino: **{texto_direccion_final}**")
                         st.caption(f"📝 {dir_data['observacion']}")
-
                 else:
-                    # NUEVA DIRECCIÓN
                     st.warning("📝 Registro de Nuevos Datos:")
                     with st.container(border=True):
-                        # Campos comunes
                         c_nom, c_tel = st.columns(2)
                         recibe = c_nom.text_input("Nombre Recibe:", value=nombre_cli)
                         telf = c_tel.text_input("Teléfono:", key="telf_new")
                         
-                        # --- CAMPOS ESPECÍFICOS ENVÍO LIMA ---
                         if es_envio_lima:
                             direcc = st.text_input("Dirección Exacta:")
                             c_dist, c_ref = st.columns(2)
                             dist = c_dist.text_input("Distrito:")
                             ref = c_ref.text_input("Referencia:")
-                            
-                            gps = st.text_input("📍 GPS (Link Google Maps):", placeholder="https://maps.google.com/...")
-                            
-                            obs_extra = st.text_input("Observación:", placeholder="Timbre, Color de casa...")
-                            
-                            # TRUCO: Concatenamos Ref y GPS en 'observacion' para guardarlo en la BD actual
+                            gps = st.text_input("📍 GPS (Link Google Maps):")
+                            obs_extra = st.text_input("Observación:")
                             obs_full = f"REF: {ref} | GPS: {gps} | {obs_extra}"
-                            
-                            datos_nuevos = {
-                                "tipo": "MOTO", "nom": recibe, "tel": telf, 
-                                "dir": direcc, "dist": dist, "obs": obs_full,
-                                "dni": "", "age": "", "sede": ""
-                            }
+                            datos_nuevos = {"tipo": "MOTO", "nom": recibe, "tel": telf, "dir": direcc, "dist": dist, "obs": obs_full, "dni": "", "age": "", "sede": ""}
                             texto_direccion_final = f"{direcc} - {dist} (Ref: {ref})"
                         
                         elif es_agencia:
@@ -676,32 +734,24 @@ with tabs[0]:
                             agencia = c_age.text_input("Agencia:", value="Shalom")
                             sede = st.text_input("Sede:")
                             obs_new = st.text_input("Obs:")
-                            
-                            datos_nuevos = {
-                                "tipo": "AGENCIA", "nom": recibe, "tel": telf, "dni": dni, 
-                                "age": agencia, "sede": sede, "obs": obs_new,
-                                "dir": "", "dist": ""
-                            }
+                            datos_nuevos = {"tipo": "AGENCIA", "nom": recibe, "tel": telf, "dni": dni, "age": agencia, "sede": sede, "obs": obs_new, "dir": "", "dist": ""}
                             texto_direccion_final = f"{agencia} - {sede}"
                         
                         else:
-                            # Otros / Gratis
                             obs_new = st.text_input("Observación / Lugar:")
-                            datos_nuevos = {
-                                "tipo": "OTROS", "nom": recibe, "tel": telf, "obs": obs_new,
-                                "dir": "", "dist": "", "dni": "", "age": "", "sede": ""
-                            }
+                            datos_nuevos = {"tipo": "OTROS", "nom": recibe, "tel": telf, "obs": obs_new, "dir": "", "dist": "", "dni": "", "age": "", "sede": ""}
                             texto_direccion_final = "Entrega Directa / Otro"
 
                 # 4. CLAVE AGENCIA
                 clave_agencia = None
                 if es_agencia:
-                    if 'clave_temp' not in st.session_state: st.session_state['clave_temp'] = str(random.randint(1000, 9999))
+                    if 'clave_temp' not in st.session_state: 
+                        st.session_state['clave_temp'] = str(random.randint(1000, 9999))
+                    
                     col_k1, col_k2 = st.columns([1,2])
                     clave_agencia = col_k1.text_input("Clave", value=st.session_state['clave_temp'])
                     col_k2.info("🔐 Clave Entrega")
 
-                # TOTALES Y MONTO A COBRAR
                 total_final = suma_subtotal + costo_envio
                 
                 st.divider()
@@ -709,12 +759,10 @@ with tabs[0]:
                 c_tot1.markdown(f"### 💰 Monto a Cobrar: S/ {total_final:.2f}")
                 nota_venta = c_tot2.text_input("Nota Interna:", placeholder="Opcional")
 
-                if st.button("✅ REGISTRAR VENTA", type="primary", width='stretch'):
+                if st.button("✅ REGISTRAR VENTA", type="primary", use_container_width=True):
                     try:
                         with engine.connect() as conn:
                             trans = conn.begin()
-                            
-                            # A) Guardar Dirección Nueva
                             if not usar_guardada and datos_nuevos:
                                 conn.execute(text("""
                                     INSERT INTO Direcciones (id_cliente, tipo_envio, nombre_receptor, telefono_receptor, 
@@ -722,7 +770,6 @@ with tabs[0]:
                                     VALUES (:id, :tipo, :nom, :tel, :dir, :dist, :dni, :age, :sede, :obs, TRUE)
                                 """), {"id": id_cliente, **datos_nuevos})
 
-                            # B) Registrar Venta
                             nota_full = f"{nota_venta} | Envío: {texto_direccion_final}"
                             res_v = conn.execute(text("""
                                 INSERT INTO Ventas (id_cliente, tipo_envio, costo_envio, total_venta, nota, clave_seguridad)
@@ -730,7 +777,6 @@ with tabs[0]:
                             """), {"idc": id_cliente, "tipo": tipo_envio, "costo": costo_envio, "total": total_final, "nota": nota_full, "clave": clave_agencia})
                             id_venta = res_v.fetchone()[0]
 
-                            # C) Detalles
                             for item in st.session_state.carrito:
                                 conn.execute(text("""
                                     INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario)
@@ -741,7 +787,6 @@ with tabs[0]:
                                     res_s = conn.execute(text("UPDATE Variantes SET stock_interno = stock_interno - :c WHERE sku=:s RETURNING stock_interno"),
                                                      {"c": int(item['cantidad']), "s": item['sku']})
                                     nuevo_s = res_s.scalar()
-                                    
                                     if nuevo_s <= 0: 
                                         conn.execute(text("UPDATE Variantes SET ubicacion = '' WHERE sku=:s"), {"s": item['sku']})
                                     
@@ -752,7 +797,7 @@ with tabs[0]:
                             
                             trans.commit()
                         st.balloons()
-                        st.success(f"¡Venta #{id_venta} registrada! Monto a cobrar: S/ {total_final:.2f}")
+                        st.success(f"¡Venta #{id_venta} registrada!")
                         st.session_state.carrito = []
                         if 'clave_temp' in st.session_state: del st.session_state['clave_temp']
                         time.sleep(2)
@@ -761,31 +806,22 @@ with tabs[0]:
                         st.error(f"Error: {e}")
 
             # ==========================================================
-            # MODO B: SALIDA (Merma) - (Sin cambios, se mantiene igual)
+            # MODO B: SALIDA (Merma)
             # ==========================================================
             else:
                 st.warning("⚠️ Estás registrando una salida de stock (Sin cobro).")
-                # ... (El código de salida se mantiene igual que tu versión original) ...
                 motivo_salida = st.selectbox("Motivo:", ["Merma / Dañado", "Regalo / Marketing", "Uso Personal", "Ajuste Inventario"])
                 detalle_motivo = st.text_input("Detalle (Opcional):", placeholder="Ej: Se rompió una luna...")
                 
                 if st.button("📉 CONFIRMAR SALIDA", type="primary"):
-                     # ... (Copiar tu lógica de salida aquí si no la tienes, o mantener la que tenías) ...
+                     # ... (Tu lógica de salida) ...
                      pass 
-        else:
-            st.info("El carrito está vacío.")
-            
-        if st.button("🗑️ Limpiar Todo"):
-            st.session_state.carrito = []
-            st.rerun()
-
         else:
             st.info("El carrito está vacío.")
             
         if st.button("🗑️ Limpiar Todo", key="btn_limpiar_carrito"):
             st.session_state.carrito = []
             st.rerun()
-
 # ==============================================================================
 # PESTAÑA 2: COMPRAS (CORREGIDO: 2026 + NUMPY + WIDTH STRETCH)
 # ==============================================================================
@@ -2158,11 +2194,64 @@ with tabs[7]:
                                 st.markdown(contenido_msg)
                             
                             st.caption(f"_{row['fecha'].strftime('%H:%M')}_")   
-
-            # Llamamos a la función para que se ejecute
+            # 1. Dibujamos el historial de mensajes
             renderizar_historial(target_id, target_tel)
 
-            # --- INPUT DE RESPUESTA ---
+            # ==================================================================
+            # 📎 ZONA DE ADJUNTOS
+            # ==================================================================
+            with st.expander("📎 Adjuntar Imagen o Documento", expanded=False):
+                archivo = st.file_uploader("Selecciona archivo:", type=["png", "jpg", "jpeg", "pdf"], key=f"up_{target_tel}")
+                caption_archivo = st.text_input("Comentario (Opcional):", placeholder="Ej: Aquí tienes el catálogo...")
+
+                if archivo and st.button("📤 Enviar Archivo", use_container_width=True):
+                    # CORRECCIÓN DE INDENTACIÓN AQUÍ:
+                    with st.spinner("Procesando..."):
+                        # 1. LIMPIEZA Y FORMATO DE NÚMERO (CRUCIAL)
+                        tel_limpio = str(target_tel).replace(" ", "").replace("+", "").replace("-", "").strip()
+                        
+                        # ¡PARCHE AUTOMÁTICO! Si tiene 9 dígitos, agregamos 51
+                        if len(tel_limpio) == 9:
+                            tel_limpio = f"51{tel_limpio}"
+
+                        # 2. Subir a Meta
+                        bytes_data = archivo.getvalue()
+                        mime = archivo.type
+                        media_id, error_meta = subir_archivo_meta(bytes_data, mime)
+
+                        if media_id:
+                            # 3. Enviar Mensaje (Usando el número YA corregido con 51)
+                            ok, resp = enviar_mensaje_media(tel_limpio, media_id, mime, caption_archivo, archivo.name)
+
+                            if ok:
+                                # c) Guardar en Base de Datos
+                                etiqueta = "📷 [Imagen Enviada]" if "image" in mime else "📄 [Documento Enviado]"
+                                contenido_db = f"{etiqueta} {caption_archivo} |ID:{media_id}|"
+
+                                with engine.connect() as conn:
+                                    conn.execute(text("""
+                                        INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido)
+                                        VALUES (:id, :tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
+                                    """), {
+                                        "id": int(target_id) if target_id != -1 else None,
+                                        "tel": tel_limpio,
+                                        "txt": contenido_db
+                                    })
+                                    conn.commit()
+
+                                st.success(f"¡Archivo enviado a {tel_limpio}!")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Falló envío al número: '{tel_limpio}'")
+                                st.caption("Respuesta de Meta:")
+                                st.code(resp, language="json")
+                                st.warning("💡 Tip: Si usas la versión de prueba, asegúrate de que el número (con 51) esté verificado en developers.facebook.com")
+                        else:
+                            st.error(f"❌ Error al subir a Meta: {error_meta}")
+            # ==================================================================
+            # ⌨️ INPUT DE TEXTO NORMAL
+            # ==================================================================
             if prompt := st.chat_input("Escribe tu respuesta..."):
                 enviado_ok, resp = enviar_mensaje_whatsapp(target_tel, prompt)
                 
