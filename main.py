@@ -2053,237 +2053,162 @@ with tabs[6]:
                         except Exception as e:
                             trans.rollback()
                             st.error(f"Error al guardar: {e}")
-
 # ==============================================================================
-# PESTAÑA 8: CHAT CRM (BETA)
+# PESTAÑA CHAT CENTER (CORREGIDA Y ESTABLE)
 # ==============================================================================
 with tabs[7]: 
     st.subheader("💬 Chat Center")
-    
-    # Preparamos las columnas
+
+    # 1. INICIALIZAR MEMORIA (Para que no se olvide a quién seleccionaste)
+    if 'chat_actual_telefono' not in st.session_state:
+        st.session_state['chat_actual_telefono'] = None
+
+    # Estilos CSS para que los botones parezcan tarjetas de chat
+    st.markdown("""
+    <style>
+    div.stButton > button:first-child {
+        text-align: left; 
+        width: 100%;
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 5px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     col_lista, col_chat = st.columns([1, 2])
 
-    # --- 1. IZQUIERDA: LISTA DE CONTACTOS (FRAGMENTO AUTÓNOMO) ---
+    # --- 1. IZQUIERDA: LISTA DE CONTACTOS ---
     with col_lista:
         st.markdown("#### 📩 Bandeja")
         
-        # Esta función se ejecuta sola cada 10 segundos SIN recargar la página entera
-        @st.fragment(run_every=10)
-        def mostrar_bandeja():
-            with engine.connect() as conn:
-                # Consulta para traer contactos y contar no leídos
-                query_chats = text("""
-                    SELECT 
-                        COALESCE(m.id_cliente, -1) as id_cliente_raw,
-                        m.telefono,
-                        COALESCE(c.nombre || ' ' || c.apellido, m.cliente_nombre, m.telefono) as nombre_completo,
-                        MAX(m.fecha) as ultima_fecha,
-                        SUM(CASE WHEN m.leido = FALSE AND m.tipo = 'ENTRANTE' THEN 1 ELSE 0 END) as no_leidos
-                    FROM mensajes m
-                    LEFT JOIN Clientes c ON m.id_cliente = c.id_cliente
-                    GROUP BY COALESCE(m.id_cliente, -1), m.telefono, COALESCE(c.nombre || ' ' || c.apellido, m.cliente_nombre, m.telefono)
-                    ORDER BY ultima_fecha DESC
-                """)
-                df_chats = pd.read_sql(query_chats, conn)
+        # Traemos la lista de conversaciones agrupada por TELÉFONO
+        # (Es lo más seguro para WhatsApp)
+        with engine.connect() as conn:
+            lista_chats = conn.execute(text("""
+                SELECT 
+                    m.telefono,
+                    MAX(m.fecha) as ultima_fecha,
+                    -- Intentamos buscar el nombre si existe en la tabla Clientes
+                    COALESCE(MAX(c.nombre_corto), MAX(c.nombre) || ' ' || MAX(c.apellido), m.telefono) as nombre_mostrar,
+                    SUM(CASE WHEN m.leido = FALSE AND m.tipo = 'ENTRANTE' THEN 1 ELSE 0 END) as no_leidos
+                FROM mensajes m
+                LEFT JOIN Clientes c ON m.telefono = c.telefono
+                GROUP BY m.telefono
+                ORDER BY ultima_fecha DESC
+            """)).fetchall()
 
-            if not df_chats.empty:
-                # Crear ID único
-                df_chats['id_unico'] = df_chats.apply(
-                    lambda x: f"ID-{int(x['id_cliente_raw'])}" if x['id_cliente_raw'] != -1 else f"TEL-{x['telefono']}", 
-                    axis=1
-                )
-                
-                # Formateador visual (Rojo si hay mensajes nuevos)
-                def formatear_opcion(id_u):
-                    row = df_chats[df_chats['id_unico'] == id_u].iloc[0]
-                    notif = f"🔴 ({row['no_leidos']})" if row['no_leidos'] > 0 else ""
-                    icono = "🔔" if row['no_leidos'] > 0 else "👤"
-                    hora = row['ultima_fecha'].strftime('%d/%m %H:%M')
-                    return f"{icono} {row['nombre_completo']} {notif} | {hora}"
+        if not lista_chats:
+            st.info("📭 No hay mensajes.")
 
-                # SELECTOR: Al cambiar, Streamlit actualiza el session_state automáticamente
-                # Usamos 'key' para guardar la selección en la memoria global
-                st.radio(
-                    "Selecciona:",
-                    options=df_chats['id_unico'],
-                    format_func=formatear_opcion,
-                    label_visibility="collapsed",
-                    key="chat_selector_key" 
-                )
-            else:
-                st.info("📭 Vacío")
+        # Generamos los BOTONES de la lista
+        for chat in lista_chats:
+            tel = chat.telefono
+            nombre = chat.nombre_mostrar
+            hora = chat.ultima_fecha.strftime('%d/%m %H:%M')
+            notif = f"🔴 {chat.no_leidos}" if chat.no_leidos > 0 else ""
+            icono = "👤"
+            
+            # Texto del botón
+            label_btn = f"{icono} {nombre}\n⏱ {hora} {notif}"
+            
+            # Color del botón: Primary si está seleccionado, Secondary si no
+            tipo = "primary" if st.session_state['chat_actual_telefono'] == tel else "secondary"
 
-        # Llamamos a la función para que se renderice
-        mostrar_bandeja()
+            # SI SE PRESIONA EL BOTÓN:
+            if st.button(label_btn, key=f"btn_{tel}", type=tipo):
+                st.session_state['chat_actual_telefono'] = tel # Guardamos en memoria
+                st.rerun() # Recargamos para mostrar el chat a la derecha
 
-# --- 2. DERECHA: VENTANA DE CHAT ---
+
+    # --- 2. DERECHA: VENTANA DE CHAT ---
     with col_chat:
-        if "chat_selector_key" in st.session_state and st.session_state.chat_selector_key:
-            
-            id_seleccionado = st.session_state.chat_selector_key
-            
-            # --- Lógica para obtener datos del cliente ---
-            with engine.connect() as conn:
-                es_id_cliente = id_seleccionado.startswith("ID-")
-                valor_id = id_seleccionado.split("-")[1]
+        # Recuperamos el teléfono de la memoria
+        telefono_activo = st.session_state['chat_actual_telefono']
 
-                if es_id_cliente:
-                    target_id = int(valor_id)
-                    meta_chat = conn.execute(text("SELECT telefono, nombre || ' ' || apellido FROM Clientes WHERE id_cliente = :id"), {"id": target_id}).fetchone()
-                    target_tel = meta_chat[0] if meta_chat else "Desconocido"
-                    nombre_show = meta_chat[1] if meta_chat else "Cliente"
-                    
-                    # Marcar como leído
-                    conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE id_cliente = :id AND tipo='ENTRANTE'"), {"id": target_id})
-                    conn.commit()
-                else:
-                    target_id = -1
-                    target_tel = valor_id 
-                    nombre_show = target_tel
-                    conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :tel AND tipo='ENTRANTE'"), {"tel": target_tel})
-                    conn.commit()
-
-            # Cabecera del chat
-            st.markdown(f"### 💬 **{nombre_show}**")
-            st.caption(f"📱 {target_tel}")
+        if telefono_activo:
+            st.markdown(f"### 💬 Chat con: **{telefono_activo}**")
             st.divider()
+            
+            # Contenedor con scroll para mensajes
+            contenedor_mensajes = st.container(height=500)
+            
+            # A. Obtener mensajes y Marcar como leídos
+            with engine.connect() as conn:
+                # 1. Marcar leídos
+                conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :t AND tipo='ENTRANTE'"), {"t": telefono_activo})
+                conn.commit()
+                
+                # 2. Leer historial
+                historial = pd.read_sql(text("""
+                    SELECT tipo, contenido, fecha 
+                    FROM mensajes 
+                    WHERE telefono = :t 
+                    ORDER BY fecha ASC
+                """), conn, params={"t": telefono_activo})
 
-            # --- AQUÍ EMPIEZA LA FUNCIÓN ÚNICA Y CORRECTA ---
-            @st.fragment(run_every=3)
-            def renderizar_historial(t_id, t_tel):
-                contenedor = st.container(height=400)
+            # B. Dibujar mensajes
+            with contenedor_mensajes:
+                if historial.empty:
+                    st.write("Inicia la conversación...")
                 
-                # 1. Obtenemos los mensajes
-                with engine.connect() as conn:
-                    if t_id != -1:
-                        historial = pd.read_sql(text("SELECT tipo, contenido, fecha FROM mensajes WHERE id_cliente = :id ORDER BY fecha ASC"), conn, params={"id": t_id})
-                    else:
-                        historial = pd.read_sql(text("SELECT tipo, contenido, fecha FROM mensajes WHERE telefono = :tel ORDER BY fecha ASC"), conn, params={"tel": t_tel})
-                
-                # 2. Dibujamos los mensajes
-                with contenedor:
-                    if historial.empty:
-                        st.write("Inicia la conversación...")
+                for _, row in historial.iterrows():
+                    es_usuario = (row['tipo'] == 'ENTRANTE')
+                    role = "user" if es_usuario else "assistant"
+                    avatar = "👤" if es_usuario else "🛍️"
                     
-                    for _, row in historial.iterrows():
-                        role = "user" if row['tipo'] == 'ENTRANTE' else "assistant"
-                        avatar = "👤" if row['tipo'] == 'ENTRANTE' else "🛍️"
+                    with st.chat_message(role, avatar=avatar):
+                        contenido = row['contenido']
                         
-                        with st.chat_message(role, avatar=avatar):
-                            contenido_msg = row['contenido']
-                            
-                            # --- DETECTOR MULTIMEDIA UNIVERSAL ---
-                            if "|ID:" in contenido_msg:
-                                try:
-                                    partes = contenido_msg.split("|ID:")
-                                    texto_visible = partes[0].strip()
-                                    media_id_oculto = partes[1].replace("|", "").strip()
-                                    
-                                    # 1. Mostramos la etiqueta (ej: "🎤 [Audio]")
-                                    st.markdown(texto_visible)
-                                    
-                                    # 2. Descargamos el archivo (reusamos tu función de descargar imagen, sirve para todo)
-                                    archivo_bytes = obtener_imagen_whatsapp(media_id_oculto)
-                                    
-                                    if archivo_bytes:
-                                        # --- LÓGICA DE VISUALIZACIÓN ---
-                                        if "[Audio]" in texto_visible:
-                                            st.audio(archivo_bytes, format="audio/ogg")
-                                        elif "[Sticker]" in texto_visible:
-                                            st.image(archivo_bytes, width=100) # Stickers más pequeños
-                                        elif "[Imagen]" in texto_visible:
-                                            st.image(archivo_bytes, width=250)
-                                        elif "[Documento]" in texto_visible:
-                                            # Botón de descarga para documentos
-                                            st.download_button(label="⬇️ Descargar Archivo", data=archivo_bytes, file_name="documento_whatsapp")
-                                    else:
-                                        st.caption("🚫 Archivo no disponible (Caducado o error)")
-                                except Exception as e:
-                                    st.error(f"Error mostrando media: {e}")
-                            else:
-                                st.markdown(contenido_msg)
-                            
-                            st.caption(f"_{row['fecha'].strftime('%H:%M')}_")   
-            # 1. Dibujamos el historial de mensajes
-            renderizar_historial(target_id, target_tel)
-
-            # ==================================================================
-            # 📎 ZONA DE ADJUNTOS
-            # ==================================================================
-            with st.expander("📎 Adjuntar Imagen o Documento", expanded=False):
-                archivo = st.file_uploader("Selecciona archivo:", type=["png", "jpg", "jpeg", "pdf"], key=f"up_{target_tel}")
-                caption_archivo = st.text_input("Comentario (Opcional):", placeholder="Ej: Aquí tienes el catálogo...")
-
-                if archivo and st.button("📤 Enviar Archivo", use_container_width=True):
-                    # CORRECCIÓN DE INDENTACIÓN AQUÍ:
-                    with st.spinner("Procesando..."):
-                        # 1. LIMPIEZA Y FORMATO DE NÚMERO (CRUCIAL)
-                        tel_limpio = str(target_tel).replace(" ", "").replace("+", "").replace("-", "").strip()
-                        
-                        # ¡PARCHE AUTOMÁTICO! Si tiene 9 dígitos, agregamos 51
-                        if len(tel_limpio) == 9:
-                            tel_limpio = f"51{tel_limpio}"
-
-                        # 2. Subir a Meta
-                        bytes_data = archivo.getvalue()
-                        mime = archivo.type
-                        media_id, error_meta = subir_archivo_meta(bytes_data, mime)
-
-                        if media_id:
-                            # 3. Enviar Mensaje (Usando el número YA corregido con 51)
-                            ok, resp = enviar_mensaje_media(tel_limpio, media_id, mime, caption_archivo, archivo.name)
-
-                            if ok:
-                                # c) Guardar en Base de Datos
-                                etiqueta = "📷 [Imagen Enviada]" if "image" in mime else "📄 [Documento Enviado]"
-                                contenido_db = f"{etiqueta} {caption_archivo} |ID:{media_id}|"
-
-                                with engine.connect() as conn:
-                                    conn.execute(text("""
-                                        INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido)
-                                        VALUES (:id, :tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
-                                    """), {
-                                        "id": int(target_id) if target_id != -1 else None,
-                                        "tel": tel_limpio,
-                                        "txt": contenido_db
-                                    })
-                                    conn.commit()
-
-                                st.success(f"¡Archivo enviado a {tel_limpio}!")
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error(f"❌ Falló envío al número: '{tel_limpio}'")
-                                st.caption("Respuesta de Meta:")
-                                st.code(resp, language="json")
-                                st.warning("💡 Tip: Si usas la versión de prueba, asegúrate de que el número (con 51) esté verificado en developers.facebook.com")
+                        # --- Lógica Multimedia (Fotos/Audios) ---
+                        if "|ID:" in contenido:
+                            try:
+                                partes = contenido.split("|ID:")
+                                texto_visible = partes[0].strip()
+                                media_id = partes[1].replace("|", "").strip()
+                                
+                                st.markdown(texto_visible) # Mostrar etiqueta
+                                
+                                # Descargar archivo real (Si tienes la función obtener_imagen_whatsapp)
+                                archivo_bytes = obtener_imagen_whatsapp(media_id)
+                                if archivo_bytes:
+                                    if "[Audio]" in texto_visible:
+                                        st.audio(archivo_bytes)
+                                    elif "[Imagen]" in texto_visible:
+                                        st.image(archivo_bytes, width=250)
+                                    elif "[Documento]" in texto_visible:
+                                        st.download_button("⬇️ Descargar", archivo_bytes, "archivo_whatsapp")
+                            except:
+                                st.error("Error cargando adjunto")
                         else:
-                            st.error(f"❌ Error al subir a Meta: {error_meta}")
-            # ==================================================================
-            # ⌨️ INPUT DE TEXTO NORMAL
-            # ==================================================================
+                            st.markdown(contenido)
+                        
+                        st.caption(f"{row['fecha'].strftime('%H:%M')} - {row['tipo']}")
+
+            # C. CAJA DE TEXTO (INPUT)
             if prompt := st.chat_input("Escribe tu respuesta..."):
-                enviado_ok, resp = enviar_mensaje_whatsapp(target_tel, prompt)
+                # 1. Enviar a Meta
+                enviado_ok, resp = enviar_mensaje_whatsapp(telefono_activo, prompt)
                 
                 if enviado_ok:
-                    # Limpieza del número para guardar (agregando 51)
-                    telefono_para_db = str(target_tel).replace(" ", "").replace("+", "").strip()
-                    if len(telefono_para_db) == 9:
-                        telefono_para_db = f"51{telefono_para_db}"
-                    
+                    # 2. Guardar en DB
+                    # Asegurar formato 51 para guardar
+                    tel_guardar = telefono_activo.replace("+", "").strip()
+                    if len(tel_guardar) == 9: tel_guardar = f"51{tel_guardar}"
+
                     with engine.connect() as conn:
                         conn.execute(text("""
-                            INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido)
-                            VALUES (:id, :tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
-                        """), {
-                            "id": int(target_id) if target_id != -1 else None,
-                            "tel": telefono_para_db,
-                            "txt": prompt
-                        })
+                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido)
+                            VALUES (:tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
+                        """), {"tel": tel_guardar, "txt": prompt})
                         conn.commit()
-                    st.rerun()
+                    st.rerun() # Recargar para ver el mensaje enviado
                 else:
-                    st.error(f"❌ Error WhatsApp: {resp}")
+                    st.error(f"Error enviando: {resp}")
 
         else:
-            st.markdown("<div style='text-align: center; color: gray; margin-top: 50px;'>👈 Selecciona un chat para comenzar</div>", unsafe_allow_html=True)
+            # Pantalla de espera (Nadie seleccionado)
+            st.markdown("<div style='text-align: center; margin-top: 50px; color: gray;'>", unsafe_allow_html=True)
+            st.markdown("### 👈 Selecciona un cliente de la lista")
+            st.markdown("Para ver el historial y responder.")
+            st.markdown("</div>", unsafe_allow_html=True)
