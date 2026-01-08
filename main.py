@@ -1016,19 +1016,18 @@ with tabs[1]:
                                 st.error(f"Error: {e}")
             else:
                 st.warning("⚠️ SKU no encontrado. Ve a la pestaña 'Catálogo' para crearlo primero.")
-
 # ==============================================================================
-# PESTAÑA 3: INVENTARIO (VISTA DETALLADA Y UBICACIONES)
+# PESTAÑA 3: INVENTARIO (VISTA DETALLADA, UBICACIONES E IMPORTACIÓN)
 # ==============================================================================
 with tabs[2]:
-    st.subheader("🔎 Gestión de Inventario Detallado")
+    st.subheader("🔎 Gestión de Inventario e Importación")
 
     # --- 1. BARRA DE HERRAMIENTAS ---
     col_search, col_btn = st.columns([4, 1])
     with col_search:
         filtro_inv = st.text_input("🔍 Buscar:", placeholder="Escribe SKU, Marca, Modelo o Ubicación...")
     with col_btn:
-        st.write("") # Espaciador
+        st.write("") 
         if st.button("🔄 Recargar Tabla"):
             if 'df_inventario' in st.session_state: del st.session_state['df_inventario']
             st.rerun()
@@ -1036,11 +1035,11 @@ with tabs[2]:
     # --- 2. CARGA DE DATOS ---
     if 'df_inventario' not in st.session_state:
         with engine.connect() as conn:
-            # Traemos las columnas RAW de ambas tablas
-            # Usamos COALESCE para que si algún campo está vacío no salga 'None'
+            # ACTUALIZACIÓN: Ahora traemos id_producto, importacion y url_compra
             q_inv = """
                 SELECT 
                     v.sku, 
+                    v.id_producto,
                     p.categoria,
                     p.marca, 
                     p.modelo, 
@@ -1050,7 +1049,9 @@ with tabs[2]:
                     v.medida,
                     v.stock_interno,
                     v.stock_externo,
-                    v.ubicacion
+                    v.ubicacion,
+                    p.importacion,
+                    p.url_compra
                 FROM Variantes v
                 JOIN Productos p ON v.id_producto = p.id_producto
                 ORDER BY p.marca, p.modelo, v.sku ASC
@@ -1060,18 +1061,13 @@ with tabs[2]:
     # Trabajamos con una copia
     df_calc = st.session_state.df_inventario.copy()
 
-    # --- 3. CREACIÓN DE COLUMNAS COMBINADAS (Python) ---
-    # Esto es más seguro hacerlo en Python para manejar formatos y nulos fácilmente
-    
-    # A) Columna NOMBRE: Marca + Modelo + Variante
+    # --- 3. CREACIÓN DE COLUMNAS COMBINADAS ---
     df_calc['nombre_completo'] = (
         df_calc['marca'].fillna('') + " " + 
         df_calc['modelo'].fillna('') + " - " + 
         df_calc['nombre_variante'].fillna('')
     ).str.strip()
 
-    # B) Columna DETALLES: ColorPrin + Diametro + Medida
-    # Función auxiliar para formatear bonito
     def formatear_detalles(row):
         partes = []
         if row['color_principal']: partes.append(str(row['color_principal']))
@@ -1087,71 +1083,114 @@ with tabs[2]:
         df_calc = df_calc[
             df_calc['nombre_completo'].str.lower().str.contains(f, na=False) |
             df_calc['sku'].str.lower().str.contains(f, na=False) |
-            df_calc['ubicacion'].str.lower().str.contains(f, na=False)
+            df_calc['ubicacion'].str.lower().str.contains(f, na=False) |
+            df_calc['importacion'].str.lower().str.contains(f, na=False)
         ]
 
-    # Seleccionamos y ordenamos SOLO las columnas que pediste ver
+    # Seleccionamos columnas finales (INCLUYENDO LAS NUEVAS)
     df_final = df_calc[[
         'sku', 
+        'id_producto', # Necesario para guardar, pero lo ocultaremos visualmente
         'categoria', 
         'nombre_completo', 
         'detalles_info', 
         'stock_interno', 
         'stock_externo', 
-        'ubicacion'
+        'ubicacion',
+        'importacion',  # <--- NUEVO
+        'url_compra'    # <--- NUEVO
     ]]
 
     # --- 5. TABLA EDITABLE ---
-    st.caption("📝 Solo la columna **'Ubicación'** es editable.")
+    st.caption("📝 Editables: **Ubicación**, **Importación** y **URL de Compra**.")
     
     cambios_inv = st.data_editor(
         df_final,
-        key="editor_inventario_v2",
+        key="editor_inventario_v3",
         column_config={
             "sku": st.column_config.TextColumn("SKU", disabled=True, width="small"),
+            "id_producto": None, # Oculto, solo lo usamos para la lógica
             "categoria": st.column_config.TextColumn("Cat.", disabled=True, width="small"),
-            "nombre_completo": st.column_config.TextColumn("Nombre del Producto", disabled=True, width="large"),
-            "detalles_info": st.column_config.TextColumn("Detalles Técnicos", disabled=True, width="medium"),
+            "nombre_completo": st.column_config.TextColumn("Producto", disabled=True, width="large"),
+            "detalles_info": st.column_config.TextColumn("Detalles", disabled=True, width="medium"),
             "stock_interno": st.column_config.NumberColumn("S. Int.", disabled=True, format="%d"),
             "stock_externo": st.column_config.NumberColumn("S. Ext.", disabled=True, format="%d"),
-            "ubicacion": st.column_config.TextColumn("Ubicación 📍", required=False, width="small")
+            
+            # --- CAMPOS EDITABLES ---
+            "ubicacion": st.column_config.TextColumn("Ubicación 📍", width="small"),
+            
+            "importacion": st.column_config.SelectboxColumn(
+                "Importar De ✈️", 
+                width="small",
+                options=["Aliexpress", "Alibaba", "Proveedor Nacional", "Otro"], # Opciones predefinidas
+                required=False
+            ),
+            
+            "url_compra": st.column_config.LinkColumn(
+                "Link Compra 🔗", 
+                width="medium",
+                display_text="Ver Enlace", # Muestra texto corto, pero al editar ves el link completo
+                validate="^https://.*", # Valida que empiece con https (opcional)
+                required=False
+            )
         },
         hide_index=True,
         width='stretch',
-        num_rows="fixed"
+        num_rows="fixed" # No agregar filas, solo editar
     )
 
-    # --- 6. GUARDAR CAMBIOS ---
-    edited_rows = st.session_state["editor_inventario_v2"].get("edited_rows")
+    # --- 6. GUARDAR CAMBIOS (LÓGICA MEJORADA) ---
+    edited_rows = st.session_state["editor_inventario_v3"].get("edited_rows")
 
     if edited_rows:
-        st.info(f"💾 Tienes {len(edited_rows)} cambios de ubicación pendientes...")
+        st.info(f"💾 Tienes cambios pendientes en {len(edited_rows)} filas...")
         
         if st.button("Confirmar Cambios"):
             with engine.connect() as conn:
                 trans = conn.begin()
                 try:
-                    count = 0
+                    count_ubi = 0
+                    count_prod = 0
+                    
                     for idx, updates in edited_rows.items():
-                        # Recuperamos el SKU usando el índice del dataframe visual
-                        sku_target = df_final.iloc[idx]['sku']
-                        nueva_ubi = updates.get('ubicacion')
+                        # Datos originales de la fila para saber qué IDs usar
+                        row_original = df_final.iloc[idx]
+                        sku_target = row_original['sku']
+                        id_prod_target = row_original['id_producto']
                         
-                        if nueva_ubi is not None:
+                        # A) CAMBIO EN UBICACIÓN (Tabla Variantes)
+                        if 'ubicacion' in updates:
+                            nueva_ubi = updates['ubicacion']
                             conn.execute(
                                 text("UPDATE Variantes SET ubicacion = :u WHERE sku = :s"),
                                 {"u": nueva_ubi, "s": sku_target}
                             )
-                            count += 1
+                            count_ubi += 1
+                        
+                        # B) CAMBIO EN IMPORTACIÓN O URL (Tabla Productos)
+                        # Nota: Esto actualizará el producto padre (afecta a todas sus variantes de color)
+                        if 'importacion' in updates or 'url_compra' in updates:
+                            # Preparamos los datos nuevos o mantenemos los viejos si no se tocaron
+                            nuevo_imp = updates.get('importacion', row_original['importacion'])
+                            nueva_url = updates.get('url_compra', row_original['url_compra'])
+                            
+                            conn.execute(
+                                text("UPDATE Productos SET importacion = :imp, url_compra = :url WHERE id_producto = :idp"),
+                                {"imp": nuevo_imp, "url": nueva_url, "idp": id_prod_target}
+                            )
+                            count_prod += 1
                     
                     trans.commit()
-                    st.success(f"✅ ¡Se actualizaron {count} ubicaciones!")
-                    del st.session_state['df_inventario'] # Limpiar caché
-                    time.sleep(1)
+                    st.success(f"✅ Guardado: {count_ubi} Ubicaciones y {count_prod} Datos de Importación actualizados.")
+                    
+                    del st.session_state['df_inventario'] # Limpiar caché para recargar
+                    time.sleep(1.5)
                     st.rerun()
+                    
                 except Exception as e:
                     trans.rollback()
-                    st.error(f"Error: {e}")
+                    st.error(f"Error al guardar: {e}")
+
 # ==============================================================================
 # PESTAÑA 4: GESTIÓN DE CLIENTES (ACTUALIZADA Y EDITABLE)
 # ==============================================================================
