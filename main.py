@@ -822,9 +822,8 @@ with tabs[0]:
         if st.button("🗑️ Limpiar Todo", key="btn_limpiar_carrito"):
             st.session_state.carrito = []
             st.rerun()
-            
-# ==============================================================================
-# PESTAÑA 2: COMPRAS E IMPORTACIONES (ACTUALIZADO: FILTRO ALI + ERROR FIX)
+            # ==============================================================================
+# PESTAÑA 2: COMPRAS E IMPORTACIONES (FILTRO AVANZADO ALIEXPRESS)
 # ==============================================================================
 with tabs[1]:
     st.subheader("🚢 Gestión de Importaciones y Reposición")
@@ -844,12 +843,18 @@ with tabs[1]:
             c_filtros, c_acciones = st.columns([3, 1])
             with c_filtros:
                 st.markdown("**Configuración del Reporte**")
-                col_f1, col_f2, col_f3 = st.columns(3) # <--- AHORA SON 3 COLUMNAS
+                col_f1, col_f2, col_f3 = st.columns(3)
                 
                 umbral_stock = col_f1.slider("Alerta Stock bajo (<):", 0, 50, 5)
                 solo_con_externo = col_f2.checkbox("Stock en Proveedor", value=True)
-                # NUEVO FILTRO
-                solo_con_ali = col_f3.checkbox("Solo con Link AliExpress", value=False)
+                
+                # MEJORA: Usamos Radio para poder elegir entre TODOS, CON o SIN link
+                filtro_ali = col_f3.radio(
+                    "Filtro AliExpress:", 
+                    ["Todos", "Con Link", "Sin Link"], 
+                    index=0, # Por defecto "Todos"
+                    horizontal=True
+                )
             
             with c_acciones:
                 st.write("")
@@ -885,7 +890,7 @@ with tabs[1]:
                         v.stock_interno,
                         v.stock_externo,
                         COALESCE(v.stock_transito, 0) as stock_transito,
-                        p.importacion,  -- TRAEMOS EL CAMPO IMPORTACION
+                        p.importacion,
                         ({hist_y3} + COALESCE(live.sql_y3, 0)) as venta_year_3,
                         ({hist_y2} + COALESCE(live.sql_y2, 0)) as venta_year_2,
                         ({hist_y1} + COALESCE(live.sql_y1, 0)) as venta_year_1
@@ -915,10 +920,12 @@ with tabs[1]:
             if solo_con_externo:
                 df_reco = df_reco[df_reco['stock_externo'] > 0]
             
-            # Filtro 2: Solo AliExpress (NUEVO)
-            if solo_con_ali:
-                # Filtramos donde 'importacion' no sea nulo ni vacío
+            # Filtro 2: Lógica AliExpress (MEJORADA)
+            if filtro_ali == "Con Link":
                 df_reco = df_reco[df_reco['importacion'].notna() & (df_reco['importacion'] != '')]
+            elif filtro_ali == "Sin Link":
+                df_reco = df_reco[df_reco['importacion'].isna() | (df_reco['importacion'] == '')]
+            # Si es "Todos", no hacemos nada, pasan todos.
 
             patron_medida = r'-\d{4}$'
             es_medida = df_reco['sku'].str.contains(patron_medida, regex=True, na=False)
@@ -932,6 +939,8 @@ with tabs[1]:
         col_res_txt, col_res_btn = st.columns([3, 1])
         with col_res_txt:
             st.markdown(f"### 📋 Sugerencias de Compra ({len(df_reco)} items)")
+            if filtro_ali == "Sin Link":
+                st.caption("Mostrando productos que **NO** tienen enlace de importación configurado.")
 
         with col_res_btn:
             if not df_reco.empty:
@@ -946,7 +955,7 @@ with tabs[1]:
             column_config={
                 "sku": "SKU",
                 "nombre": st.column_config.TextColumn("Producto", width="large"),
-                "importacion": st.column_config.LinkColumn("Link Ali"), # Ahora se ve el link
+                "importacion": st.column_config.LinkColumn("Link Ali"),
                 "stock_interno": st.column_config.NumberColumn("En Mano", format="%d"),
                 "stock_transito": st.column_config.NumberColumn("En Camino", format="%d"),
                 "sugerencia_compra": st.column_config.NumberColumn("⚠️ Sugerido", format="%d"),
@@ -1115,7 +1124,6 @@ with tabs[1]:
 
         else:
             st.info("🎉 Todo al día. No hay mercadería pendiente de llegada.")
-
 # ==============================================================================
 # PESTAÑA 3: INVENTARIO (VISTA DETALLADA, UBICACIONES E IMPORTACIÓN)
 # ==============================================================================
@@ -1135,7 +1143,7 @@ with tabs[2]:
     # --- 2. CARGA DE DATOS ---
     if 'df_inventario' not in st.session_state:
         with engine.connect() as conn:
-            # ACTUALIZACIÓN: Ahora traemos id_producto, importacion y url_compra
+            # ACTUALIZACIÓN: Agregamos v.stock_transito
             q_inv = """
                 SELECT 
                     v.sku, 
@@ -1149,6 +1157,7 @@ with tabs[2]:
                     v.medida,
                     v.stock_interno,
                     v.stock_externo,
+                    v.stock_transito,  /* ### <--- NUEVO: Traemos el stock en tránsito */
                     v.ubicacion,
                     p.importacion,
                     p.url_compra
@@ -1187,59 +1196,72 @@ with tabs[2]:
             df_calc['importacion'].str.lower().str.contains(f, na=False)
         ]
 
-    # Seleccionamos columnas finales (INCLUYENDO LAS NUEVAS)
+    # Seleccionamos columnas finales (INCLUYENDO STOCK TRANSITO)
     df_final = df_calc[[
         'sku', 
-        'id_producto', # Necesario para guardar, pero lo ocultaremos visualmente
+        'id_producto', 
         'categoria', 
         'nombre_completo', 
         'detalles_info', 
         'stock_interno', 
-        'stock_externo', 
+        'stock_externo',
+        'stock_transito', # ### <--- NUEVO: Agregado al dataframe final
         'ubicacion',
-        'importacion',  # <--- NUEVO
-        'url_compra'    # <--- NUEVO
+        'importacion',
+        'url_compra'
     ]]
 
     # --- 5. TABLA EDITABLE ---
-    st.caption("📝 Editables: **Ubicación**, **Importación** y **URL de Compra**.")
+    st.caption("📝 Editables: **En Tránsito**, **Ubicación**, **Importación** y **URL**.")
     
     cambios_inv = st.data_editor(
         df_final,
         key="editor_inventario_v3",
         column_config={
             "sku": st.column_config.TextColumn("SKU", disabled=True, width="small"),
-            "id_producto": None, # Oculto, solo lo usamos para la lógica
+            "id_producto": None, 
             "categoria": st.column_config.TextColumn("Cat.", disabled=True, width="small"),
             "nombre_completo": st.column_config.TextColumn("Producto", disabled=True, width="large"),
             "detalles_info": st.column_config.TextColumn("Detalles", disabled=True, width="medium"),
+            
+            # Stocks
             "stock_interno": st.column_config.NumberColumn("S. Int.", disabled=True, format="%d"),
             "stock_externo": st.column_config.NumberColumn("S. Ext.", disabled=True, format="%d"),
             
-            # --- CAMPOS EDITABLES ---
+            # ### <--- NUEVO: Configuración de la columna Stock Transito
+            "stock_transito": st.column_config.NumberColumn(
+                "En Camino 🚚", 
+                help="Stock que ya se pidió al proveedor",
+                min_value=0,
+                step=1,
+                format="%d",
+                width="small"
+            ),
+            
+            # Otros Editables
             "ubicacion": st.column_config.TextColumn("Ubicación 📍", width="small"),
             
             "importacion": st.column_config.SelectboxColumn(
                 "Importar De ✈️", 
                 width="small",
-                options=["Aliexpress", "Alibaba", "Proveedor Nacional", "Otro"], # Opciones predefinidas
+                options=["Aliexpress", "Alibaba", "Proveedor Nacional", "Otro"], 
                 required=False
             ),
             
             "url_compra": st.column_config.LinkColumn(
                 "Link Compra 🔗", 
                 width="medium",
-                display_text="Ver Enlace", # Muestra texto corto, pero al editar ves el link completo
-                validate="^https://.*", # Valida que empiece con https (opcional)
+                display_text="Ver Enlace", 
+                validate="^https://.*", 
                 required=False
             )
         },
         hide_index=True,
         width='stretch',
-        num_rows="fixed" # No agregar filas, solo editar
+        num_rows="fixed" 
     )
 
-# --- 6. GUARDAR CAMBIOS (CORREGIDO: CONVERSIÓN DE TIPOS) ---
+    # --- 6. GUARDAR CAMBIOS ---
     edited_rows = st.session_state["editor_inventario_v3"].get("edited_rows")
 
     if edited_rows:
@@ -1251,24 +1273,33 @@ with tabs[2]:
                 try:
                     count_ubi = 0
                     count_prod = 0
+                    count_transito = 0 # ### <--- NUEVO CONTADOR
                     
                     for idx, updates in edited_rows.items():
-                        # Datos originales de la fila
                         row_original = df_final.iloc[idx]
                         sku_target = row_original['sku']
-                        
-                        # --- LA CORRECCIÓN ESTÁ AQUÍ 👇 ---
-                        # Convertimos numpy.int64 a int normal de Python
                         id_prod_target = int(row_original['id_producto']) 
                         
-                        # A) CAMBIO EN UBICACIÓN (Tabla Variantes)
+                        # A) CAMBIO EN UBICACIÓN O STOCK TRANSITO (Tabla Variantes)
+                        # He unido la lógica para optimizar, ya que ambos van a la tabla Variantes
+                        
+                        sql_variantes = ""
+                        params_variantes = {"s": sku_target}
+                        
                         if 'ubicacion' in updates:
-                            nueva_ubi = updates['ubicacion']
                             conn.execute(
                                 text("UPDATE Variantes SET ubicacion = :u WHERE sku = :s"),
-                                {"u": nueva_ubi, "s": sku_target}
+                                {"u": updates['ubicacion'], "s": sku_target}
                             )
                             count_ubi += 1
+
+                        # ### <--- NUEVO: Lógica de guardado para Stock Transito
+                        if 'stock_transito' in updates:
+                            conn.execute(
+                                text("UPDATE Variantes SET stock_transito = :st WHERE sku = :s"),
+                                {"st": updates['stock_transito'], "s": sku_target}
+                            )
+                            count_transito += 1
                         
                         # B) CAMBIO EN IMPORTACIÓN O URL (Tabla Productos)
                         if 'importacion' in updates or 'url_compra' in updates:
@@ -1280,15 +1311,16 @@ with tabs[2]:
                                 {
                                     "imp": nuevo_imp, 
                                     "url": nueva_url, 
-                                    "idp": id_prod_target # Ahora sí es un int normal
+                                    "idp": id_prod_target 
                                 }
                             )
                             count_prod += 1
                     
                     trans.commit()
-                    st.success(f"✅ Guardado: {count_ubi} Ubicaciones y {count_prod} Datos de Importación actualizados.")
+                    # ### <--- NUEVO MENSAJE DE ÉXITO
+                    st.success(f"✅ Guardado: {count_ubi} Ubicaciones, {count_transito} Stocks en tránsito y {count_prod} Datos de Importación.")
                     
-                    del st.session_state['df_inventario'] # Limpiar caché
+                    del st.session_state['df_inventario'] 
                     time.sleep(1.5)
                     st.rerun()
                     
