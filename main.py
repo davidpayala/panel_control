@@ -1139,7 +1139,7 @@ with tabs[2]:
         num_rows="fixed" # No agregar filas, solo editar
     )
 
-    # --- 6. GUARDAR CAMBIOS (LÓGICA MEJORADA) ---
+# --- 6. GUARDAR CAMBIOS (CORREGIDO: CONVERSIÓN DE TIPOS) ---
     edited_rows = st.session_state["editor_inventario_v3"].get("edited_rows")
 
     if edited_rows:
@@ -1153,10 +1153,13 @@ with tabs[2]:
                     count_prod = 0
                     
                     for idx, updates in edited_rows.items():
-                        # Datos originales de la fila para saber qué IDs usar
+                        # Datos originales de la fila
                         row_original = df_final.iloc[idx]
                         sku_target = row_original['sku']
-                        id_prod_target = row_original['id_producto']
+                        
+                        # --- LA CORRECCIÓN ESTÁ AQUÍ 👇 ---
+                        # Convertimos numpy.int64 a int normal de Python
+                        id_prod_target = int(row_original['id_producto']) 
                         
                         # A) CAMBIO EN UBICACIÓN (Tabla Variantes)
                         if 'ubicacion' in updates:
@@ -1168,29 +1171,30 @@ with tabs[2]:
                             count_ubi += 1
                         
                         # B) CAMBIO EN IMPORTACIÓN O URL (Tabla Productos)
-                        # Nota: Esto actualizará el producto padre (afecta a todas sus variantes de color)
                         if 'importacion' in updates or 'url_compra' in updates:
-                            # Preparamos los datos nuevos o mantenemos los viejos si no se tocaron
                             nuevo_imp = updates.get('importacion', row_original['importacion'])
                             nueva_url = updates.get('url_compra', row_original['url_compra'])
                             
                             conn.execute(
                                 text("UPDATE Productos SET importacion = :imp, url_compra = :url WHERE id_producto = :idp"),
-                                {"imp": nuevo_imp, "url": nueva_url, "idp": id_prod_target}
+                                {
+                                    "imp": nuevo_imp, 
+                                    "url": nueva_url, 
+                                    "idp": id_prod_target # Ahora sí es un int normal
+                                }
                             )
                             count_prod += 1
                     
                     trans.commit()
                     st.success(f"✅ Guardado: {count_ubi} Ubicaciones y {count_prod} Datos de Importación actualizados.")
                     
-                    del st.session_state['df_inventario'] # Limpiar caché para recargar
+                    del st.session_state['df_inventario'] # Limpiar caché
                     time.sleep(1.5)
                     st.rerun()
                     
                 except Exception as e:
                     trans.rollback()
                     st.error(f"Error al guardar: {e}")
-
 # ==============================================================================
 # PESTAÑA 4: GESTIÓN DE CLIENTES (ACTUALIZADA Y EDITABLE)
 # ==============================================================================
