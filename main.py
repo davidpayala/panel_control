@@ -1002,15 +1002,14 @@ with tabs[1]:
                 st.caption("💡 **Solución:** Si es un producto nuevo que nunca has vendido, primero ve a la pestaña **'Catálogo'** y créalo. Luego regresa aquí para comprarlo.")
 
 # -------------------------------------------------------------------------
-    # C) RECEPCIONAR MERCADERÍA (MODO MASIVO / LISTA)
+    # C) RECEPCIONAR MERCADERÍA (CORREGIDO: Columna 'fecha')
     # -------------------------------------------------------------------------
     with tab_recepcionar:
         st.write("📦 **Lista de productos en camino** (Selecciona los que llegaron)")
 
         # 1. CONSULTA DE PRODUCTOS EN TRÁNSITO
-        #    Traemos el SKU, Nombre, Stock en camino y buscamos la ÚLTIMA nota de importación
-        #    para que puedas saber de qué pedido es.
         with engine.connect() as conn:
+            # CORRECCIÓN: Ahora usamos 'ORDER BY m.fecha' tal como indicaste
             query_transito = text("""
                 SELECT 
                     v.sku,
@@ -1018,11 +1017,11 @@ with tabs[1]:
                     v.stock_transito as pendiente,
                     v.stock_interno as stock_actual,
                     v.ubicacion,
-                    -- Subconsulta para traer la nota del último pedido de importación de este SKU
+                    -- Subconsulta para traer la nota del último pedido (ordenado por 'fecha')
                     (SELECT nota 
                      FROM Movimientos m 
                      WHERE m.sku = v.sku AND m.tipo_movimiento = 'PEDIDO_IMPORT' 
-                     ORDER BY m.fecha_movimiento DESC LIMIT 1) as ultima_nota
+                     ORDER BY m.fecha DESC LIMIT 1) as ultima_nota
                 FROM Variantes v
                 JOIN Productos p ON v.id_producto = p.id_producto
                 WHERE v.stock_transito > 0
@@ -1031,41 +1030,39 @@ with tabs[1]:
             df_transito = pd.read_sql(query_transito, conn)
 
         if not df_transito.empty:
-            # 2. PREPARAR DATOS PARA EDICIÓN
-            #    Agregamos columna "Llegó?" (check) y "Cant. Recibida" (editable)
+            # 2. PREPARAR DATOS
             df_transito["✅ Llegó?"] = False
-            df_transito["Cant. Recibida"] = df_transito["pendiente"] # Por defecto asumimos que llega todo
+            df_transito["Cant. Recibida"] = df_transito["pendiente"]
             
-            # Reordenamos columnas para que sea fácil de leer
+            # Ordenamos columnas
             df_editor = df_transito[[
                 "✅ Llegó?", "sku", "ultima_nota", "nombre", "Cant. Recibida", "pendiente", "stock_actual", "ubicacion"
             ]]
 
             # 3. MOSTRAR TABLA EDITABLE
-            #    Aquí puedes marcar los checks y cambiar cantidades si llegaron incompletos
             cambios = st.data_editor(
                 df_editor,
                 column_config={
-                    "✅ Llegó?": st.column_config.CheckboxColumn(help="Marca si ya tienes este producto en mano"),
+                    "✅ Llegó?": st.column_config.CheckboxColumn(help="Marca si ya tienes este producto"),
                     "sku": st.column_config.TextColumn("SKU", disabled=True),
-                    "ultima_nota": st.column_config.TextColumn("Ref. Nota Pedido", disabled=True, width="medium"),
+                    "ultima_nota": st.column_config.TextColumn("Nota Pedido", disabled=True),
                     "nombre": st.column_config.TextColumn("Producto", disabled=True, width="large"),
-                    "Cant. Recibida": st.column_config.NumberColumn("Ingresar (+)", min_value=1, help="Edita si llegó menos de lo esperado"),
+                    "Cant. Recibida": st.column_config.NumberColumn("Ingresar (+)", min_value=1),
                     "pendiente": st.column_config.NumberColumn("Esperado", disabled=True),
                     "stock_actual": st.column_config.NumberColumn("Stock Hoy", disabled=True),
-                    "ubicacion": st.column_config.TextColumn("Ubicación", disabled=False) # Editable por si quieres cambiarla al recibir
+                    "ubicacion": st.column_config.TextColumn("Ubicación", disabled=False)
                 },
                 hide_index=True,
                 use_container_width=True,
-                key="editor_recepcion"
+                key="editor_recepcion_final"
             )
 
             # 4. BOTÓN DE PROCESAMIENTO MASIVO
             filas_seleccionadas = cambios[cambios["✅ Llegó?"] == True]
             
             if not filas_seleccionadas.empty:
-                st.write("") # Espacio
-                if st.button(f"📥 Procesar Ingreso de {len(filas_seleccionadas)} Productos", type="primary", width='stretch'):
+                st.write("") 
+                if st.button(f"📥 Procesar Ingreso ({len(filas_seleccionadas)} productos)", type="primary", width='stretch'):
                     
                     with engine.connect() as conn:
                         trans = conn.begin()
@@ -1081,17 +1078,16 @@ with tabs[1]:
 
                                 # Cálculos
                                 nuevo_stock_mano = stock_anterior + cant_real
-                                # Restamos lo que llegó. Si llegó todo, queda en 0. Si llegó parcial, queda el resto.
                                 nuevo_transito = max(0, cant_pendiente - cant_real) 
 
-                                # UPDATE en Base de Datos
+                                # UPDATE Variantes
                                 conn.execute(text("""
                                     UPDATE Variantes 
                                     SET stock_interno = :nm, stock_transito = :nt, ubicacion = :u 
                                     WHERE sku = :s
                                 """), {"nm": nuevo_stock_mano, "nt": nuevo_transito, "u": ubi_nueva, "s": sku_proc})
 
-                                # REGISTRO en Movimientos
+                                # INSERT Movimientos (sin especificar 'fecha' para que use el default actual)
                                 conn.execute(text("""
                                     INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota)
                                     VALUES (:s, 'RECEPCION_IMPORT', :c, :ant, :nue, :nota)
@@ -1100,27 +1096,26 @@ with tabs[1]:
                                     "c": cant_real, 
                                     "ant": stock_anterior, 
                                     "nue": nuevo_stock_mano, 
-                                    "nota": f"Recepción Masiva - Ref: {nota_ref}"
+                                    "nota": f"Recepción - Ref: {nota_ref}"
                                 })
                                 contador += 1
                             
                             trans.commit()
                             st.balloons()
-                            st.success(f"✅ ¡Éxito! Se han actualizado {contador} productos en el inventario.")
-                            time.sleep(2)
+                            st.success(f"✅ ¡Excelente! Se ingresaron {contador} productos al stock.")
+                            time.sleep(1.5)
                             st.rerun()
                             
                         except Exception as e:
                             trans.rollback()
-                            st.error(f"❌ Error al procesar: {e}")
+                            st.error(f"❌ Error: {e}")
 
             elif not df_transito.empty:
-                st.info("👆 Marca la casilla '✅ Llegó?' en los productos que quieras ingresar al stock.")
+                st.info("👆 Marca la casilla '✅ Llegó?' en los productos que recibiste.")
 
         else:
-            st.info("🎉 No tienes mercadería pendiente de llegada (Stock en Tránsito = 0).")
-            st.caption("Ve a la pestaña 'Registrar Compra' cuando hagas pedidos en AliExpress.")
-            
+            st.info("🎉 Todo al día. No hay mercadería pendiente de llegada.")
+
 # ==============================================================================
 # PESTAÑA 3: INVENTARIO (VISTA DETALLADA, UBICACIONES E IMPORTACIÓN)
 # ==============================================================================
