@@ -1001,59 +1001,126 @@ with tabs[1]:
                 st.warning(f"⚠️ El SKU '{sku_pedido}' no existe en tu base de datos.")
                 st.caption("💡 **Solución:** Si es un producto nuevo que nunca has vendido, primero ve a la pestaña **'Catálogo'** y créalo. Luego regresa aquí para comprarlo.")
 
-    # -------------------------------------------------------------------------
-    # C) RECEPCIONAR MERCADERÍA
+# -------------------------------------------------------------------------
+    # C) RECEPCIONAR MERCADERÍA (MODO MASIVO / LISTA)
     # -------------------------------------------------------------------------
     with tab_recepcionar:
-        st.success("📦 Usa esta pestaña cuando **RECIBES** la caja.")
-        sku_recibir_raw = st.text_input("SKU Recibido:", key="sku_recibir")
-        sku_recibir = sku_recibir_raw.strip() if sku_recibir_raw else ""
-        
-        if sku_recibir:
-            with engine.connect() as conn:
-                res = pd.read_sql(text("SELECT sku, stock_interno, stock_transito, ubicacion FROM Variantes WHERE sku = :s"), conn, params={"s": sku_recibir})
+        st.write("📦 **Lista de productos en camino** (Selecciona los que llegaron)")
+
+        # 1. CONSULTA DE PRODUCTOS EN TRÁNSITO
+        #    Traemos el SKU, Nombre, Stock en camino y buscamos la ÚLTIMA nota de importación
+        #    para que puedas saber de qué pedido es.
+        with engine.connect() as conn:
+            query_transito = text("""
+                SELECT 
+                    v.sku,
+                    p.modelo || ' - ' || COALESCE(p.nombre, '') as nombre,
+                    v.stock_transito as pendiente,
+                    v.stock_interno as stock_actual,
+                    v.ubicacion,
+                    -- Subconsulta para traer la nota del último pedido de importación de este SKU
+                    (SELECT nota 
+                     FROM Movimientos m 
+                     WHERE m.sku = v.sku AND m.tipo_movimiento = 'PEDIDO_IMPORT' 
+                     ORDER BY m.fecha_movimiento DESC LIMIT 1) as ultima_nota
+                FROM Variantes v
+                JOIN Productos p ON v.id_producto = p.id_producto
+                WHERE v.stock_transito > 0
+                ORDER BY ultima_nota DESC, p.modelo ASC
+            """)
+            df_transito = pd.read_sql(query_transito, conn)
+
+        if not df_transito.empty:
+            # 2. PREPARAR DATOS PARA EDICIÓN
+            #    Agregamos columna "Llegó?" (check) y "Cant. Recibida" (editable)
+            df_transito["✅ Llegó?"] = False
+            df_transito["Cant. Recibida"] = df_transito["pendiente"] # Por defecto asumimos que llega todo
             
-            if not res.empty:
-                stock_mano = int(res.iloc[0]['stock_interno'])
-                stock_viaje = int(res.iloc[0]['stock_transito'] or 0)
-                ubi_actual = str(res.iloc[0]['ubicacion'] or "")
-                
-                c_info1, c_info2 = st.columns(2)
-                c_info1.metric("En Mano (Stock)", stock_mano)
-                c_info2.metric("En Camino (Tránsito)", stock_viaje)
-                
-                with st.form("form_recepcion"):
-                    c1, c2 = st.columns(2)
-                    cant_recibida = c1.number_input("Cantidad que llegó:", min_value=1, max_value=None, value=stock_viaje if stock_viaje > 0 else 1)
-                    nueva_ubi = c2.text_input("Ubicación:", value=ubi_actual)
-                    nota_recep = st.text_input("Nota de Ingreso:")
+            # Reordenamos columnas para que sea fácil de leer
+            df_editor = df_transito[[
+                "✅ Llegó?", "sku", "ultima_nota", "nombre", "Cant. Recibida", "pendiente", "stock_actual", "ubicacion"
+            ]]
+
+            # 3. MOSTRAR TABLA EDITABLE
+            #    Aquí puedes marcar los checks y cambiar cantidades si llegaron incompletos
+            cambios = st.data_editor(
+                df_editor,
+                column_config={
+                    "✅ Llegó?": st.column_config.CheckboxColumn(help="Marca si ya tienes este producto en mano"),
+                    "sku": st.column_config.TextColumn("SKU", disabled=True),
+                    "ultima_nota": st.column_config.TextColumn("Ref. Nota Pedido", disabled=True, width="medium"),
+                    "nombre": st.column_config.TextColumn("Producto", disabled=True, width="large"),
+                    "Cant. Recibida": st.column_config.NumberColumn("Ingresar (+)", min_value=1, help="Edita si llegó menos de lo esperado"),
+                    "pendiente": st.column_config.NumberColumn("Esperado", disabled=True),
+                    "stock_actual": st.column_config.NumberColumn("Stock Hoy", disabled=True),
+                    "ubicacion": st.column_config.TextColumn("Ubicación", disabled=False) # Editable por si quieres cambiarla al recibir
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="editor_recepcion"
+            )
+
+            # 4. BOTÓN DE PROCESAMIENTO MASIVO
+            filas_seleccionadas = cambios[cambios["✅ Llegó?"] == True]
+            
+            if not filas_seleccionadas.empty:
+                st.write("") # Espacio
+                if st.button(f"📥 Procesar Ingreso de {len(filas_seleccionadas)} Productos", type="primary", width='stretch'):
                     
-                    if st.form_submit_button("📥 Confirmar Ingreso", width='stretch'):
-                        with engine.connect() as conn:
-                            trans = conn.begin()
-                            try:
-                                nuevo_mano = stock_mano + cant_recibida
-                                nuevo_viaje = max(0, stock_viaje - cant_recibida)
-                                
-                                conn.execute(text("UPDATE Variantes SET stock_interno = :nm, stock_transito = :nv, ubicacion = :u WHERE sku=:s"), 
-                                            {"nm": nuevo_mano, "nv": nuevo_viaje, "u": nueva_ubi, "s": sku_recibir})
-                                
+                    with engine.connect() as conn:
+                        trans = conn.begin()
+                        try:
+                            contador = 0
+                            for index, row in filas_seleccionadas.iterrows():
+                                sku_proc = row['sku']
+                                cant_real = int(row['Cant. Recibida'])
+                                cant_pendiente = int(row['pendiente'])
+                                stock_anterior = int(row['stock_actual'])
+                                ubi_nueva = row['ubicacion']
+                                nota_ref = row['ultima_nota']
+
+                                # Cálculos
+                                nuevo_stock_mano = stock_anterior + cant_real
+                                # Restamos lo que llegó. Si llegó todo, queda en 0. Si llegó parcial, queda el resto.
+                                nuevo_transito = max(0, cant_pendiente - cant_real) 
+
+                                # UPDATE en Base de Datos
+                                conn.execute(text("""
+                                    UPDATE Variantes 
+                                    SET stock_interno = :nm, stock_transito = :nt, ubicacion = :u 
+                                    WHERE sku = :s
+                                """), {"nm": nuevo_stock_mano, "nt": nuevo_transito, "u": ubi_nueva, "s": sku_proc})
+
+                                # REGISTRO en Movimientos
                                 conn.execute(text("""
                                     INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota)
                                     VALUES (:s, 'RECEPCION_IMPORT', :c, :ant, :nue, :nota)
-                                """), {"s": sku_recibir, "c": cant_recibida, "ant": stock_mano, "nue": nuevo_mano, "nota": nota_recep})
-                                
-                                trans.commit()
-                                st.balloons()
-                                st.success("✅ ¡Stock actualizado!")
-                                time.sleep(1.5)
-                                st.rerun()
-                            except Exception as e:
-                                trans.rollback()
-                                st.error(f"Error: {e}")
-            else:
-                st.warning("SKU no encontrado.")
+                                """), {
+                                    "s": sku_proc, 
+                                    "c": cant_real, 
+                                    "ant": stock_anterior, 
+                                    "nue": nuevo_stock_mano, 
+                                    "nota": f"Recepción Masiva - Ref: {nota_ref}"
+                                })
+                                contador += 1
+                            
+                            trans.commit()
+                            st.balloons()
+                            st.success(f"✅ ¡Éxito! Se han actualizado {contador} productos en el inventario.")
+                            time.sleep(2)
+                            st.rerun()
+                            
+                        except Exception as e:
+                            trans.rollback()
+                            st.error(f"❌ Error al procesar: {e}")
 
+            elif not df_transito.empty:
+                st.info("👆 Marca la casilla '✅ Llegó?' en los productos que quieras ingresar al stock.")
+
+        else:
+            st.info("🎉 No tienes mercadería pendiente de llegada (Stock en Tránsito = 0).")
+            st.caption("Ve a la pestaña 'Registrar Compra' cuando hagas pedidos en AliExpress.")
+            
 # ==============================================================================
 # PESTAÑA 3: INVENTARIO (VISTA DETALLADA, UBICACIONES E IMPORTACIÓN)
 # ==============================================================================
