@@ -1537,7 +1537,7 @@ with tabs[4]:
         """)
         df_seg = pd.read_sql(query_seg, conn)
 
-    # --- 3. FUNCIÓN DE GUARDADO (ACTUALIZADA: FECHA SEGUIMIENTO) ---
+    # --- 3. FUNCIÓN DE GUARDADO ---
     def guardar_edicion_rapida(df_editado, tipo_tabla):
         try:
             with engine.connect() as conn:
@@ -1608,21 +1608,19 @@ with tabs[4]:
         # >>>>>>>>>>>>>>>>>>>>>>>>> PESTAÑA MOTO <<<<<<<<<<<<<<<<<<<<<<<<<
         with tab_moto:
             if not df_moto.empty:
-                # Columnas calculadas
                 df_moto["datos_entrega"] = df_moto.apply(formatear_entrega_moto, axis=1)
                 df_moto["resumen_venta"] = df_moto.apply(formatear_venta_resumen, axis=1)
                 
                 df_view = df_moto.copy()
                 df_view.insert(0, "Seleccionar", False)
 
-                # Agregamos 'fecha_seguimiento' a las columnas visibles
                 cols_show = ["Seleccionar", "id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", 
                              "resumen_venta", "datos_entrega", "pendiente_pago"]
                 
                 cfg = {
                     "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
                     "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS, width="medium"),
-                    "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"), # NUEVA COLUMNA EDITABLE
+                    "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"),
                     "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
                     "telefono": st.column_config.TextColumn("📞 Telf. Cliente", disabled=True),
                     "resumen_venta": st.column_config.TextColumn("🧾 Resumen Venta", width="medium", disabled=True),
@@ -1640,10 +1638,9 @@ with tabs[4]:
                 c_btn1, c_btn2 = st.columns([1, 1])
                 
                 if c_btn1.button("💾 Guardar Cambios", key="btn_save_moto"): 
-                    # Recuperar IDs originales y columnas editadas
                     df_save = df_moto.loc[event_moto.index].copy()
                     df_save['estado'] = event_moto['estado']
-                    df_save['fecha_seguimiento'] = event_moto['fecha_seguimiento'] # Capturamos fecha
+                    df_save['fecha_seguimiento'] = event_moto['fecha_seguimiento']
                     df_save['pendiente_pago'] = event_moto['pendiente_pago']
                     guardar_edicion_rapida(df_save, "MOTO")
 
@@ -1714,14 +1711,13 @@ with tabs[4]:
                 df_view_a = df_agencia.copy()
                 df_view_a.insert(0, "Seleccionar", False)
                 
-                # Agregamos 'fecha_seguimiento' aquí también
                 cols_show_a = ["Seleccionar", "id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", 
                                "resumen_venta", "datos_entrega", "pendiente_pago"]
                 
                 cfg_a = {
                     "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
                     "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS, width="medium"),
-                    "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"), # EDITABLE
+                    "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"),
                     "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
                     "telefono": st.column_config.TextColumn("📞 Telf. Cliente", disabled=True),
                     "resumen_venta": st.column_config.TextColumn("🧾 Resumen", width="medium", disabled=True),
@@ -1738,7 +1734,7 @@ with tabs[4]:
                 if st.button("💾 Guardar Cambios", key="btn_save_age"): 
                     df_save_a = df_agencia.loc[event_agencia.index].copy()
                     df_save_a['estado'] = event_agencia['estado']
-                    df_save_a['fecha_seguimiento'] = event_agencia['fecha_seguimiento'] # Capturar fecha
+                    df_save_a['fecha_seguimiento'] = event_agencia['fecha_seguimiento'] 
                     df_save_a['pendiente_pago'] = event_agencia['pendiente_pago']
                     guardar_edicion_rapida(df_save_a, "AGENCIA")
 
@@ -1766,13 +1762,10 @@ with tabs[4]:
         st.markdown("### 🚚 Zona Logística: En Ruta")
         
         if not df_ruta.empty:
-            # 1. CORRECCIÓN: Agregamos "fecha_seguimiento" a la lista
             cols_ruta = ["id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", "resumen_items"]
-            
-            # 2. CORRECCIÓN: Configuramos la columna para que se vea como fecha
             cfg_ruta = {
                 "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
-                "fecha_seguimiento": st.column_config.DateColumn("Fecha Seg.", format="DD/MM/YYYY"), # <--- Esto faltaba
+                "fecha_seguimiento": st.column_config.DateColumn("Fecha Seg.", format="DD/MM/YYYY"),
                 "id_cliente": None
             }
             
@@ -1785,41 +1778,35 @@ with tabs[4]:
             )
             
             if st.button("💾 Actualizar Ruta", key="btn_save_ruta"):
-                # Como ahora edit_ruta tiene la columna fecha, la función ya no fallará
                 guardar_edicion_rapida(edit_ruta, "RUTA")
         else:
             st.info("Nada en ruta.")
 
         # ==================================================================
-        # 📂 BANDEJAS DE GESTIÓN (RECUPERADAS)
+        # 📂 BANDEJAS DE GESTIÓN
         # ==================================================================
         st.divider()
-        st.markdown("### 🚚 Zona Logística: En Ruta")
-        
-        if not df_ruta.empty:
-            # 1. CORRECCIÓN: Agregamos "fecha_seguimiento" a la lista
-            cols_ruta = ["id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", "resumen_items"]
-            
-            # 2. CORRECCIÓN: Configuramos la columna para que se vea como fecha
-            cfg_ruta = {
-                "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
-                "fecha_seguimiento": st.column_config.DateColumn("Fecha Seg.", format="DD/MM/YYYY"), # <--- Esto faltaba
-                "id_cliente": None
-            }
-            
-            edit_ruta = st.data_editor(
-                df_ruta[cols_ruta], 
-                key="ed_ruta", 
-                column_config=cfg_ruta, 
-                hide_index=True, 
-                use_container_width=True
-            )
-            
-            if st.button("💾 Actualizar Ruta", key="btn_save_ruta"):
-                # Como ahora edit_ruta tiene la columna fecha, la función ya no fallará
-                guardar_edicion_rapida(edit_ruta, "RUTA")
-        else:
-            st.info("Nada en ruta.")
+        st.markdown("### 📂 Bandejas de Gestión")
+
+        # --- ETAPA 1 (Restaurada, aquí se había colado el duplicado) ---
+        with st.expander(f"💬 Conversación / Cotizando ({len(df_e1)})"):
+            if not df_e1.empty:
+                cols_e1 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
+                cfg_e1 = {
+                    "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
+                    "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
+                    "resumen_items": st.column_config.TextColumn("Historial / Interés", width="large"),
+                    "fecha_seguimiento": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
+                    "id_cliente": None
+                }
+                event_e1 = st.data_editor(df_e1[cols_e1], key="ed_e1", column_config=cfg_e1, hide_index=True, use_container_width=True)
+                if st.button("💾 Guardar (Conversación)", key="btn_save_e1"):
+                     df_save_e1 = df_e1.loc[event_e1.index].copy()
+                     df_save_e1['estado'] = event_e1['estado']
+                     df_save_e1['fecha_seguimiento'] = event_e1['fecha_seguimiento']
+                     guardar_edicion_rapida(df_save_e1, "GENERICO")
+            else:
+                st.info("Bandeja vacía.")
 
         # --- ETAPA 4 ---
         with st.expander(f"✨ Post-Venta ({len(df_e4)})"):
