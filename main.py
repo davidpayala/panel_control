@@ -822,7 +822,7 @@ with tabs[0]:
         if st.button("🗑️ Limpiar Todo", key="btn_limpiar_carrito"):
             st.session_state.carrito = []
             st.rerun()
-            # ==============================================================================
+# ==============================================================================
 # PESTAÑA 2: COMPRAS E IMPORTACIONES (FILTRO AVANZADO ALIEXPRESS)
 # ==============================================================================
 with tabs[1]:
@@ -1305,7 +1305,7 @@ with tabs[2]:
                 except Exception as e:
                     trans.rollback()
                     st.error(f"Error al guardar: {e}")
-                    
+
 # ==============================================================================
 # PESTAÑA 4: GESTIÓN DE CLIENTES (ACTUALIZADA Y EDITABLE)
 # ==============================================================================
@@ -1459,6 +1459,105 @@ with tabs[3]:
     
     elif busqueda:
         st.warning("No se encontraron clientes con esos datos.")
+
+# ==============================================================================
+# HERRAMIENTA DE FUSIÓN DE CLIENTES
+# ==============================================================================
+st.divider()
+st.subheader("🧬 Fusión de Clientes Duplicados")
+st.info("Utiliza esta herramienta cuando una persona tenga dos registros (ej. dos números). Se moverá todo el historial al 'Cliente Principal' y se guardará el número antiguo.")
+
+col_dup, col_orig = st.columns(2)
+
+# --- 1. SELECCIONAR EL DUPLICADO (EL QUE SE VA A BORRAR) ---
+with col_dup:
+    st.markdown("### ❌ 1. Cliente a ELIMINAR")
+    search_dup = st.text_input("Buscar duplicado (Nombre/Telf):", key="search_dup")
+    
+    id_duplicado = None
+    info_duplicado = None
+    
+    if search_dup:
+        with engine.connect() as conn:
+            # Buscamos clientes activos
+            res = pd.read_sql(text("SELECT id_cliente, nombre_corto, telefono, nombre, apellido FROM Clientes WHERE (nombre_corto ILIKE :s OR telefono ILIKE :s) AND activo = TRUE LIMIT 5"), conn, params={"s": f"%{search_dup}%"})
+        
+        if not res.empty:
+            # Usamos un selectbox para elegir el ID exacto
+            opts_dup = res.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']}) - ID: {x['id_cliente']}", axis=1).tolist()
+            sel_dup_str = st.selectbox("Selecciona:", opts_dup, key="sel_dup")
+            id_duplicado = int(sel_dup_str.split("ID: ")[1])
+            
+            # Guardamos datos para mostrar confirmación
+            row_dup = res[res['id_cliente'] == id_duplicado].iloc[0]
+            info_duplicado = f"**{row_dup['nombre_corto']}**\nTelf: {row_dup['telefono']}"
+            st.warning(f"⚠️ Este cliente será DESACTIVADO.")
+        else:
+            st.caption("No encontrado.")
+
+# --- 2. SELECCIONAR EL ORIGINAL (EL QUE SE QUEDA) ---
+with col_orig:
+    st.markdown("### ✅ 2. Cliente PRINCIPAL")
+    search_orig = st.text_input("Buscar principal (Nombre/Telf):", key="search_orig")
+    
+    id_original = None
+    
+    if search_orig:
+        with engine.connect() as conn:
+            res2 = pd.read_sql(text("SELECT id_cliente, nombre_corto, telefono FROM Clientes WHERE (nombre_corto ILIKE :s OR telefono ILIKE :s) AND activo = TRUE LIMIT 5"), conn, params={"s": f"%{search_orig}%"})
+        
+        if not res2.empty:
+            opts_orig = res2.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']}) - ID: {x['id_cliente']}", axis=1).tolist()
+            sel_orig_str = st.selectbox("Selecciona:", opts_orig, key="sel_orig")
+            id_original = int(sel_orig_str.split("ID: ")[1])
+            
+            st.success(f"✅ Este cliente recibirá el historial.")
+        else:
+            st.caption("No encontrado.")
+
+# --- 3. BOTÓN DE FUSIÓN (LÓGICA BLINDADA) ---
+st.divider()
+
+if id_duplicado and id_original:
+    if id_duplicado == id_original:
+        st.error("⛔ ¡No puedes fusionar al cliente consigo mismo! Selecciona dos distintos.")
+    else:
+        st.markdown(f"### 🔄 Confirmar Fusión")
+        st.write(f"Vas a pasar todo de {info_duplicado} hacia el ID **{id_original}**.")
+        
+        if st.button("🚀 FUSIONAR AHORA", type="primary"):
+            with engine.connect() as conn:
+                trans = conn.begin()
+                try:
+                    # 1. Obtener el teléfono del duplicado para no perderlo
+                    old_phone = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente = :id"), {"id": id_duplicado}).scalar()
+                    
+                    # 2. Mover VENTAS
+                    conn.execute(text("UPDATE Ventas SET id_cliente = :new_id WHERE id_cliente = :old_id"), {"new_id": id_original, "old_id": id_duplicado})
+                    
+                    # 3. Mover DIRECCIONES
+                    conn.execute(text("UPDATE Direcciones SET id_cliente = :new_id WHERE id_cliente = :old_id"), {"new_id": id_original, "old_id": id_duplicado})
+                    
+                    # 4. Actualizar el Principal (Guardamos el teléfono viejo como secundario)
+                    # Solo si el campo secundario está vacío, para no sobrescribir algo importante
+                    conn.execute(text("""
+                        UPDATE Clientes 
+                        SET telefono_secundario = :old_tel 
+                        WHERE id_cliente = :new_id AND (telefono_secundario IS NULL OR telefono_secundario = '')
+                    """), {"old_tel": old_phone, "new_id": id_original})
+                    
+                    # 5. Desactivar el duplicado (Soft Delete)
+                    conn.execute(text("UPDATE Clientes SET activo = FALSE, nombre_corto = nombre_corto || ' (FUSIONADO)' WHERE id_cliente = :old_id"), {"old_id": id_duplicado})
+                    
+                    trans.commit()
+                    st.balloons()
+                    st.success("✨ ¡Fusión Completada! Historial unificado.")
+                    time.sleep(2)
+                    st.rerun()
+                    
+                except Exception as e:
+                    trans.rollback()
+                    st.error(f"Error en la fusión: {e}")
 # ==============================================================================
 # PESTAÑA 5: LOGÍSTICA PRO (CON FECHA DE SEGUIMIENTO EDITABLE)
 # ==============================================================================
