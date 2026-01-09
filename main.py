@@ -1196,7 +1196,7 @@ with tabs[2]:
                     p.categoria,
                     p.marca, 
                     p.modelo, 
-                    v.nombre_variante,
+                    p.nombre,
                     p.color_principal, 
                     p.diametro, 
                     v.medida,
@@ -1220,7 +1220,8 @@ with tabs[2]:
     df_calc['nombre_completo'] = (
         df_calc['marca'].fillna('') + " " + 
         df_calc['modelo'].fillna('') + " - " + 
-        df_calc['nombre_variante'].fillna('')
+        df_calc['nombre'].fillna('') + "(" +
+        df_calc['sku'].fillna('') + ")"
     ).str.strip()
 
     def formatear_detalles(row):
@@ -1965,30 +1966,7 @@ with tabs[4]:
 # ==============================================================================
 with tabs[5]:
     st.subheader("🔧 Administración de Productos y Variantes")
-    # --- BLOQUE DE REPARACIÓN DE BASE DE DATOS ---
-with st.expander("🛠️ Reparar Error de ID Producto", expanded=True):
-    st.warning("Usa esto solo una vez si te sale el error 'null value in column id_producto'.")
-    
-    if st.button("🔧 Reparar Tabla Productos"):
-        try:
-            with engine.connect() as conn:
-                trans = conn.begin()
-                
-                # 1. Crear una secuencia si no existe
-                conn.execute(text("CREATE SEQUENCE IF NOT EXISTS productos_id_seq;"))
-                
-                # 2. Sincronizar la secuencia con el ID más alto actual (para no repetir números)
-                #    Si la tabla está vacía, empieza en 1.
-                conn.execute(text("SELECT setval('productos_id_seq', COALESCE((SELECT MAX(id_producto) FROM Productos), 1));"))
-                
-                # 3. Vincular la secuencia a la columna id_producto
-                conn.execute(text("ALTER TABLE Productos ALTER COLUMN id_producto SET DEFAULT nextval('productos_id_seq');"))
-                
-                trans.commit()
-                st.success("✅ Tabla reparada. Ahora los IDs se generarán solos.")
-        except Exception as e:
-            st.error(f"Error al reparar: {e}")
-# ---------------------------------------------
+
     # --- BARRA LATERAL: BUSCADOR RÁPIDO ---
     with st.expander("🔎 Verificador Rápido de SKU / Nombre", expanded=False):
         check_str = st.text_input("Escribe para buscar coincidencias:", placeholder="Ej: NL01")
