@@ -1764,11 +1764,28 @@ with tabs[4]:
 
         st.divider()
         st.markdown("### 🚚 Zona Logística: En Ruta")
+        
         if not df_ruta.empty:
-            cols_ruta = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items"]
-            cfg_ruta = {"estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS), "id_cliente": None}
-            edit_ruta = st.data_editor(df_ruta[cols_ruta], key="ed_ruta", column_config=cfg_ruta, hide_index=True, use_container_width=True)
+            # 1. CORRECCIÓN: Agregamos "fecha_seguimiento" a la lista
+            cols_ruta = ["id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", "resumen_items"]
+            
+            # 2. CORRECCIÓN: Configuramos la columna para que se vea como fecha
+            cfg_ruta = {
+                "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
+                "fecha_seguimiento": st.column_config.DateColumn("Fecha Seg.", format="DD/MM/YYYY"), # <--- Esto faltaba
+                "id_cliente": None
+            }
+            
+            edit_ruta = st.data_editor(
+                df_ruta[cols_ruta], 
+                key="ed_ruta", 
+                column_config=cfg_ruta, 
+                hide_index=True, 
+                use_container_width=True
+            )
+            
             if st.button("💾 Actualizar Ruta", key="btn_save_ruta"):
+                # Como ahora edit_ruta tiene la columna fecha, la función ya no fallará
                 guardar_edicion_rapida(edit_ruta, "RUTA")
         else:
             st.info("Nada en ruta.")
@@ -1777,27 +1794,32 @@ with tabs[4]:
         # 📂 BANDEJAS DE GESTIÓN (RECUPERADAS)
         # ==================================================================
         st.divider()
-        st.markdown("### 📂 Bandejas de Gestión")
-
-        # --- ETAPA 1 ---
-        with st.expander(f"💬 Conversación / Cotizando ({len(df_e1)})"):
-            if not df_e1.empty:
-                cols_e1 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
-                cfg_e1 = {
-                    "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
-                    "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
-                    "resumen_items": st.column_config.TextColumn("Historial / Interés", width="large"),
-                    "fecha_seguimiento": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
-                    "id_cliente": None
-                }
-                event_e1 = st.data_editor(df_e1[cols_e1], key="ed_e1", column_config=cfg_e1, hide_index=True, use_container_width=True)
-                if st.button("💾 Guardar (Conversación)", key="btn_save_e1"):
-                     df_save_e1 = df_e1.loc[event_e1.index].copy()
-                     df_save_e1['estado'] = event_e1['estado']
-                     df_save_e1['fecha_seguimiento'] = event_e1['fecha_seguimiento']
-                     guardar_edicion_rapida(df_save_e1, "GENERICO")
-            else:
-                st.info("Bandeja vacía.")
+        st.markdown("### 🚚 Zona Logística: En Ruta")
+        
+        if not df_ruta.empty:
+            # 1. CORRECCIÓN: Agregamos "fecha_seguimiento" a la lista
+            cols_ruta = ["id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", "resumen_items"]
+            
+            # 2. CORRECCIÓN: Configuramos la columna para que se vea como fecha
+            cfg_ruta = {
+                "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
+                "fecha_seguimiento": st.column_config.DateColumn("Fecha Seg.", format="DD/MM/YYYY"), # <--- Esto faltaba
+                "id_cliente": None
+            }
+            
+            edit_ruta = st.data_editor(
+                df_ruta[cols_ruta], 
+                key="ed_ruta", 
+                column_config=cfg_ruta, 
+                hide_index=True, 
+                use_container_width=True
+            )
+            
+            if st.button("💾 Actualizar Ruta", key="btn_save_ruta"):
+                # Como ahora edit_ruta tiene la columna fecha, la función ya no fallará
+                guardar_edicion_rapida(edit_ruta, "RUTA")
+        else:
+            st.info("Nada en ruta.")
 
         # --- ETAPA 4 ---
         with st.expander(f"✨ Post-Venta ({len(df_e4)})"):
