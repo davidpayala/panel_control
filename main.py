@@ -1843,12 +1843,11 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("🔧 Administración de Productos y Variantes")
     
-    # --- BARRA LATERAL: BUSCADOR RÁPIDO DE SKU (Para verificar duplicados) ---
+    # --- BARRA LATERAL: BUSCADOR RÁPIDO ---
     with st.expander("🔎 Verificador Rápido de SKU / Nombre", expanded=False):
         check_str = st.text_input("Escribe para buscar coincidencias:", placeholder="Ej: NL01")
         if check_str:
             with engine.connect() as conn:
-                # Busca coincidencias en SKU o en el Nombre del Producto
                 q_check = text("""
                     SELECT v.sku, p.modelo, p.nombre as color, v.medida 
                     FROM Variantes v 
@@ -1870,21 +1869,19 @@ with tabs[5]:
     COLORES_OFICIALES = ["", "Amarillo", "Azul", "Blanco", "Chocolate", "Dorado", "Gris", "Marrón", "Miel", "Morado", "Multicolor", "Naranja", "Negro", "Rojo", "Rosado", "Turquesa", "Verde"]
 
     # ------------------------------------------------------------------
-    # MODO 1: CREAR NUEVO
+    # MODO 1: CREAR NUEVO (ESTA PARTE SE MANTIENE IGUAL)
     # ------------------------------------------------------------------
     if modo_catalogo == "🌱 Crear Nuevo":
         tipo_creacion = st.selectbox("Tipo de Creación:", 
                                      ["Medida Nueva (Hijo) para Producto Existente", 
                                       "Producto Nuevo (Marca/Color Nuevo)"])
         
-        # A) NUEVA MEDIDA (Variante)
+        # A) NUEVA MEDIDA
         if "Medida Nueva" in tipo_creacion:
             with engine.connect() as conn:
-                # Ahora mostramos Marca - Modelo - NOMBRE (Color)
                 df_prods = pd.read_sql(text("SELECT id_producto, marca, modelo, nombre FROM Productos ORDER BY marca, modelo, nombre"), conn)
             
             if not df_prods.empty:
-                # Helper para el dropdown
                 opciones_prod = df_prods.apply(lambda x: f"{x['marca']} {x['modelo']} - {x['nombre']} (ID: {x['id_producto']})", axis=1).to_dict()
                 idx_prod = st.selectbox("Selecciona el Producto (Modelo y Color):", options=opciones_prod.keys(), format_func=lambda x: opciones_prod[x])
                 id_producto_real = df_prods.iloc[idx_prod]['id_producto']
@@ -1904,7 +1901,6 @@ with tabs[5]:
                     if st.form_submit_button("Guardar Medida"):
                         try:
                             with engine.connect() as conn:
-                                # Ya no pedimos nombre_variante ni stock_externo aquí
                                 conn.execute(text("""
                                     INSERT INTO Variantes (sku, id_producto, nombre_variante, medida, stock_interno, precio, ubicacion)
                                     VALUES (:sku, :idp, '', :med, :si, :pre, :ubi)
@@ -1917,14 +1913,13 @@ with tabs[5]:
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-        # B) PRODUCTO NUEVO (Marca + Modelo + Color)
+        # B) PRODUCTO NUEVO
         else:
             with st.form("form_new_full"):
                 st.markdown("**1. Definir Producto (Visual)**")
                 c1, c2, c3 = st.columns(3)
                 marca = c1.text_input("Marca:")
                 modelo = c2.text_input("Modelo:")
-                # AQUI va el Nombre (Color) ahora
                 nombre_prod = c3.text_input("Nombre (Color):", placeholder="Ej: Gris, Azul...")
                 
                 c_cat, c_col = st.columns(2)
@@ -1948,7 +1943,6 @@ with tabs[5]:
                     try:
                         with engine.connect() as conn:
                             trans = conn.begin()
-                            # Insertamos 'nombre' en Productos
                             res_p = conn.execute(text("""
                                 INSERT INTO Productos (marca, modelo, nombre, categoria, color_principal, diametro, url_imagen, url_compra) 
                                 VALUES (:m, :mod, :nom, :cat, :col, :dia, :uimg, :ubuy) RETURNING id_producto
@@ -1958,7 +1952,6 @@ with tabs[5]:
                             })
                             new_id = res_p.fetchone()[0]
 
-                            # Crear Variante (Medida)
                             conn.execute(text("""
                                 INSERT INTO Variantes (sku, id_producto, nombre_variante, medida, stock_interno, precio, ubicacion)
                                 VALUES (:sku, :idp, '', :med, 0, :pr, :ub)
@@ -1972,7 +1965,7 @@ with tabs[5]:
                         st.error(f"Error: {e}")
 
     # ------------------------------------------------------------------
-    # MODO 2: EDITAR / RENOMBRAR
+    # MODO 2: EDITAR / RENOMBRAR (AQUÍ ESTÁ EL CAMBIO)
     # ------------------------------------------------------------------
     else:
         st.markdown("#### ✏️ Modificar Producto")
@@ -1980,7 +1973,6 @@ with tabs[5]:
         sku_edit = st.text_input("Ingresa SKU exacto para editar:", placeholder="Ej: NL152D-0000")
         
         if sku_edit:
-            # Traemos 'nombre' de Productos
             with engine.connect() as conn:
                 query_full = text("""
                     SELECT v.*, p.marca, p.modelo, p.nombre as nombre_prod, p.categoria, p.diametro, p.color_principal, p.url_imagen, p.url_compra
@@ -1993,7 +1985,6 @@ with tabs[5]:
             if not df_data.empty:
                 curr = df_data.iloc[0]
                 
-                # --- VISUALIZACIÓN IMAGEN ---
                 col_img, col_form = st.columns([1, 3])
                 
                 with col_img:
@@ -2006,7 +1997,7 @@ with tabs[5]:
                     st.info(f"Editando: **{curr['marca']} {curr['modelo']}** - Color: **{curr['nombre_prod']}**")
                     
                     with st.form("form_edit_sku"):
-                        # 1. PRODUCTO (Ahora incluye el Nombre/Color)
+                        # 1. PRODUCTO
                         st.markdown("📦 **Datos Generales (Producto)**")
                         
                         c_p1, c_p2, c_p3 = st.columns(3)
@@ -2025,17 +2016,30 @@ with tabs[5]:
 
                         st.divider()
 
-                        # 2. VARIANTE (SKU y Medidas) - STOCK PROV OCULTO
+                        # 2. VARIANTE (SKU y Medidas)
                         st.markdown(f"🏷️ **Datos de Variante ({curr['sku']})**")
                         col_a, col_b = st.columns(2)
                         new_sku_val = col_a.text_input("SKU:", value=curr['sku'])
                         new_medida = col_b.text_input("Medida:", value=curr['medida'] if curr['medida'] else "0.00")
                         
                         col_e, col_f = st.columns(2)
-                        new_precio = col_e.number_input("Precio:", value=float(curr['precio']))
-                        new_precio_reb = col_f.number_input("Precio Rebajado:", value=float(curr['precio_rebajado'] if curr['precio_rebajado'] else 0.0))
+                        new_precio = col_e.number_input("Precio Normal:", value=float(curr['precio']))
+                        
+                        # --- CAMBIO AQUÍ: TEXT INPUT PARA PERMITIR VACÍO ---
+                        # Si hay precio rebajado y es > 0, lo mostramos. Si es None o 0, mostramos vacío.
+                        val_reb_str = str(curr['precio_rebajado']) if (curr['precio_rebajado'] and float(curr['precio_rebajado']) > 0) else ""
+                        new_precio_reb_txt = col_f.text_input("Precio Rebajado (Vacío = Sin Oferta):", value=val_reb_str)
 
                         if st.form_submit_button("💾 Guardar Cambios"):
+                            # Lógica para convertir el texto a Float o Null
+                            final_rebajado = None
+                            if new_precio_reb_txt.strip(): # Si no está vacío
+                                try:
+                                    final_rebajado = float(new_precio_reb_txt)
+                                except:
+                                    st.error("El precio rebajado debe ser un número (o dejarlo vacío).")
+                                    st.stop()
+
                             try:
                                 with engine.connect() as conn:
                                     trans = conn.begin()
@@ -2047,7 +2051,7 @@ with tabs[5]:
                                         WHERE sku=:old_sku
                                     """), {
                                         "n_sku": new_sku_val, "n_med": new_medida,
-                                        "n_pre": new_precio, "n_prer": new_precio_reb,
+                                        "n_pre": new_precio, "n_prer": final_rebajado, # Pasamos el valor procesado
                                         "old_sku": curr['sku']
                                     })
 
@@ -2066,14 +2070,14 @@ with tabs[5]:
                                     
                                     trans.commit()
                                 
-                                st.success("✅ ¡Actualizado!")
+                                st.success("✅ ¡Actualizado correctamente!")
                                 time.sleep(1.5)
                                 st.rerun()
 
                             except Exception as e:
                                 st.error(f"Error: {e}")
-            else:
-                st.warning("SKU no encontrado.")
+        else:
+            st.warning("SKU no encontrado.")
 
 # ==============================================================================
 # PESTAÑA 7: FACTURACIÓN PENDIENTE 
