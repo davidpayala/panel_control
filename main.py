@@ -1143,7 +1143,7 @@ with tabs[2]:
     # --- 2. CARGA DE DATOS ---
     if 'df_inventario' not in st.session_state:
         with engine.connect() as conn:
-            # ACTUALIZACIÓN: Agregamos v.stock_transito
+            # ACTUALIZACIÓN: Traemos p.url_imagen
             q_inv = """
                 SELECT 
                     v.sku, 
@@ -1157,10 +1157,11 @@ with tabs[2]:
                     v.medida,
                     v.stock_interno,
                     v.stock_externo,
-                    v.stock_transito,  /* ### <--- NUEVO: Traemos el stock en tránsito */
+                    v.stock_transito,
                     v.ubicacion,
                     p.importacion,
-                    p.url_compra
+                    p.url_compra,
+                    p.url_imagen  /* ### <--- NUEVO: Traemos la foto */
                 FROM Variantes v
                 JOIN Productos p ON v.id_producto = p.id_producto
                 ORDER BY p.marca, p.modelo, v.sku ASC
@@ -1196,8 +1197,9 @@ with tabs[2]:
             df_calc['importacion'].str.lower().str.contains(f, na=False)
         ]
 
-    # Seleccionamos columnas finales (INCLUYENDO STOCK TRANSITO)
+    # Seleccionamos columnas finales (INCLUYENDO LA FOTO)
     df_final = df_calc[[
+        'url_imagen', # ### <--- NUEVO: Columna de imagen al principio
         'sku', 
         'id_producto', 
         'categoria', 
@@ -1205,7 +1207,7 @@ with tabs[2]:
         'detalles_info', 
         'stock_interno', 
         'stock_externo',
-        'stock_transito', # ### <--- NUEVO: Agregado al dataframe final
+        'stock_transito',
         'ubicacion',
         'importacion',
         'url_compra'
@@ -1218,42 +1220,38 @@ with tabs[2]:
         df_final,
         key="editor_inventario_v3",
         column_config={
+            # ### <--- NUEVO: Configuración de la columna IMAGEN
+            "url_imagen": st.column_config.ImageColumn(
+                "Foto 📸", 
+                width="small",
+                help="Clic para ver en grande"
+            ),
+            
             "sku": st.column_config.TextColumn("SKU", disabled=True, width="small"),
             "id_producto": None, 
             "categoria": st.column_config.TextColumn("Cat.", disabled=True, width="small"),
             "nombre_completo": st.column_config.TextColumn("Producto", disabled=True, width="large"),
             "detalles_info": st.column_config.TextColumn("Detalles", disabled=True, width="medium"),
             
-            # Stocks
             "stock_interno": st.column_config.NumberColumn("S. Int.", disabled=True, format="%d"),
             "stock_externo": st.column_config.NumberColumn("S. Ext.", disabled=True, format="%d"),
             
-            # ### <--- NUEVO: Configuración de la columna Stock Transito
             "stock_transito": st.column_config.NumberColumn(
                 "En Camino 🚚", 
                 help="Stock que ya se pidió al proveedor",
-                min_value=0,
-                step=1,
-                format="%d",
-                width="small"
+                min_value=0, step=1, format="%d", width="small"
             ),
             
-            # Otros Editables
             "ubicacion": st.column_config.TextColumn("Ubicación 📍", width="small"),
             
             "importacion": st.column_config.SelectboxColumn(
-                "Importar De ✈️", 
-                width="small",
+                "Importar De ✈️", width="small",
                 options=["Aliexpress", "Alibaba", "Proveedor Nacional", "Otro"], 
                 required=False
             ),
             
             "url_compra": st.column_config.LinkColumn(
-                "Link Compra 🔗", 
-                width="medium",
-                display_text="Ver Enlace", 
-                validate="^https://.*", 
-                required=False
+                "Link Compra 🔗", width="medium", display_text="Ver Enlace", validate="^https://.*", required=False
             )
         },
         hide_index=True,
@@ -1261,7 +1259,7 @@ with tabs[2]:
         num_rows="fixed" 
     )
 
-    # --- 6. GUARDAR CAMBIOS ---
+    # --- 6. GUARDAR CAMBIOS (MISMO CÓDIGO) ---
     edited_rows = st.session_state["editor_inventario_v3"].get("edited_rows")
 
     if edited_rows:
@@ -1273,51 +1271,31 @@ with tabs[2]:
                 try:
                     count_ubi = 0
                     count_prod = 0
-                    count_transito = 0 # ### <--- NUEVO CONTADOR
+                    count_transito = 0 
                     
                     for idx, updates in edited_rows.items():
                         row_original = df_final.iloc[idx]
                         sku_target = row_original['sku']
                         id_prod_target = int(row_original['id_producto']) 
                         
-                        # A) CAMBIO EN UBICACIÓN O STOCK TRANSITO (Tabla Variantes)
-                        # He unido la lógica para optimizar, ya que ambos van a la tabla Variantes
-                        
-                        sql_variantes = ""
-                        params_variantes = {"s": sku_target}
-                        
+                        # A) CAMBIOS EN VARIANTES
                         if 'ubicacion' in updates:
-                            conn.execute(
-                                text("UPDATE Variantes SET ubicacion = :u WHERE sku = :s"),
-                                {"u": updates['ubicacion'], "s": sku_target}
-                            )
+                            conn.execute(text("UPDATE Variantes SET ubicacion = :u WHERE sku = :s"), {"u": updates['ubicacion'], "s": sku_target})
                             count_ubi += 1
 
-                        # ### <--- NUEVO: Lógica de guardado para Stock Transito
                         if 'stock_transito' in updates:
-                            conn.execute(
-                                text("UPDATE Variantes SET stock_transito = :st WHERE sku = :s"),
-                                {"st": updates['stock_transito'], "s": sku_target}
-                            )
+                            conn.execute(text("UPDATE Variantes SET stock_transito = :st WHERE sku = :s"), {"st": updates['stock_transito'], "s": sku_target})
                             count_transito += 1
                         
-                        # B) CAMBIO EN IMPORTACIÓN O URL (Tabla Productos)
+                        # B) CAMBIOS EN PRODUCTOS
                         if 'importacion' in updates or 'url_compra' in updates:
                             nuevo_imp = updates.get('importacion', row_original['importacion'])
                             nueva_url = updates.get('url_compra', row_original['url_compra'])
-                            
-                            conn.execute(
-                                text("UPDATE Productos SET importacion = :imp, url_compra = :url WHERE id_producto = :idp"),
-                                {
-                                    "imp": nuevo_imp, 
-                                    "url": nueva_url, 
-                                    "idp": id_prod_target 
-                                }
-                            )
+                            conn.execute(text("UPDATE Productos SET importacion = :imp, url_compra = :url WHERE id_producto = :idp"), 
+                                         {"imp": nuevo_imp, "url": nueva_url, "idp": id_prod_target})
                             count_prod += 1
                     
                     trans.commit()
-                    # ### <--- NUEVO MENSAJE DE ÉXITO
                     st.success(f"✅ Guardado: {count_ubi} Ubicaciones, {count_transito} Stocks en tránsito y {count_prod} Datos de Importación.")
                     
                     del st.session_state['df_inventario'] 
@@ -1327,6 +1305,7 @@ with tabs[2]:
                 except Exception as e:
                     trans.rollback()
                     st.error(f"Error al guardar: {e}")
+                    
 # ==============================================================================
 # PESTAÑA 4: GESTIÓN DE CLIENTES (ACTUALIZADA Y EDITABLE)
 # ==============================================================================
