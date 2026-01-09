@@ -1763,6 +1763,7 @@ with tabs[4]:
         
         if not df_ruta.empty:
             cols_ruta = ["id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", "resumen_items"]
+            
             cfg_ruta = {
                 "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
                 "fecha_seguimiento": st.column_config.DateColumn("Fecha Seg.", format="DD/MM/YYYY"),
@@ -1778,7 +1779,16 @@ with tabs[4]:
             )
             
             if st.button("💾 Actualizar Ruta", key="btn_save_ruta"):
-                guardar_edicion_rapida(edit_ruta, "RUTA")
+                # --- CORRECCIÓN AQUÍ ---
+                # 1. Recuperamos la data completa original (que sí tiene id_venta) usando el índice
+                df_save_ruta = df_ruta.loc[edit_ruta.index].copy()
+                
+                # 2. Sobrescribimos solo las columnas que permitimos editar
+                df_save_ruta['estado'] = edit_ruta['estado']
+                df_save_ruta['fecha_seguimiento'] = edit_ruta['fecha_seguimiento']
+                
+                # 3. Ahora sí guardamos (df_save_ruta tiene id_venta oculto, así que no fallará)
+                guardar_edicion_rapida(df_save_ruta, "RUTA")
         else:
             st.info("Nada en ruta.")
 
