@@ -2211,7 +2211,121 @@ if st.button("📢 Generar Feed para Facebook"):
     except Exception as e:
         st.error(f"Error: {e}")
 
-        
+from woocommerce import API
+
+# ==============================================================================
+# PESTAÑA 7: SINCRONIZACIÓN CON WORDPRESS
+# ==============================================================================
+# Agrega esto a tu lista de pestañas o usa una existente
+with st.expander("🔄 Sincronizar Imágenes desde Web (WordPress)", expanded=False):
+    st.info("Esta herramienta conecta con kmlentes.pe, descarga las fotos de los productos y las asocia a tu inventario usando el SKU.")
+    
+    # Formulario para las credenciales (para no dejarlas escritas en el código por seguridad)
+    col_k1, col_k2 = st.columns(2)
+    wc_key = col_k1.text_input("Consumer Key (ck_...)", type="password")
+    wc_secret = col_k2.text_input("Consumer Secret (cs_...)", type="password")
+    
+    col_url = st.text_input("URL de tu tienda:", value="https://kmlentes.pe")
+
+    if st.button("🚀 Iniciar Sincronización de Fotos"):
+        if not wc_key or not wc_secret:
+            st.error("Por favor ingresa las llaves de WooCommerce.")
+        else:
+            # 1. CONEXIÓN A WORDPRESS
+            wcapi = API(
+                url=col_url,
+                consumer_key=wc_key,
+                consumer_secret=wc_secret,
+                version="wc/v3",
+                timeout=30
+            )
+            
+            st.caption("Conectando con la web... esto puede tardar unos minutos dependiendo de la cantidad de productos.")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            try:
+                # 2. DESCARGAR PRODUCTOS (PAGINACIÓN)
+                # WooCommerce entrega los productos por páginas. Hay que recorrerlas todas.
+                page = 1
+                productos_web = []
+                
+                while True:
+                    status_text.text(f"Descargando página {page} de la web...")
+                    res = wcapi.get("products", params={"page": page, "per_page": 50})
+                    
+                    if res.status_code != 200:
+                        st.error(f"Error al conectar: {res.status_code} - {res.text}")
+                        break
+                        
+                    data = res.json()
+                    if not data:
+                        break # Se acabaron los productos
+                    
+                    productos_web.extend(data)
+                    page += 1
+                
+                total_web = len(productos_web)
+                status_text.text(f"✅ Se encontraron {total_web} productos en la web. Procesando imágenes...")
+                progress_bar.progress(50)
+                
+                # 3. EXTRAER SKU Y FOTOS
+                # Creamos un diccionario {SKU: URL_IMAGEN}
+                mapa_imagenes = {}
+                
+                for p in productos_web:
+                    # A) Productos Simples
+                    if p['sku'] and p['images']:
+                        mapa_imagenes[p['sku']] = p['images'][0]['src']
+                    
+                    # B) Productos Variables (si tienes variaciones con fotos propias)
+                    # A veces WooCommerce manda las variaciones en un endpoint aparte, 
+                    # pero intentaremos ver si el producto padre tiene la imagen principal correcta.
+                    # (Si tus variaciones tienen fotos distintas, el código se complica un poco más,
+                    #  pero por lo general la foto del padre sirve).
+                
+                st.write(f"📸 Se encontraron {len(mapa_imagenes)} productos con SKU y Foto en la web.")
+                
+                # 4. ACTUALIZAR BASE DE DATOS LOCAL
+                count_updated = 0
+                
+                with engine.connect() as conn:
+                    trans = conn.begin()
+                    try:
+                        # Recorremos el mapa y actualizamos
+                        for sku_web, url_web in mapa_imagenes.items():
+                            # Buscamos si existe ese SKU en Variantes y obtenemos su id_producto
+                            # Luego actualizamos la tabla Productos
+                            
+                            # La lógica es: 
+                            # 1. Buscar el id_producto asociado a ese SKU en Variantes
+                            # 2. Actualizar url_imagen en Productos usando ese id_producto
+                            
+                            # Hacemos el UPDATE directo cruzando tablas (PostgreSQL permite esto)
+                            # Ojo: Si varios SKU comparten el mismo id_producto (variantes), 
+                            # se quedará con la foto del último SKU procesado.
+                            
+                            res_up = conn.execute(text("""
+                                UPDATE Productos
+                                SET url_imagen = :url
+                                WHERE id_producto = (
+                                    SELECT id_producto FROM Variantes WHERE sku = :sku LIMIT 1
+                                )
+                            """), {"url": url_web, "sku": sku_web})
+                            
+                            if res_up.rowcount > 0:
+                                count_updated += 1
+                        
+                        trans.commit()
+                        progress_bar.progress(100)
+                        st.success(f"✨ ÉXITO: Se actualizaron las imágenes de {count_updated} productos en tu App.")
+                        
+                    except Exception as e:
+                        trans.rollback()
+                        st.error(f"Error en base de datos: {e}")
+
+            except Exception as e:
+                st.error(f"Error general: {e}")
 # ==============================================================================
 # PESTAÑA 7: FACTURACIÓN PENDIENTE 
 # ==============================================================================
