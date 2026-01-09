@@ -256,10 +256,11 @@ def generar_feed_facebook():
               AND p.url_compra IS NOT NULL  -- Facebook necesita link de compra
         """)
         df_feed = pd.read_sql(query, conn)
-
-    # 2. Guardamos el archivo en una carpeta pública de tu servidor
-    # Asegúrate de que esta ruta sea accesible vía web
-    ruta_archivo = "feed_facebook.csv" 
+    # Aseguramos que la carpeta exista (por si acaso)
+    if not os.path.exists('static'):
+        os.makedirs('static')
+        
+    ruta_archivo = "static/feed_facebook.csv" 
     df_feed.to_csv(ruta_archivo, index=False)
     
     return len(df_feed)
@@ -2198,6 +2199,8 @@ if st.button("📢 Generar Feed para Facebook"):
         # (Ojo: Tendrás que configurar tu servidor para que sirva este archivo)
     except Exception as e:
         st.error(f"Error: {e}")
+
+        
 # ==============================================================================
 # PESTAÑA 7: FACTURACIÓN PENDIENTE 
 # ==============================================================================
