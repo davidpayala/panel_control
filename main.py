@@ -233,30 +233,40 @@ def obtener_imagen_whatsapp(media_id):
 
 
 # Función para generar el feed de facebook
-
 def generar_feed_facebook():
     with engine.connect() as conn:
-        # 1. Traemos solo lo necesario para venta pública
-        # OJO: Facebook exige ciertos nombres de columnas específicos
+        # He cambiado p.url_compra por un link construido hacia TU web
         query = text("""
             SELECT 
                 v.sku as id, 
-                p.nombre || ' ' || p.modelo || ' - ' || v.nombre_variante as title,
-                'Lentes de contacto marca ' || p.marca || ' modelo ' || p.modelo as description,
+                
+                -- TITULO: Marca + Modelo + Color + (Variante si existe)
+                p.marca || ' ' || p.modelo || ' ' || p.nombre || ' ' || COALESCE(v.nombre_variante, '') as title,
+                
+                -- DESCRIPCION:
+                'Lentes de contacto ' || p.marca || ' color ' || p.nombre || '. Disponibles en kmlentes.pe' as description,
+                
+                -- DISPONIBILIDAD:
                 CASE WHEN (v.stock_interno + v.stock_externo) > 0 THEN 'in_stock' ELSE 'out_of_stock' END as availability,
+                
                 'new' as condition,
                 v.precio || ' PEN' as price,
-                p.url_compra as link,
+                
+                -- CORRECCIÓN AQUÍ: ENLACE A TU WEB (Búsqueda por SKU)
+                'https://kmlentes.pe/?s=' || v.sku || '&post_type=product' as link,
+                
                 p.url_imagen as image_link,
                 p.marca as brand,
                 v.sku as mpn
+                
             FROM Variantes v
             JOIN Productos p ON v.id_producto = p.id_producto
-            WHERE p.url_imagen IS NOT NULL  -- Facebook rechaza productos sin foto
-              AND p.url_compra IS NOT NULL  -- Facebook necesita link de compra
+            WHERE p.url_imagen IS NOT NULL 
+              AND p.url_imagen != ''
         """)
         df_feed = pd.read_sql(query, conn)
-    # Aseguramos que la carpeta exista (por si acaso)
+
+    # Guardar en carpeta estática
     if not os.path.exists('static'):
         os.makedirs('static')
         
@@ -264,6 +274,7 @@ def generar_feed_facebook():
     df_feed.to_csv(ruta_archivo, index=False)
     
     return len(df_feed)
+
 
 # --- FUNCIÓN AUXILIAR PARA GUARDAR CAMBIOS (Pégalo al final del archivo, sin sangría) ---
 def actualizar_estados(df_modificado):
@@ -2195,7 +2206,7 @@ if st.button("📢 Generar Feed para Facebook"):
     try:
         total = generar_feed_facebook()
         st.success(f"✅ Feed generado con {total} productos.")
-        st.info("Tu URL para Facebook es: https://panelcontrol-production.up.railway.app/feed_facebook.csv") 
+        st.info("Tu URL para Facebook es: https://panelcontrol-production.up.railway.app/app/static/feed_facebook.csv") 
         # (Ojo: Tendrás que configurar tu servidor para que sirva este archivo)
     except Exception as e:
         st.error(f"Error: {e}")
