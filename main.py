@@ -2202,15 +2202,7 @@ with tabs[5]:
                                 st.error(f"Error: {e}")
         else:
             st.warning("SKU no encontrado.")
-# --- Poner esto en un botón en tu App ---
-if st.button("📢 Generar Feed para Facebook"):
-    try:
-        total = generar_feed_facebook()
-        st.success(f"✅ Feed generado con {total} productos.")
-        st.info("Tu URL para Facebook es: https://panelcontrol-production.up.railway.app/app/static/feed_facebook.csv") 
-        # (Ojo: Tendrás que configurar tu servidor para que sirva este archivo)
-    except Exception as e:
-        st.error(f"Error: {e}")
+
 
 # ------------------------------------------------------------------
     # HERRAMIENTA EXTRA: SEPARAR VARIANTE (SPLIT)
@@ -2291,7 +2283,17 @@ if st.button("📢 Generar Feed para Facebook"):
                         except Exception as e:
                             st.error(f"Error al separar: {e}")
             else:
-                st.warning("No se encontró ese SKU.")
+                st.warning("No se encontró ese SKU.")            
+# --- Poner esto en un botón en tu App ---
+if st.button("📢 Generar Feed para Facebook"):
+    try:
+        total = generar_feed_facebook()
+        st.success(f"✅ Feed generado con {total} productos.")
+        st.info("Tu URL para Facebook es: https://panelcontrol-production.up.railway.app/app/static/feed_facebook.csv") 
+        # (Ojo: Tendrás que configurar tu servidor para que sirva este archivo)
+    except Exception as e:
+        st.error(f"Error: {e}")
+
 
 # ==============================================================================
 # PESTAÑA 7: SINCRONIZACIÓN CON WORDPRESS
