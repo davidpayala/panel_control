@@ -1220,7 +1220,7 @@ with tabs[2]:
     df_calc['nombre_completo'] = (
         df_calc['marca'].fillna('') + " " + 
         df_calc['modelo'].fillna('') + " - " + 
-        df_calc['nombre'].fillna('') + "(" +
+        df_calc['nombre'].fillna('') + " (" +
         df_calc['sku'].fillna('') + ")"
     ).str.strip()
 
@@ -2212,7 +2212,86 @@ if st.button("📢 Generar Feed para Facebook"):
     except Exception as e:
         st.error(f"Error: {e}")
 
-from woocommerce import API
+# ------------------------------------------------------------------
+    # HERRAMIENTA EXTRA: SEPARAR VARIANTE (SPLIT)
+    # ------------------------------------------------------------------
+    st.divider()
+    with st.expander("✂️ Herramienta: Separar Variante (Convertir en Producto Independiente)", expanded=False):
+        st.info("Usa esto cuando una variante (SKU) está metida dentro de un Producto incorrecto y quieres que tenga su propio Producto Padre separado.")
+        
+        sku_to_split = st.text_input("Ingresa el SKU a separar:", placeholder="Ej: NL-ERROR-01")
+        
+        if sku_to_split:
+            with engine.connect() as conn:
+                # 1. Buscamos la info actual
+                q_split = text("""
+                    SELECT v.sku, v.id_producto, p.marca, p.modelo, p.nombre, p.categoria, p.color_principal, p.diametro, p.url_imagen, p.url_compra
+                    FROM Variantes v
+                    JOIN Productos p ON v.id_producto = p.id_producto
+                    WHERE v.sku = :s
+                """)
+                res_split = pd.read_sql(q_split, conn, params={"s": sku_to_split})
+            
+            if not res_split.empty:
+                curr = res_split.iloc[0]
+                
+                st.markdown(f"La variante **{curr['sku']}** actualmente pertenece a: **{curr['marca']} {curr['modelo']} - {curr['nombre']}** (ID: {curr['id_producto']})")
+                st.write("👇 **Configura el NUEVO Producto Padre para esta variante:**")
+                
+                with st.form("form_split_product"):
+                    c1, c2, c3 = st.columns(3)
+                    # Pre-llenamos con los datos del padre anterior para facilitar, pero dejamos editar
+                    n_marca = c1.text_input("Nueva Marca", value=curr['marca'])
+                    n_modelo = c2.text_input("Nuevo Modelo", value=curr['modelo'])
+                    n_nombre = c3.text_input("Nuevo Nombre (Color)", value=curr['nombre']) # Aquí es donde seguramente cambiarás el nombre
+                    
+                    c4, c5 = st.columns(2)
+                    n_cat = c4.selectbox("Categoría", ["Lentes Contacto", "Pelucas", "Accesorios", "Liquidos"], index=["Lentes Contacto", "Pelucas", "Accesorios", "Liquidos"].index(curr['categoria']) if curr['categoria'] in ["Lentes Contacto", "Pelucas", "Accesorios", "Liquidos"] else 0)
+                    
+                    idx_col = COLORES_OFICIALES.index(curr['color_principal']) if curr['color_principal'] in COLORES_OFICIALES else 0
+                    n_color = c5.selectbox("Color Principal", COLORES_OFICIALES, index=idx_col)
+                    
+                    c6, c7, c8 = st.columns(3)
+                    val_dia = float(curr['diametro']) if curr['diametro'] else 0.0
+                    n_diam = c6.number_input("Diámetro", value=val_dia)
+                    n_img = c7.text_input("URL Imagen", value=curr['url_imagen'] or "")
+                    n_buy = c8.text_input("URL Compra", value=curr['url_compra'] or "")
+                    
+                    st.caption("Al confirmar, se creará un producto nuevo y este SKU se moverá ahí.")
+                    
+                    if st.form_submit_button("🚀 Separar y Crear Nuevo Producto"):
+                        try:
+                            with engine.connect() as conn:
+                                trans = conn.begin()
+                                
+                                # A) Crear el NUEVO Producto Padre
+                                res_new_prod = conn.execute(text("""
+                                    INSERT INTO Productos (marca, modelo, nombre, categoria, color_principal, diametro, url_imagen, url_compra)
+                                    VALUES (:ma, :mo, :no, :ca, :co, :di, :ui, :uc)
+                                    RETURNING id_producto
+                                """), {
+                                    "ma": n_marca, "mo": n_modelo, "no": n_nombre, "ca": n_cat,
+                                    "co": n_color, "di": str(n_diam), "ui": n_img, "uc": n_buy
+                                })
+                                new_id_prod = res_new_prod.fetchone()[0]
+                                
+                                # B) Mover la Variante al nuevo Padre
+                                conn.execute(text("""
+                                    UPDATE Variantes 
+                                    SET id_producto = :new_id 
+                                    WHERE sku = :sku
+                                """), {"new_id": new_id_prod, "sku": sku_to_split})
+                                
+                                trans.commit()
+                                
+                            st.success(f"✅ ¡Listo! La variante {sku_to_split} ahora es independiente en su propio producto (ID: {new_id_prod}).")
+                            time.sleep(2)
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"Error al separar: {e}")
+            else:
+                st.warning("No se encontró ese SKU.")
 
 # ==============================================================================
 # PESTAÑA 7: SINCRONIZACIÓN CON WORDPRESS
