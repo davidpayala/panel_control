@@ -1388,14 +1388,21 @@ with tabs[3]:
                     existe_google = buscar_contacto_google(telefono)
 
                     if existe_db > 0:
-                        st.error("⚠️ Este teléfono ya existe en la Base de Datos.")
-                    elif existe_google:
-                        st.error(f"⚠️ Este teléfono ya existe en Google Contacts (ID: {existe_google['resourceName']}).")
+                        st.error("⚠️ Este teléfono ya existe en la Base de Datos Local.")
                     else:
-                        # 3. CREAR EN GOOGLE
-                        google_id = crear_en_google(nombre_real, apellido_real, telefono)
+                        # LÓGICA CORREGIDA:
+                        # Si existe en Google, usamos ese ID. Si no, lo creamos.
+                        if existe_google:
+                            google_id = existe_google['resourceName']
+                            st.info(f"☁️ Cliente encontrado en Google (ID: {google_id}). Vinculando a la base de datos...")
+                            
+                            # Opcional: Si quieres que los datos de Google se actualicen con lo que acabas de escribir:
+                            # actualizar_en_google(google_id, nombre_real, apellido_real, telefono)
+                        else:
+                            # 3. CREAR EN GOOGLE (Solo si no existía)
+                            google_id = crear_en_google(nombre_real, apellido_real, telefono)
                         
-                        # 4. CREAR EN BASE DE DATOS
+                        # 4. CREAR EN BASE DE DATOS (Siempre se ejecuta)
                         with engine.connect() as conn:
                             trans = conn.begin()
                             try:
@@ -1412,7 +1419,7 @@ with tabs[3]:
                                     "est": estado_ini, "gid": google_id
                                 })
                                 trans.commit()
-                                st.success(f"✅ Cliente creado en Sistema y Google.")
+                                st.success(f"✅ Cliente registrado exitosamente (Sincronizado).")
                                 time.sleep(1)
                                 st.rerun()
                             except Exception as e:
