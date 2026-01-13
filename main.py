@@ -208,65 +208,6 @@ def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=N
     })
     st.success(f"Añadido: {nombre}")
 
-# función para "traducir" el archivo de Streamlit a algo que Meta entienda.
-
-def enviar_multimedia_meta(telefono, archivo_bytes, nombre_archivo, tipo_mime):
-    """
-    Sube el archivo a Meta y envía el mensaje con el ID generado.
-    Retorna: (True/False, Mensaje de error o ID)
-    """
-    url_upload = f"https://graph.facebook.com/v18.0/{os.getenv('WHATSAPP_PHONE_ID')}/media"
-    headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}"}
-    
-    # 1. SUBIR ARCHIVO A META
-    files = {
-        'file': (nombre_archivo, archivo_bytes, tipo_mime),
-        'messaging_product': (None, 'whatsapp')
-    }
-    
-    try:
-        req_upload = requests.post(url_upload, headers=headers, files=files)
-        if req_upload.status_code != 200:
-            return False, f"Error subiendo a Meta: {req_upload.text}"
-        
-        media_id = req_upload.json()['id']
-    except Exception as e:
-        return False, str(e)
-
-    # 2. DETERMINAR TIPO DE MENSAJE
-    tipo_mensaje = "document" # Por defecto
-    if "image" in tipo_mime: tipo_mensaje = "image"
-    elif "audio" in tipo_mime: tipo_mensaje = "audio"
-    elif "video" in tipo_mime: tipo_mensaje = "video"
-
-    # 3. ENVIAR MENSAJE CON EL ID
-    url_msg = f"https://graph.facebook.com/v18.0/{os.getenv('PHONE_NUMBER_ID')}/messages"
-    headers_msg = {
-        "Authorization": f"Bearer {os.getenv('META_TOKEN')}",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": telefono,
-        "type": tipo_mensaje,
-        tipo_mensaje: {"id": media_id}
-    }
-    
-    # Ajuste para documentos (agregar nombre de archivo)
-    if tipo_mensaje == "document":
-        data["document"]["filename"] = nombre_archivo
-
-    try:
-        req_msg = requests.post(url_msg, headers=headers_msg, json=data)
-        if req_msg.status_code in [200, 201]:
-            return True, f"[{tipo_mensaje.upper()} ENVIADO]"
-        else:
-            return False, req_msg.text
-    except Exception as e:
-        return False, str(e)
-    
 # Función para descargar fotos de WhatsApp (Con caché para velocidad)
 @st.cache_data(show_spinner=False)
 def obtener_imagen_whatsapp(media_id):
@@ -2649,15 +2590,16 @@ with tabs[6]:
                             st.error(f"Error al guardar: {e}")
 
 # ==============================================================================
-# PESTAÑA CHAT CENTER (ACTUALIZADA CON MULTIMEDIA)
+# PESTAÑA CHAT CENTER (ADAPTADA A TUS FUNCIONES)
 # ==============================================================================
 with tabs[7]: 
     st.subheader("💬 Chat Center")
 
+    # Inicializar memoria de chat seleccionado
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # Estilos CSS
+    # Estilos CSS para botones tipo tarjeta
     st.markdown("""
     <style>
     div.stButton > button:first-child {
@@ -2672,6 +2614,7 @@ with tabs[7]:
     with col_lista:
         st.markdown("#### 📩 Bandeja")
         with engine.connect() as conn:
+            # Consulta para traer conversaciones ordenadas
             lista_chats = conn.execute(text("""
                 SELECT m.telefono, MAX(m.fecha) as ultima_fecha,
                 COALESCE(MAX(c.nombre_corto), MAX(c.nombre) || ' ' || MAX(c.apellido), m.telefono) as nombre_mostrar,
@@ -2687,9 +2630,11 @@ with tabs[7]:
             tel, nombre = chat.telefono, chat.nombre_mostrar
             hora = chat.ultima_fecha.strftime('%d/%m %H:%M')
             notif = f"🔴 {chat.no_leidos}" if chat.no_leidos > 0 else ""
-            tipo = "primary" if st.session_state['chat_actual_telefono'] == tel else "secondary"
+            
+            # Lógica de selección visual
+            tipo_btn = "primary" if st.session_state['chat_actual_telefono'] == tel else "secondary"
 
-            if st.button(f"👤 {nombre}\n⏱ {hora} {notif}", key=f"btn_{tel}", type=tipo):
+            if st.button(f"👤 {nombre}\n⏱ {hora} {notif}", key=f"btn_{tel}", type=tipo_btn):
                 st.session_state['chat_actual_telefono'] = tel
                 st.rerun()
 
@@ -2701,15 +2646,16 @@ with tabs[7]:
             st.markdown(f"### 💬 Chat con: **{telefono_activo}**")
             st.divider()
             
-            contenedor_mensajes = st.container(height=450) # Reduje un poco altura para dar espacio al input
+            # Contenedor de historial
+            contenedor_mensajes = st.container(height=450)
             
-            # A. Obtener mensajes
+            # A. Leer DB y Marcar como leídos
             with engine.connect() as conn:
                 conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :t AND tipo='ENTRANTE'"), {"t": telefono_activo})
                 conn.commit()
                 historial = pd.read_sql(text("SELECT tipo, contenido, fecha FROM mensajes WHERE telefono = :t ORDER BY fecha ASC"), conn, params={"t": telefono_activo})
 
-            # B. Dibujar mensajes
+            # B. Renderizar Mensajes
             with contenedor_mensajes:
                 if historial.empty: st.write("Inicia la conversación...")
                 
@@ -2720,78 +2666,104 @@ with tabs[7]:
                     
                     with st.chat_message(role, avatar=avatar):
                         contenido = row['contenido']
-                        
-                        # LOGICA DE VISUALIZACIÓN MULTIMEDIA (Tu lógica existente)
+                        # Pequeña lógica para mostrar visualmente si es multimedia (fallback visual)
                         if "|ID:" in contenido:
-                            try:
-                                partes = contenido.split("|ID:")
-                                texto_visible = partes[0].strip()
-                                # ... (Aquí va tu lógica de obtener_imagen_whatsapp si la tienes) ...
-                                st.markdown(f"*{texto_visible}*") # Fallback visual
-                            except:
-                                st.error("Error visualizando adjunto")
+                            partes = contenido.split("|ID:")
+                            texto_vis = partes[0].strip()
+                            st.markdown(f"**{texto_vis}**")
                         else:
                             st.markdown(contenido)
                         st.caption(f"{row['fecha'].strftime('%H:%M')} - {row['tipo']}")
 
             # ============================================================
-            # C. AREA DE ENVÍO (TEXTO + MULTIMEDIA)
+            # C. ÁREA DE ENVÍO (TEXTO + TUS FUNCIONES MULTIMEDIA)
             # ============================================================
             
-            # 1. INPUT DE TEXTO NORMAL
+            # 1. Input de Texto
             prompt = st.chat_input("Escribe tu respuesta...")
             
-            # 2. EXPANDER PARA ADJUNTAR ARCHIVOS (Se coloca encima del chat input visualmente)
-            with st.expander("📎 Adjuntar Imagen, Audio o Documento", expanded=False):
-                archivo_upload = st.file_uploader("Selecciona archivo", type=["png", "jpg", "jpeg", "pdf", "mp3", "ogg"], key="uploader_chat")
+            # 2. Área de Adjuntos (Usando tus nuevas funciones)
+            with st.expander("📎 Adjuntar Imagen o Documento", expanded=False):
+                archivo_upload = st.file_uploader("Selecciona archivo", type=["png", "jpg", "jpeg", "pdf"], key="uploader_chat")
                 
                 if archivo_upload is not None:
                     if st.button("📤 Enviar Archivo", key="btn_send_media"):
                         with st.spinner("Subiendo a WhatsApp..."):
-                            # Detectar MIME y enviar
-                            mime_type = archivo_upload.type
+                            
+                            # Paso 0: Preparar datos
                             bytes_data = archivo_upload.getvalue()
+                            mime_type = archivo_upload.type
+                            nombre_archivo = archivo_upload.name
                             
-                            # Llamada a la funcion auxiliar
-                            exito, resultado = enviar_multimedia_meta(telefono_activo, bytes_data, archivo_upload.name, mime_type)
+                            # Paso 1: Subir a Meta (Tu función)
+                            media_id, error_upload = subir_archivo_meta(bytes_data, mime_type)
                             
-                            if exito:
-                                # Guardar en DB para historial
-                                tel_guardar = telefono_activo.replace("+", "").strip()
-                                if len(tel_guardar) == 9: tel_guardar = f"51{tel_guardar}"
-                                
-                                # Creamos un texto representativo para la DB
-                                etiqueta_db = f"📷 [Imagen enviada] {archivo_upload.name}" if "image" in mime_type else f"📎 [Archivo enviado] {archivo_upload.name}"
-                                
-                                with engine.connect() as conn:
-                                    conn.execute(text("""
-                                        INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido)
-                                        VALUES (:tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
-                                    """), {"tel": tel_guardar, "txt": etiqueta_db})
-                                    conn.commit()
-                                
-                                st.success("Enviado!")
-                                st.rerun()
+                            if error_upload:
+                                st.error(error_upload)
                             else:
-                                st.error(f"Error Meta: {resultado}")
+                                # Paso 2: Enviar el mensaje con el ID (Tu función)
+                                exito, resp = enviar_mensaje_media(
+                                    telefono=telefono_activo,
+                                    media_id=media_id,
+                                    tipo_archivo=mime_type,
+                                    caption="", # Opcional: Podrías poner un input para caption
+                                    filename=nombre_archivo
+                                )
+                                
+                                if exito:
+                                    # Paso 3: Guardar en DB para historial
+                                    # Formato estandarizado de teléfono
+                                    tel_guardar = telefono_activo.replace("+", "").strip()
+                                    if len(tel_guardar) == 9: tel_guardar = f"51{tel_guardar}"
+                                    
+                                    # Etiqueta visual para la base de datos
+                                    etiqueta_db = f"📷 [Imagen enviada] {nombre_archivo}" if "image" in mime_type else f"📎 [Archivo enviado] {nombre_archivo}"
+                                    
+                                    with engine.connect() as conn:
+                                        conn.execute(text("""
+                                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido)
+                                            VALUES (:tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
+                                        """), {"tel": tel_guardar, "txt": etiqueta_db})
+                                        conn.commit()
+                                    
+                                    st.success("¡Enviado correctamente!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error al enviar mensaje: {resp}")
 
-            # 3. LÓGICA DE ENVÍO DE TEXTO (Tu código existente)
+            # 3. Lógica de Envío de Texto Normal
             if prompt:
-                # enviar_mensaje_whatsapp (Tu funcion existente para texto)
-                enviado_ok, resp = enviar_mensaje_whatsapp(telefono_activo, prompt)
+                # Nota: Aquí usamos tu función de texto normal si existe, o una simple request
+                # Asumo que tienes una función 'enviar_mensaje_whatsapp' para texto simple.
+                # Si no, usa 'enviar_mensaje_media' sin ID (pero requiere adaptar la función).
+                # Usaré la lógica estándar de requests para texto por seguridad:
                 
-                if enviado_ok:
-                    tel_guardar = telefono_activo.replace("+", "").strip()
-                    if len(tel_guardar) == 9: tel_guardar = f"51{tel_guardar}"
-                    with engine.connect() as conn:
-                        conn.execute(text("""
-                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido)
-                            VALUES (:tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
-                        """), {"tel": tel_guardar, "txt": prompt})
-                        conn.commit()
-                    st.rerun()
-                else:
-                    st.error(f"Error enviando: {resp}")
+                try:
+                    tk = os.getenv("WHATSAPP_TOKEN")
+                    pid = os.getenv("WHATSAPP_PHONE_ID")
+                    headers = {"Authorization": f"Bearer {tk}", "Content-Type": "application/json"}
+                    data_txt = {
+                        "messaging_product": "whatsapp", "to": telefono_activo, "type": "text",
+                        "text": {"body": prompt}
+                    }
+                    r_txt = requests.post(f"https://graph.facebook.com/v17.0/{pid}/messages", headers=headers, json=data_txt)
+                    
+                    if r_txt.status_code == 200:
+                        # Guardar en DB
+                        tel_guardar = telefono_activo.replace("+", "").strip()
+                        if len(tel_guardar) == 9: tel_guardar = f"51{tel_guardar}"
+                        with engine.connect() as conn:
+                            conn.execute(text("""
+                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido)
+                                VALUES (:tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE)
+                            """), {"tel": tel_guardar, "txt": prompt})
+                            conn.commit()
+                        st.rerun()
+                    else:
+                        st.error(f"Error enviando texto: {r_txt.text}")
+                except Exception as e:
+                    st.error(f"Error de conexión: {e}")
 
         else:
-            st.markdown("<div style='text-align: center; margin-top: 50px; color: gray;'><h3>👈 Selecciona un cliente</h3></div>", unsafe_allow_html=True)
+            # Pantalla vacía cuando no hay chat seleccionado
+            st.markdown("<div style='text-align: center; margin-top: 50px; color: gray;'><h3>👈 Selecciona un cliente de la lista</h3></div>", unsafe_allow_html=True)
