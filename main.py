@@ -215,8 +215,8 @@ def enviar_multimedia_meta(telefono, archivo_bytes, nombre_archivo, tipo_mime):
     Sube el archivo a Meta y envía el mensaje con el ID generado.
     Retorna: (True/False, Mensaje de error o ID)
     """
-    url_upload = f"https://graph.facebook.com/v18.0/{os.getenv('PHONE_NUMBER_ID')}/media"
-    headers = {"Authorization": f"Bearer {os.getenv('META_TOKEN')}"}
+    url_upload = f"https://graph.facebook.com/v18.0/{os.getenv('WHATSAPP_PHONE_ID')}/media"
+    headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}"}
     
     # 1. SUBIR ARCHIVO A META
     files = {
