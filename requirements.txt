@@ -2,6 +2,7 @@ streamlit
 pandas
 sqlalchemy
 psycopg2-binary
+python-multipart
 python-dotenv
 google-auth
 google-auth-oauthlib
@@ -11,3 +12,6 @@ extra-streamlit-components
 requests
 woocommerce
 openpyxl
+fastapi
+uvicorn
+pydantic
