@@ -12,6 +12,7 @@ from googleapiclient.discovery import build
 import requests # Necesario para hablar con la API de Meta
 import random
 import mimetypes
+import io
 
 # Cargar variables de entorno (Local y Nube)
 load_dotenv()
@@ -2670,13 +2671,16 @@ with tabs[7]:
 
                         # 1. SI HAY IMAGEN GUARDADA (Mensajes salientes nuevos)
                         if data_binaria is not None:
-                            # Mostramos la etiqueta
+                            # Mostramos la etiqueta (nombre del archivo)
                             st.markdown(f"**{contenido}**")
                             try:
-                                # Renderizamos la imagen desde la BD
-                                st.image(data_binaria, width=250)
-                            except:
-                                st.warning("No se pudo previsualizar el archivo (¿es un PDF/Audio?)")
+                                # --- CORRECCIÓN AQUÍ ---
+                                # Convertimos los datos crudos en un stream de archivo
+                                imagen_stream = io.BytesIO(data_binaria)
+                                st.image(imagen_stream, width=250)
+                            except Exception as e:
+                                # Esto nos dirá el error real si vuelve a fallar
+                                st.error(f"Error técnico mostrando imagen: {e}")
 
                         # 2. SI ES MENSAJE DE TEXTO O MULTIMEDIA ENTRANTE (Lógica anterior)
                         elif "|ID:" in contenido:
