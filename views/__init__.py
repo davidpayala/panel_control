@@ -7,4 +7,4 @@ from . import clientes
 from . import seguimiento
 from . import catalogo
 from . import facturacion
-from . import chat
+from . import chats
