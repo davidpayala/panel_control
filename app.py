@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 from sqlalchemy import text
+import streamlit as st
 
 # Importar configuración y módulos
 from database import engine

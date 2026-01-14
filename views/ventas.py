@@ -1,5 +1,6 @@
 # Importamos random aquí por seguridad por si falta arriba
 import random 
+import streamlit as st
 
 # --- CABECERA ---
 col_modo, col_titulo = st.columns([1, 3])
