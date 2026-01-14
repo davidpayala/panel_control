@@ -1,41 +1,21 @@
+import streamlit as st
 import os
 import requests
+import urllib.parse
+import time
+import pandas as pd
+from sqlalchemy import text
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-import streamlit as st
-import urllib.parse 
-from sqlalchemy import create_engine
-# ==============================================================================
-# 🚀 A PARTIR DE AQUÍ VA TU CÓDIGO DEL SISTEMA (BASE DE DATOS Y PESTAÑAS)
-# ==============================================================================
 
-# --- CONEXIÓN BASE DE DATOS ---
-def get_connection():
-    try:
-        user = os.getenv('DB_USER')
-        password = os.getenv('DB_PASS')
-        host = os.getenv('DB_HOST')
-        port = os.getenv('DB_PORT')
-        dbname = os.getenv('DB_NAME')
-        password_encoded = urllib.parse.quote_plus(password)
-        return create_engine(f'postgresql+psycopg2://{user}:{password_encoded}@{host}:{port}/{dbname}')
-    except Exception as e:
-        st.error(f"Error BD: {e}")
-        return None
-
-engine = get_connection()
-
-# --- INICIALIZAR CARRITO DE COMPRAS (Memoria Temporal) ---
-if 'carrito' not in st.session_state:
-    st.session_state.carrito = []
-
-
+# --- IMPORTANTE: Usamos la conexión centralizada ---
+from database import engine
 
 # ==============================================================================
 # FUNCIONES AUXILIARES
 # ==============================================================================
 
-# --- FUNCIÓN 1 (MODIFICADA PARA VER EL ID) ---
+# --- FUNCIÓN 1: SUBIR ARCHIVO A META ---
 def subir_archivo_meta(archivo_bytes, mime_type):
     token = os.getenv("WHATSAPP_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
@@ -110,6 +90,10 @@ def enviar_mensaje_media(telefono, media_id, tipo_archivo, caption="", filename=
         return False, str(e)
     
 def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
+    # Nota: Esta función manipula st.session_state, asegúrate de que 'carrito' exista en app.py
+    if 'carrito' not in st.session_state:
+        st.session_state.carrito = []
+
     # Validar stock si es de inventario
     if es_inventario:
         # Verificar si ya está en el carrito para sumar
@@ -197,7 +181,7 @@ def generar_feed_facebook():
     return len(df_feed)
 
 
-# --- FUNCIÓN AUXILIAR PARA GUARDAR CAMBIOS (Pégalo al final del archivo, sin sangría) ---
+# --- FUNCIÓN AUXILIAR PARA GUARDAR CAMBIOS ---
 def actualizar_estados(df_modificado):
     """
     Recorre el DataFrame modificado por el usuario y actualiza 
@@ -227,10 +211,10 @@ def actualizar_estados(df_modificado):
             st.error(f"Error al actualizar: {e}")
 
 # ==============================================================================
-# FUNCIÓN DE ENVÍO A WHATSAPP (MODO SEGURO / RAILWAY)
+# FUNCIÓN DE ENVÍO A WHATSAPP (TEXTO SIMPLE)
 # ==============================================================================
 def enviar_mensaje_whatsapp(numero, texto):
-    # 1. Credenciales (Asegúrate de que estas sean las correctas y SIN comillas en el .env)
+    # 1. Credenciales
     TOKEN = os.getenv("WHATSAPP_TOKEN")
     PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
 
@@ -243,17 +227,13 @@ def enviar_mensaje_whatsapp(numero, texto):
         "Content-Type": "application/json"
     }
     
-    # --- 2. LIMPIEZA Y FORMATO DEL NÚMERO (AQUÍ ESTÁ LA SOLUCIÓN) ---
-    # Paso A: Quitar espacios, guiones y símbolos '+'
+    # --- 2. LIMPIEZA Y FORMATO DEL NÚMERO ---
     numero_limpio = str(numero).replace("+", "").replace(" ", "").replace("-", "").strip()
     
-    # Paso B: Lógica para Perú (Si tiene 9 dígitos, le falta el 51)
     if len(numero_limpio) == 9:
         numero_final = f"51{numero_limpio}"
     else:
-        # Si ya tiene 11 dígitos (519...) o es otro caso, lo dejamos tal cual
         numero_final = numero_limpio
-    # ----------------------------------------------------------------
     
     data = {
         "messaging_product": "whatsapp",
@@ -271,6 +251,9 @@ def enviar_mensaje_whatsapp(numero, texto):
     except Exception as e:
         return False, str(e)
     
+# ==============================================================================
+# LÓGICA GOOGLE
+# ==============================================================================
     
 def sincronizar_desde_google_batch():
     """Recorre clientes con nombre vacío, los busca en Google y actualiza sus datos reales."""
@@ -281,12 +264,11 @@ def sincronizar_desde_google_batch():
 
     with engine.connect() as conn:
         # 1. Buscamos clientes pendientes
-        # (Esta lectura inicia la transacción automática)
-        df_pendientes = pd.read_sql("""
+        df_pendientes = pd.read_sql(text("""
             SELECT id_cliente, telefono, nombre_corto, google_id 
             FROM Clientes 
             WHERE (nombre IS NULL OR nombre = '') AND activo = TRUE
-        """, conn)
+        """), conn)
         
         if df_pendientes.empty:
             st.success("¡Todos tus clientes ya tienen nombre y apellido!")
@@ -334,7 +316,6 @@ def sincronizar_desde_google_batch():
             return
 
         # 3. Cruzamos la información
-        # --- ELIMINADO: trans = conn.begin() ---
         try:
             for idx, row in df_pendientes.iterrows():
                 telefono_db = normalizar_celular(row['telefono'])
@@ -356,7 +337,6 @@ def sincronizar_desde_google_batch():
                 
                 progress_bar.progress((idx + 1) / total)
             
-            # --- AGREGADO: Confirmamos todo al final ---
             conn.commit() 
             
             st.success(f"✅ Éxito: Se actualizaron {actualizados} clientes desde Google.")
@@ -365,8 +345,6 @@ def sincronizar_desde_google_batch():
             
         except Exception as e:
             st.error(f"Error actualizando DB: {e}")
-
-# --- AGREGAR ESTO AL INICIO DEL ARCHIVO (DESPUÉS DE LOS IMPORTS) ---
 
 def normalizar_celular(numero):
     """
@@ -391,7 +369,6 @@ def normalizar_celular(numero):
 # ==============================================================================
 # LÓGICA GOOGLE: SINCRONIZACIÓN REAL-TIME
 # ==============================================================================
-# --- BUSCA ESTA PARTE EN TU CÓDIGO Y ACTUALÍZALA ---
 
 def get_google_service():
     # 1. SI ESTAMOS EN LA NUBE Y NO EXISTE EL ARCHIVO, LO CREAMOS DESDE LA VARIABLE SECRETA
@@ -407,8 +384,6 @@ def get_google_service():
             creds = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/contacts'])
             return build('people', 'v1', credentials=creds)
         except Exception as e:
-            # Si el token falló, mejor lo borramos para no causar errores infinitos
-            # os.remove('token.json') 
             return None
     return None
 
@@ -422,8 +397,6 @@ def buscar_contacto_google(telefono):
     if len(tel_busqueda) < 7: return None
 
     # Descargamos agenda (paginada) para buscar
-    # NOTA: La API de People no permite buscar directo por teléfono fácilmente, 
-    # así que iteramos (es rápido para <5000 contactos)
     page_token = None
     while True:
         results = service.people().connections().list(
@@ -484,7 +457,5 @@ def actualizar_en_google(google_id, nombre, apellido, telefono):
         ).execute()
         return True
     except Exception as e:
-        # Si falla (ej: fue borrado), intentamos crearlo de nuevo o buscarlo
         st.warning(f"No se pudo actualizar en Google (¿Quizás se borró?): {e}")
         return False
-    
