@@ -16,3 +16,4 @@ fastapi
 uvicorn
 pydantic
 Flask
+streamlit-autorefresh
