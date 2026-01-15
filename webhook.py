@@ -27,6 +27,11 @@ def recibir_mensaje():
         sender_raw = payload.get('from', '')
         sender = sender_raw.split('@')[0] 
         
+        # 2. CRUCIAL: Quitamos el sufijo de dispositivo (:8, :12, etc)
+        # Si el número viene como "51999888777:8", esto lo deja en "51999888777"
+        if ':' in sender:
+            sender = sender.split(':')[0]
+
         body = payload.get('body', '')
         has_media = payload.get('hasMedia', False)
         
