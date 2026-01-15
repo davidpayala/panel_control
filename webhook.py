@@ -16,80 +16,83 @@ def descargar_media(media_url):
         url_final = media_url
         if not media_url.startswith("http"):
              url_final = f"{WAHA_URL}{media_url}"
-        
         headers = {}
-        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-            
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY   
         r = requests.get(url_final, headers=headers, timeout=10)
         return r.content if r.status_code == 200 else None
     except Exception as e:
         print(f"❌ Excepción media: {e}")
         return None
 
-# --- FUNCIÓN SALVAVIDAS ---
-def extraer_numero_seguro(campo_raw):
+# --- FUNCIÓN MAESTRA DE EXTRACCIÓN ---
+def extraer_dato_seguro(campo_raw):
     """
-    Convierte CUALQUIER cosa (Diccionario, Objeto, None) en un string '51999@c.us'
+    Saca el texto real ('51999@c.us') de cualquier estructura extraña que mande WAHA.
     """
     if campo_raw is None:
         return ""
     
-    # Si es un objeto (Diccionario), sacamos el ID serializado o el usuario
+    # Si es un Diccionario (Objeto), buscamos el usuario o el serializado
     if isinstance(campo_raw, dict):
-        # WAHA suele mandar '_serialized' o 'user'
-        return str(campo_raw.get('_serialized') or campo_raw.get('user') or "")
+        # Prioridad: 'user' (el número limpio) > '_serialized' (con @c.us)
+        return str(campo_raw.get('user') or campo_raw.get('_serialized') or "")
     
-    # Si ya es texto, lo devolvemos tal cual
+    # Si ya es texto, devolvemos texto
     return str(campo_raw)
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
+    # Validación simple
     api_key = request.headers.get('X-Api-Key')
     if WAHA_KEY and api_key != WAHA_KEY:
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.json
-
-    # 1. IMPRIMIR DATOS (Para que veas la estructura real en los logs)
-    # print(f"📩 PAYLOAD RAW: {json.dumps(data, indent=2)}") 
-
+    
     if data.get('event') == 'message':
         payload = data.get('payload', {})
-        
-        # 2. EXTRACCIÓN SEGURA (Convertimos TODO a texto primero)
-        # Esto evita el crash "dict object has no attribute split"
-        from_str = extraer_numero_seguro(payload.get('from'))
-        participant_str = extraer_numero_seguro(payload.get('participant'))
-        author_str = extraer_numero_seguro(payload.get('author'))
 
-        # 3. LÓGICA DE SELECCIÓN (Prioridad al número real 51...)
-        numero_final = from_str # Por defecto
+        # ==================================================================
+        # 🕵️‍♂️ ZONA DE DIAGNÓSTICO (ESTO ES LO QUE QUIERES VER)
+        # ==================================================================
+        print("\n🔍 --- INSPECCIONANDO DATOS DEL CONTACTO ---")
+        print(f"RAW 'from': {json.dumps(payload.get('from'))}")
+        print(f"RAW 'participant': {json.dumps(payload.get('participant'))}")
+        print(f"RAW 'author': {json.dumps(payload.get('author'))}")
+        print("----------------------------------------------------\n", flush=True)
+        # ==================================================================
+        
+        # 1. Convertimos todo a TEXTO PLANO primero (Anti-Crash)
+        from_str = extraer_dato_seguro(payload.get('from'))
+        participant_str = extraer_dato_seguro(payload.get('participant'))
+        author_str = extraer_dato_seguro(payload.get('author'))
+
+        # 2. SELECCIÓN INTELIGENTE DEL NÚMERO
+        # Buscamos cuál de los 3 campos tiene un número que empieza con '51' (Perú)
+        # y NO es el número raro '319...' (LID)
         
         candidatos = [participant_str, author_str, from_str]
-        
-        # Buscamos cual de todos tiene el formato de celular Perú ("51" y "@c.us")
+        numero_final = from_str # Valor por defecto (aunque sea el malo)
+
         for cand in candidatos:
-            if '51' in cand and '@c.us' in cand:
-                numero_final = cand
-                print(f"🎯 Número corregido detectado: {numero_final}")
+            # Limpiamos basura para comparar solo números
+            cand_clean = cand.split('@')[0].split(':')[0]
+            
+            # REGLA DE ORO: Si empieza con 51 y tiene longitud de celular (11 dígitos aprox)
+            if cand_clean.startswith('51') and len(cand_clean) >= 11:
+                numero_final = cand_clean
+                print(f"🎯 ¡NÚMERO REAL ENCONTRADO!: {numero_final}")
                 break
         
-        # 4. LIMPIEZA FINAL
-        # Ahora que 'numero_final' es 100% texto, el split funcionará
-        try:
-            telefono_limpio = numero_final.split('@')[0].split(':')[0]
-        except Exception as e:
-            print(f"⚠️ Error limpiando número: {e}")
-            telefono_limpio = "Error"
+        # Si después de todo seguimos con el LID raro, intentamos limpiar lo que quede
+        telefono_limpio = numero_final.split('@')[0].split(':')[0]
 
         # -------------------------------------------------------
-
+        # Procesamiento del cuerpo y multimedia (Igual que siempre)
         body = payload.get('body', '')
         has_media = payload.get('hasMedia', False)
-        
         archivo_bytes = None
         
-        # Lógica de Imágenes
         if has_media:
             media_info = payload.get('media', {})
             media_url = media_info.get('url')
@@ -104,7 +107,7 @@ def recibir_mensaje():
             else:
                 body = "📷 https://www.spanishdict.com/translate/vac%C3%ADa"
 
-        # Guardar en Base de Datos
+        # Guardar en BD
         try:
             with engine.connect() as conn:
                 conn.execute(text("""
@@ -116,7 +119,7 @@ def recibir_mensaje():
                     "data": archivo_bytes
                 })
                 conn.commit()
-            print(f"✅ Guardado mensaje de: {telefono_limpio}")
+            print(f"✅ Guardado en DB como: {telefono_limpio}")
         except Exception as e:
             print(f"❌ Error DB: {e}")
 
