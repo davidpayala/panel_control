@@ -5,7 +5,7 @@ import io
 import os
 from streamlit_autorefresh import st_autorefresh 
 from database import engine 
-from utils import subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp, crear_en_google, actualizar_en_google
+from utils import subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp, crear_en_google, actualizar_en_google, normalizar_telefono_maestro
 
 def render_chat():
     st_autorefresh(interval=5000, key="chat_autorefresh")
@@ -14,7 +14,7 @@ def render_chat():
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # CSS para las tarjetas de mensajes
+    # CSS para las tarjetas de mensajes y badges
     st.markdown("""
     <style>
     div.stButton > button:first-child { text-align: left; width: 100%; padding: 15px; border-radius: 10px; margin-bottom: 5px; }
@@ -101,8 +101,7 @@ def render_chat():
             
             if prompt: enviar_texto_chat(telefono_activo, prompt)
 
-
-# BUSCAR ESTA FUNCIÓN Y REEMPLAZARLA COMPLETA
+# --- FUNCIÓN CORREGIDA PARA MOSTRAR INFO AVANZADA ---
 def mostrar_info_avanzada(telefono):
     with engine.connect() as conn:
         # 1. BUSCAR CLIENTE POR TELÉFONO
@@ -124,7 +123,6 @@ def mostrar_info_avanzada(telefono):
         id_del_cliente = cl.get('id_cliente') or cl.get('id') # Soporte para ambos nombres de ID
 
         # 2. BUSCAR DIRECCIONES POR ID (NO POR TELÉFONO)
-        # Aquí es donde fallaba antes. Ahora usamos el ID.
         if id_del_cliente:
             dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE id_cliente=:id"), conn, params={"id": id_del_cliente})
         else:
@@ -197,8 +195,10 @@ def enviar_archivo_chat(telefono, archivo):
         else: st.error(f"Fallo: {resp}")
 
 def guardar_mensaje_saliente(telefono, texto, data):
+    # Usar la función maestra si es posible, o una limpieza básica
     tel_clean = telefono.replace("+", "").strip()
     if len(tel_clean) == 9: tel_clean = f"51{tel_clean}"
+    
     with engine.connect() as conn:
         conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data) VALUES (:t, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE, :d)"), {"t": tel_clean, "txt": texto, "d": data})
         conn.commit()
