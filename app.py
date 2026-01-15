@@ -11,7 +11,7 @@ from sqlalchemy import text
 from database import engine
 import utils 
 
-# --- CORRECCIÓN AQUÍ: 'chat' -> 'chats' ---
+# Importar las vistas
 from views import ventas, compras, inventario, clientes, seguimiento, catalogo, facturacion, chats
 
 # Cargar variables
@@ -20,18 +20,13 @@ load_dotenv()
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
 
-# --- LOGIN ---
+# --- LOGIN (Marcador de posición) ---
 def check_password():
-    # ... (Asegúrate de tener tu lógica de login completa aquí) ...
     if st.session_state.get("password_correct", False):
         return True
-    
-    # Lógica resumida de cookies (necesitas el código completo del login que tenías antes)
-    # Si quieres restaurar el login completo, avísame.
     return False 
 
 # --- INICIO DE LA APP ---
-# (Descomenta esto cuando tengas el login restaurado)
 # if not check_password():
 #    st.stop()
 
@@ -40,6 +35,7 @@ if 'carrito' not in st.session_state:
     st.session_state.carrito = []
 
 # --- CALCULAR NOTIFICACIONES (CHAT) ---
+# Esto define el texto del botón, ej: "💬 Chat (2)"
 try:
     with engine.connect() as conn:
         n_no_leidos = conn.execute(text(
@@ -50,46 +46,57 @@ except:
 
 titulo_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
 
-# --- MENÚ PRINCIPAL ---
-st.title("🛒 KM - Punto de Venta")
+# --- BARRA LATERAL (SIDEBAR) ---
+# Usamos sidebar en lugar de tabs para evitar que se reinicie la vista al recargar
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100) # O tu logo
+    st.title("Menú K&M")
+    
+    # LA CLAVE DEL ÉXITO: key="navegacion_principal"
+    # Esto hace que Streamlit recuerde dónde estabas aunque la página se recargue.
+    menu_seleccionado = st.radio(
+        "Ir a:", 
+        [
+            "🛒 Venta (POS)", 
+            "📦 Compras", 
+            "🔎 Inventario", 
+            "👤 Clientes", 
+            "📆 Seguimiento", 
+            "🔧 Catálogo",
+            "💰 Facturación",
+            titulo_chat # El texto dinámico del chat
+        ],
+        key="navegacion_principal" 
+    )
+    
+    st.divider()
+    st.caption("Sistema v2.0 - WAHA")
+
+# --- RENDERIZADO DE PÁGINAS ---
+st.title(f"🛒 KM - {menu_seleccionado.split('(')[0]}") # Título dinámico
 st.markdown("---")
 
-# Definimos las pestañas
-pestanas = st.tabs([
-    "🛒 VENTA (POS)", 
-    "📦 Compras", 
-    "🔎 Inventario", 
-    "👤 Clientes", 
-    "📆 Seguimiento", 
-    "🔧 Catálogo",
-    "💰 Facturación",
-    titulo_chat
-])
-
-# --- CARGAMOS CADA PESTAÑA DESDE SU ARCHIVO ---
-with pestanas[0]:
+if menu_seleccionado == "🛒 Venta (POS)":
     ventas.render_ventas()
 
-with pestanas[1]:
+elif menu_seleccionado == "📦 Compras":
     compras.render_compras()
 
-with pestanas[2]:
+elif menu_seleccionado == "🔎 Inventario":
     inventario.render_inventario()
 
-with pestanas[3]:
+elif menu_seleccionado == "👤 Clientes":
     clientes.render_clientes()
 
-with pestanas[4]:
+elif menu_seleccionado == "📆 Seguimiento":
     seguimiento.render_seguimiento()
 
-with pestanas[5]:
+elif menu_seleccionado == "🔧 Catálogo":
     catalogo.render_catalogo()
 
-with pestanas[6]:
+elif menu_seleccionado == "💰 Facturación":
     facturacion.render_facturacion()
 
-with pestanas[7]:
-    # --- CORRECCIÓN AQUÍ: 'chats.render_chat()' ---
+elif menu_seleccionado == titulo_chat:
+    # Aquí llamamos al chat que tiene el st_autorefresh
     chats.render_chat()
-
-# (Opcional) Guardar cambios globales o funciones de cierre
