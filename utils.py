@@ -5,50 +5,116 @@ import base64
 import time
 import pandas as pd
 from sqlalchemy import text
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 from database import engine
 
-# --- CONFIGURACIÓN WAHA ---
-WAHA_URL = os.getenv("WAHA_URL")  # Ej: https://waha-production.up.railway.app
-WAHA_KEY = os.getenv("WAHA_KEY")  # Si le pusiste clave, sino ignóralo
+# ==============================================================================
+# CONFIGURACIÓN WAHA (WhatsApp)
+# ==============================================================================
+WAHA_URL = os.getenv("WAHA_URL") 
+WAHA_SESSION = os.getenv("WAHA_SESSION", "default") 
+WAHA_KEY = os.getenv("WAHA_KEY") 
 
-# --- 1. ENVIAR TEXTO (WAHA) ---
+# ==============================================================================
+# FUNCIONES DE ENVÍO (WAHA)
+# ==============================================================================
+
+def formatear_numero_waha(numero):
+    """WAHA espera formato internacional sin símbolos: 51999888777"""
+    n = str(numero).replace("+", "").replace(" ", "").replace("-", "").strip()
+    if len(n) == 9: # Caso Perú sin 51
+        return f"51{n}"
+    return n
+
+# --- 1. ENVIAR TEXTO ---
 def enviar_mensaje_whatsapp(numero, texto):
-    if not WAHA_URL: return False, "Falta WAHA_URL"
-    
-    # Formato numero: 51999888777@c.us
-    numero = str(numero).replace("+", "").strip()
-    if len(numero) == 9: numero = f"51{numero}"
-    chat_id = f"{numero}@c.us"
+    if not WAHA_URL:
+        return False, "⚠️ Falta WAHA_URL en .env"
+
+    number_clean = formatear_numero_waha(numero)
+    chat_id = f"{number_clean}@c.us"
     
     url = f"{WAHA_URL}/api/sendText"
-    payload = {
-        "chatId": chat_id,
-        "text": texto,
-        "session": "default"
-    }
-    headers = {"Content-Type": "application/json"}
-    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
     
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY 
+    
+    payload = {
+        "session": WAHA_SESSION,
+        "chatId": chat_id,
+        "text": texto
+    }
+
     try:
-        r = requests.post(url, json=payload, headers=headers)
-        if r.status_code in [200, 201]:
+        r = requests.post(url, headers=headers, json=payload)
+        if r.status_code == 201 or r.status_code == 200:
             return True, r.json()
-        return False, r.text
+        else:
+            return False, f"Error WAHA {r.status_code}: {r.text}"
     except Exception as e:
         return False, str(e)
 
-# --- 2. ENVIAR IMAGEN (WAHA - RECORDATORIO DE PAGO) ---
-def enviar_mensaje_media(telefono, archivo_bytes, tipo_archivo, caption="", filename="archivo"):
-    # NOTA: En el motor NOWEB (Gratis), esto fallará con error 422.
-    # Solo funcionará si pagas la licencia Plus o usas el motor WEBJS.
-    return False, "El envío de imágenes requiere licencia WAHA Plus o motor WEBJS."
-
+# --- 2. PREPARAR ARCHIVO ---
 def subir_archivo_meta(archivo_bytes, mime_type):
-    return None, "No soportado en versión free"
+    # En WAHA Free (NOWEB), el envío de archivos está limitado.
+    # Dejamos esto preparado por si usas WEBJS o Plus en el futuro.
+    try:
+        b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
+        data_uri = f"data:{mime_type};base64,{b64_data}"
+        return data_uri, None
+    except Exception as e:
+        return None, str(e)
 
-# --- OTRAS FUNCIONES (Carrito, etc) ---
+# --- 3. ENVIAR MULTIMEDIA ---
+def enviar_mensaje_media(telefono, media_id, tipo_archivo, caption="", filename="archivo"):
+    if not WAHA_URL: return False, "Falta URL WAHA"
+
+    number_clean = formatear_numero_waha(telefono)
+    chat_id = f"{number_clean}@c.us"
+    
+    # Nota: Esto fallará en el motor NOWEB gratis (Error 422).
+    # Funcionará si cambias a WEBJS o pagas Plus.
+    url = f"{WAHA_URL}/api/sendFile"
+    
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+    
+    payload = {
+        "session": WAHA_SESSION,
+        "chatId": chat_id,
+        "file": {
+            "mimetype": tipo_archivo,
+            "filename": filename,
+            "data": media_id # Base64
+        },
+        "caption": caption
+    }
+
+    try:
+        r = requests.post(url, headers=headers, json=payload)
+        if r.status_code == 201 or r.status_code == 200:
+            return True, r.json()
+        else:
+            return False, f"Error WAHA: {r.text}"
+    except Exception as e:
+        return False, str(e)
+
+@st.cache_data(show_spinner=False)
+def obtener_imagen_whatsapp(media_id):
+    return None
+
+# ==============================================================================
+# FUNCIONES AUXILIARES
+# ==============================================================================
+
 def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
     if 'carrito' not in st.session_state: st.session_state.carrito = []
+    if es_inventario:
+        cant_en_carrito = sum(item['cantidad'] for item in st.session_state.carrito if item['sku'] == sku)
+        if (cant_en_carrito + cantidad) > stock_max:
+            st.error(f"❌ Stock insuficiente. Disp: {stock_max}")
+            return
     st.session_state.carrito.append({
         "sku": sku, "descripcion": nombre, "cantidad": int(cantidad),
         "precio": float(precio), "subtotal": float(precio * cantidad), "es_inventario": es_inventario
@@ -86,7 +152,7 @@ def actualizar_estados(df_modificado):
         except: trans.rollback()
 
 # ==============================================================================
-# LÓGICA GOOGLE (Contactos)
+# LÓGICA GOOGLE (Contactos) - CORREGIDA
 # ==============================================================================
 
 def normalizar_celular(numero):
@@ -162,3 +228,35 @@ def actualizar_en_google(gid, nombre, apellido, telefono):
         srv.people().updateContact(resourceName=gid, updatePersonFields='names,phoneNumbers', body=c).execute()
         return True
     except: return False
+
+def buscar_contacto_google(telefono):
+    service = get_google_service()
+    if not service: return None
+    
+    tel_busqueda = normalizar_celular(telefono)
+    if len(tel_busqueda) < 7: return None
+
+    try:
+        page_token = None
+        while True:
+            results = service.people().connections().list(
+                resourceName='people/me', 
+                pageSize=1000, 
+                personFields='phoneNumbers', 
+                pageToken=page_token
+            ).execute()
+            
+            for person in results.get('connections', []):
+                for phone in person.get('phoneNumbers', []):
+                    if normalizar_celular(phone.get('value', '')) == tel_busqueda:
+                        return {
+                            'resourceName': person.get('resourceName'), 
+                            'etag': person.get('etag')
+                        }
+            
+            page_token = results.get('nextPageToken')
+            if not page_token: break
+    except Exception as e:
+        return None
+        
+    return None
