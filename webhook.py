@@ -5,7 +5,8 @@ import os
 import requests
 import json
 from datetime import datetime
-import pytz # Asegúrate de tener pytz en requirements.txt, si no usa datetime normal
+import pytz 
+from utils import normalizar_telefono_maestro # <--- USAMOS TU NUEVA FUNCIÓN MAESTRA
 
 app = Flask(__name__)
 
@@ -25,13 +26,20 @@ def descargar_media(media_url):
         print(f"❌ Error media: {e}")
         return None
 
-def limpiar_numero_full(valor_raw):
-    """Devuelve el número COMPLETO con 51 (ej: 51986203398)"""
-    if not valor_raw: return ""
-    texto = str(valor_raw)
-    if isinstance(valor_raw, dict):
-        texto = str(valor_raw.get('user') or valor_raw.get('_serialized') or "")
-    return texto.split('@')[0].split(':')[0]
+def obtener_numero_crudo(payload):
+    """Extrae el número bruto de donde sea que WAHA lo esconda"""
+    # 1. Prioridad: remoteJidAlt (El que descubrimos en los logs)
+    alt = payload.get('_data', {}).get('key', {}).get('remoteJidAlt')
+    if alt: return alt
+
+    # 2. Otros candidatos
+    candidatos = [payload.get('participant'), payload.get('author'), payload.get('from')]
+    for cand in candidatos:
+        if cand and '51' in str(cand) and '@c.us' in str(cand):
+            return cand
+            
+    # 3. Fallback
+    return payload.get('from')
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -44,35 +52,31 @@ def recibir_mensaje():
     if data.get('event') == 'message':
         payload = data.get('payload', {})
         
-        # 1. OBTENER NÚMERO (Usando la lógica Alt que ya funcionaba)
-        candidato_alt = payload.get('_data', {}).get('key', {}).get('remoteJidAlt')
-        candidatos = [candidato_alt, payload.get('participant'), payload.get('author'), payload.get('from')]
+        # 1. OBTENER EL CANDIDATO CRUDO
+        numero_crudo = obtener_numero_crudo(payload)
         
-        numero_full = "Desconocido"
-        for cand in candidatos:
-            limpio = limpiar_numero_full(cand)
-            if limpio.startswith('51') and len(limpio) >= 11:
-                numero_full = limpio
-                break
+        # 2. NORMALIZACIÓN MAESTRA (La función que creamos en utils.py)
+        # Esto te devuelve el diccionario: {'db': '51...', 'corto': '9...', 'google': '+51...'}
+        formatos = normalizar_telefono_maestro(numero_crudo)
         
-        if numero_full == "Desconocido":
-            numero_full = limpiar_numero_full(payload.get('from'))
+        if not formatos:
+            print(f"⚠️ No se pudo procesar número: {numero_crudo}")
+            return jsonify({"status": "ignored"}), 200
 
-        # 2. PREPARAR DATOS PARA TABLA CLIENTES
-        # A. Numero Corto (986203398)
-        if numero_full.startswith("51") and len(numero_full) == 11:
-            numero_corto = numero_full[2:] 
-        else:
-            numero_corto = numero_full # Por si acaso
+        telefono_db = formatos['db']       # 51986203398
+        telefono_corto = formatos['corto'] # 986203398
 
-        # B. Nombre WhatsApp (PushName)
-        nombre_wsp = payload.get('_data', {}).get('notifyName') or payload.get('pushName') or ""
+        # 3. PREPARAR OTROS DATOS
+        nombre_wsp = payload.get('_data', {}).get('notifyName') or payload.get('pushName') or "Desconocido"
         
-        # C. Fecha Hoy (2026-01-15)
-        # Usamos zona horaria Perú si es posible, sino UTC
-        fecha_hoy = datetime.now().strftime('%Y-%m-%d')
+        # Fecha Hoy (Intentando usar zona horaria Perú)
+        try:
+            tz = pytz.timezone('America/Lima')
+            fecha_hoy = datetime.now(tz).strftime('%Y-%m-%d')
+        except:
+            fecha_hoy = datetime.now().strftime('%Y-%m-%d')
 
-        # 3. GUARDAR MENSAJE
+        # 4. DESCARGAR MEDIA (Si hay)
         body = payload.get('body', '')
         has_media = payload.get('hasMedia', False)
         archivo_bytes = None
@@ -83,16 +87,17 @@ def recibir_mensaje():
             if media_url: archivo_bytes = descargar_media(media_url)
             body = "📷 Archivo" if archivo_bytes else "⚠️ Error media"
 
+        # 5. GUARDAR EN BASE DE DATOS
         try:
             with engine.connect() as conn:
-                # INSERT MENSAJE
+                # A. Insertar Mensaje
                 conn.execute(text("""
                     INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
                     VALUES (:tel, 'ENTRANTE', :txt, (NOW() - INTERVAL '5 hours'), FALSE, :data)
-                """), {"tel": numero_full, "txt": body, "data": archivo_bytes})
+                """), {"tel": telefono_db, "txt": body, "data": archivo_bytes})
                 
-                # INSERT / UPDATE CLIENTE (Tus reglas específicas)
-                # Solo insertamos si NO existe. Si existe, no tocamos nada (ON CONFLICT DO NOTHING)
+                # B. Insertar Cliente (Con todos los campos que pediste)
+                # ON CONFLICT DO NOTHING asegura que si ya existe, no borre lo que editaste manualmente
                 conn.execute(text("""
                     INSERT INTO Clientes (
                         telefono, 
@@ -106,27 +111,26 @@ def recibir_mensaje():
                         fecha_creacion
                     )
                     VALUES (
-                        :tel,          -- telefono (con 51)
-                        :cod,          -- codigo_contacto (con 51)
-                        :corto,        -- nombre_corto (9 digitos)
-                        :nom_wsp,      -- nombre (Wsp placeholder)
+                        :tel,          -- telefono (51986...)
+                        :tel,          -- codigo_contacto (51986...)
+                        :corto,        -- nombre_corto (986...)
+                        :nom_wsp,      -- nombre (Del WhatsApp)
                         'WhatsApp',    -- medio_contacto
                         'Sin empezar', -- estado
-                        :fec,          -- fecha_seguimiento (YYYY-MM-DD)
+                        :fec,          -- fecha_seguimiento
                         TRUE,
                         (NOW() - INTERVAL '5 hours')
                     )
                     ON CONFLICT (telefono) DO NOTHING
                 """), {
-                    "tel": numero_full,
-                    "cod": numero_full,
-                    "corto": numero_corto,
+                    "tel": telefono_db,
+                    "corto": telefono_corto,
                     "nom_wsp": nombre_wsp,
                     "fec": fecha_hoy
                 })
                 
                 conn.commit()
-            print(f"✅ Guardado: {numero_full} ({numero_corto})")
+            print(f"✅ Guardado: {telefono_db} ({nombre_wsp})")
         except Exception as e:
             print(f"❌ Error DB: {e}")
 

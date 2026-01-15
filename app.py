@@ -14,7 +14,26 @@ import utils
 # Importar las vistas
 from views import ventas, compras, inventario, clientes, seguimiento, catalogo, facturacion, chats
 
-
+# ==========================================
+# LIMPIEZA DE NÚMEROS (EJECUTAR UNA VEZ)
+# ==========================================
+try:
+    with engine.connect() as conn:
+        # 1. Quitar el '+' de todos los teléfonos en Clientes
+        conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '+', '') WHERE telefono LIKE '+%'"))
+        
+        # 2. Quitar el '+' de todos los mensajes
+        conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, '+', '') WHERE telefono LIKE '+%'"))
+        
+        # 3. Asegurar que tengan 51 si solo tienen 9 dígitos (Corrección masiva)
+        conn.execute(text("UPDATE Clientes SET telefono = '51' || telefono WHERE LENGTH(telefono) = 9"))
+        conn.execute(text("UPDATE mensajes SET telefono = '51' || telefono WHERE LENGTH(telefono) = 9"))
+        
+        conn.commit()
+    print("✅ Base de datos LIMPIA: Todos los números son 51XXXXXXXXX")
+except Exception as e:
+    print(f"Nota limpieza: {e}")
+    
 # ESTO ACTUALIZA TU BASE DE DATOS AUTOMÁTICAMENTE
 # --- EN APP.PY (Bloque de Migración) ---
 try:

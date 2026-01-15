@@ -17,26 +17,66 @@ WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
 WAHA_KEY = os.getenv("WAHA_KEY") 
 
 # ==============================================================================
+# 🏆 FUNCIÓN MAESTRA DE NORMALIZACIÓN (La que faltaba)
+# ==============================================================================
+def normalizar_telefono_maestro(entrada):
+    """
+    Recibe cualquier cosa (+51 999 999, 999999, 51999..., objetos WAHA)
+    Retorna un diccionario con todos los formatos estandarizados.
+    """
+    if not entrada: return None
+
+    # 1. Limpieza brutal: Solo dejar números
+    # str(entrada) convierte objetos a texto si vienen sucios
+    sucio = str(entrada)
+    if isinstance(entrada, dict):
+        sucio = str(entrada.get('user') or entrada.get('_serialized') or "")
+    
+    # Quitar todo lo que no sea número
+    solo_numeros = "".join(filter(str.isdigit, sucio))
+    
+    # Validar que quedó algo
+    if not solo_numeros: return None
+    
+    # 2. Lógica Perú (Detectar 9 dígitos)
+    full = solo_numeros
+    local = solo_numeros
+    
+    if len(solo_numeros) == 9:
+        # Es un local (986...), le agregamos el 51
+        full = f"51{solo_numeros}"
+        local = solo_numeros
+    elif len(solo_numeros) == 11 and solo_numeros.startswith("51"):
+        # Ya tiene el 51 (51986...), extraemos el local
+        full = solo_numeros
+        local = solo_numeros[2:]
+    
+    # 3. Retornar paquete con formatos listos
+    return {
+        "db": full,                  # 51986203398 (Para guardar en SQL)
+        "waha": f"{full}@c.us",      # 51986203398@c.us (Para enviar mensajes)
+        "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}", # +51 986 203 398 (Bonito)
+        "corto": local               # 986203398 (Para ver rápido)
+    }
+
+# ==============================================================================
 # FUNCIONES DE ENVÍO (WAHA)
 # ==============================================================================
 
 def formatear_numero_waha(numero):
-    """WAHA espera formato internacional sin símbolos: 51999888777"""
-    n = str(numero).replace("+", "").replace(" ", "").replace("-", "").strip()
-    if len(n) == 9: # Caso Perú sin 51
-        return f"51{n}"
-    return n
+    """Usa la normalizadora para asegurar formato WAHA"""
+    norm = normalizar_telefono_maestro(numero)
+    if norm: return norm['db'] # Devolvemos formato 51999...
+    return str(numero)
 
 # --- 1. ENVIAR TEXTO ---
 def enviar_mensaje_whatsapp(numero, texto):
-    if not WAHA_URL:
-        return False, "⚠️ Falta WAHA_URL en .env"
+    if not WAHA_URL: return False, "⚠️ Falta WAHA_URL en .env"
 
     number_clean = formatear_numero_waha(numero)
     chat_id = f"{number_clean}@c.us"
     
     url = f"{WAHA_URL}/api/sendText"
-    
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY 
     
@@ -48,17 +88,14 @@ def enviar_mensaje_whatsapp(numero, texto):
 
     try:
         r = requests.post(url, headers=headers, json=payload)
-        if r.status_code == 201 or r.status_code == 200:
+        if r.status_code in [200, 201]:
             return True, r.json()
-        else:
-            return False, f"Error WAHA {r.status_code}: {r.text}"
+        return False, f"Error WAHA {r.status_code}: {r.text}"
     except Exception as e:
         return False, str(e)
 
 # --- 2. PREPARAR ARCHIVO ---
 def subir_archivo_meta(archivo_bytes, mime_type):
-    # En WAHA Free (NOWEB), el envío de archivos está limitado.
-    # Dejamos esto preparado por si usas WEBJS o Plus en el futuro.
     try:
         b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
         data_uri = f"data:{mime_type};base64,{b64_data}"
@@ -67,16 +104,13 @@ def subir_archivo_meta(archivo_bytes, mime_type):
         return None, str(e)
 
 # --- 3. ENVIAR MULTIMEDIA ---
-def enviar_mensaje_media(telefono, media_id, tipo_archivo, caption="", filename="archivo"):
+def enviar_mensaje_media(telefono, media_uri, tipo_archivo, caption="", filename="archivo"):
     if not WAHA_URL: return False, "Falta URL WAHA"
 
     number_clean = formatear_numero_waha(telefono)
     chat_id = f"{number_clean}@c.us"
     
-    # Nota: Esto fallará en el motor NOWEB gratis (Error 422).
-    # Funcionará si cambias a WEBJS o pagas Plus.
     url = f"{WAHA_URL}/api/sendFile"
-    
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
     
@@ -86,26 +120,118 @@ def enviar_mensaje_media(telefono, media_id, tipo_archivo, caption="", filename=
         "file": {
             "mimetype": tipo_archivo,
             "filename": filename,
-            "data": media_id # Base64
+            "data": media_uri 
         },
         "caption": caption
     }
 
     try:
         r = requests.post(url, headers=headers, json=payload)
-        if r.status_code == 201 or r.status_code == 200:
+        if r.status_code in [200, 201]:
             return True, r.json()
-        else:
-            return False, f"Error WAHA: {r.text}"
+        return False, f"Error WAHA: {r.text}"
     except Exception as e:
         return False, str(e)
 
-@st.cache_data(show_spinner=False)
-def obtener_imagen_whatsapp(media_id):
+# ==============================================================================
+# LÓGICA GOOGLE (Contactos)
+# ==============================================================================
+
+def get_google_service():
+    if not os.path.exists('token.json'):
+        token_content = os.getenv("GOOGLE_TOKEN_JSON")
+        if token_content:
+            with open("token.json", "w") as f: f.write(token_content)
+    if os.path.exists('token.json'):
+        try:
+            creds = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/contacts'])
+            return build('people', 'v1', credentials=creds)
+        except: return None
     return None
 
+def crear_en_google(nombre, apellido, telefono):
+    srv = get_google_service()
+    if not srv: return None
+    
+    # Aseguramos formato bonito +51...
+    norm = normalizar_telefono_maestro(telefono)
+    tel_google = norm['google'] if norm else telefono
+
+    try:
+        res = srv.people().createContact(body={
+            "names": [{"givenName": nombre, "familyName": apellido}],
+            "phoneNumbers": [{"value": tel_google}]
+        }).execute()
+        return res.get('resourceName')
+    except: return None
+
+def actualizar_en_google(gid, nombre, apellido, telefono):
+    srv = get_google_service()
+    if not srv: return False
+    
+    # Aseguramos formato bonito +51...
+    norm = normalizar_telefono_maestro(telefono)
+    tel_google = norm['google'] if norm else telefono
+
+    try:
+        # 1. Obtener contacto actual para conservar otros datos si los tuviera
+        c = srv.people().get(resourceName=gid, personFields='names,phoneNumbers').execute()
+        
+        # 2. Actualizar campos
+        c['names'] = [{"givenName": nombre, "familyName": apellido}]
+        c['phoneNumbers'] = [{"value": tel_google}]
+        
+        # 3. Enviar actualización
+        srv.people().updateContact(resourceName=gid, updatePersonFields='names,phoneNumbers', body=c).execute()
+        return True
+    except: return False
+
+def sincronizar_desde_google_batch():
+    """Función para traer contactos masivamente (Opcional)"""
+    service = get_google_service()
+    if not service:
+        st.error("No hay conexión con Google.")
+        return
+    with engine.connect() as conn:
+        df = pd.read_sql(text("SELECT id_cliente, telefono FROM Clientes WHERE (nombre IS NULL OR nombre = '') AND activo = TRUE"), conn)
+        if df.empty: return
+        
+        st.info(f"Sincronizando {len(df)} contactos...")
+        agenda = {}
+        try:
+            page = None
+            while True:
+                res = service.people().connections().list(resourceName='people/me', pageSize=1000, personFields='names,phoneNumbers', pageToken=page).execute()
+                for p in res.get('connections', []):
+                    phones = p.get('phoneNumbers', [])
+                    names = p.get('names', [])
+                    if phones and names:
+                        for ph in phones:
+                            # Usamos la normalizadora para indexar
+                            norm = normalizar_telefono_maestro(ph.get('value'))
+                            if norm:
+                                agenda[norm['db']] = { # Guardamos con clave 51999...
+                                    'n': names[0].get('givenName',''), 
+                                    'a': names[0].get('familyName',''), 
+                                    'gid': p.get('resourceName')
+                                }
+                page = res.get('nextPageToken')
+                if not page: break
+        except: pass
+
+        for idx, row in df.iterrows():
+            norm_cliente = normalizar_telefono_maestro(row['telefono'])
+            if norm_cliente and norm_cliente['db'] in agenda:
+                d = agenda[norm_cliente['db']]
+                conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, google_id=:gid WHERE id_cliente=:id"),
+                             {"n": d['n'], "a": d['a'], "gid": d['gid'], "id": row['id_cliente']})
+        conn.commit()
+        st.success("✅ Sincronización completada.")
+        time.sleep(1)
+        st.rerun()
+
 # ==============================================================================
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES (Carrito, Facebook, etc) - NO BORRAR
 # ==============================================================================
 
 def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
@@ -150,113 +276,3 @@ def actualizar_estados(df_modificado):
             time.sleep(0.5)
             st.rerun()
         except: trans.rollback()
-
-# ==============================================================================
-# LÓGICA GOOGLE (Contactos) - CORREGIDA
-# ==============================================================================
-
-def normalizar_celular(numero):
-    if not numero: return ""
-    solo_numeros = "".join(filter(str.isdigit, str(numero)))
-    if len(solo_numeros) == 11 and solo_numeros.startswith("51"): return solo_numeros[2:]
-    return solo_numeros[-9:] if len(solo_numeros) > 9 else solo_numeros
-
-def get_google_service():
-    if not os.path.exists('token.json'):
-        token_content = os.getenv("GOOGLE_TOKEN_JSON")
-        if token_content:
-            with open("token.json", "w") as f: f.write(token_content)
-    if os.path.exists('token.json'):
-        try:
-            creds = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/contacts'])
-            return build('people', 'v1', credentials=creds)
-        except: return None
-    return None
-
-def sincronizar_desde_google_batch():
-    service = get_google_service()
-    if not service:
-        st.error("No hay conexión con Google.")
-        return
-    with engine.connect() as conn:
-        df = pd.read_sql(text("SELECT id_cliente, telefono FROM Clientes WHERE (nombre IS NULL OR nombre = '') AND activo = TRUE"), conn)
-        if df.empty: return
-        
-        st.info(f"Sincronizando {len(df)} contactos...")
-        agenda = {}
-        try:
-            page = None
-            while True:
-                res = service.people().connections().list(resourceName='people/me', pageSize=1000, personFields='names,phoneNumbers', pageToken=page).execute()
-                for p in res.get('connections', []):
-                    phones = p.get('phoneNumbers', [])
-                    names = p.get('names', [])
-                    if phones and names:
-                        for ph in phones:
-                            clean = normalizar_celular(ph.get('value'))
-                            if clean: agenda[clean] = {'n': names[0].get('givenName',''), 'a': names[0].get('familyName',''), 'gid': p.get('resourceName')}
-                page = res.get('nextPageToken')
-                if not page: break
-        except: pass
-
-        for idx, row in df.iterrows():
-            tel = normalizar_celular(row['telefono'])
-            if tel in agenda:
-                d = agenda[tel]
-                conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, google_id=:gid WHERE id_cliente=:id"),
-                             {"n": d['n'], "a": d['a'], "gid": d['gid'], "id": row['id_cliente']})
-        conn.commit()
-        st.success("✅ Sincronización completada.")
-        time.sleep(1)
-        st.rerun()
-
-def crear_en_google(nombre, apellido, telefono):
-    srv = get_google_service()
-    if not srv: return None
-    try:
-        res = srv.people().createContact(body={"names":[{"givenName":nombre,"familyName":apellido}],"phoneNumbers":[{"value":telefono}]}).execute()
-        return res.get('resourceName')
-    except: return None
-
-def actualizar_en_google(gid, nombre, apellido, telefono):
-    srv = get_google_service()
-    if not srv: return False
-    try:
-        c = srv.people().get(resourceName=gid, personFields='names,phoneNumbers').execute()
-        c['names'] = [{"givenName": nombre, "familyName": apellido}]
-        c['phoneNumbers'] = [{"value": telefono}]
-        srv.people().updateContact(resourceName=gid, updatePersonFields='names,phoneNumbers', body=c).execute()
-        return True
-    except: return False
-
-def buscar_contacto_google(telefono):
-    service = get_google_service()
-    if not service: return None
-    
-    tel_busqueda = normalizar_celular(telefono)
-    if len(tel_busqueda) < 7: return None
-
-    try:
-        page_token = None
-        while True:
-            results = service.people().connections().list(
-                resourceName='people/me', 
-                pageSize=1000, 
-                personFields='phoneNumbers', 
-                pageToken=page_token
-            ).execute()
-            
-            for person in results.get('connections', []):
-                for phone in person.get('phoneNumbers', []):
-                    if normalizar_celular(phone.get('value', '')) == tel_busqueda:
-                        return {
-                            'resourceName': person.get('resourceName'), 
-                            'etag': person.get('etag')
-                        }
-            
-            page_token = results.get('nextPageToken')
-            if not page_token: break
-    except Exception as e:
-        return None
-        
-    return None
