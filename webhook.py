@@ -3,17 +3,15 @@ from sqlalchemy import text
 from database import engine
 import os
 import requests
-import json 
+import json
 
 app = Flask(__name__)
 
-# Clave de seguridad opcional (si la configuraste en WAHA)
+# Configuración
 WAHA_KEY = os.getenv("WAHA_KEY")
-WAHA_URL = os.getenv("WAHA_URL")
-
+WAHA_URL = os.getenv("WAHA_URL") 
 
 def descargar_media(media_url):
-    """Descarga la imagen/archivo desde la URL que nos da WAHA"""
     try:
         url_final = media_url
         if not media_url.startswith("http"):
@@ -30,48 +28,61 @@ def descargar_media(media_url):
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
-    # 1. Seguridad
     api_key = request.headers.get('X-Api-Key')
     if WAHA_KEY and api_key != WAHA_KEY:
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.json
-    
-# -------------------------------------------------------------
-    # 🕵️‍♂️ ZONA DE DIAGNÓSTICO (RAYOS X)
-    # -------------------------------------------------------------
-    # Esto imprimirá TODO lo que llega a los logs de Railway
-    print(f"\n🛑 --- NUEVO MENSAJE RECIBIDO ---", flush=True)
-    print(json.dumps(data, indent=2), flush=True) 
-    # -----
 
+    # (Opcional) Debug para ver si ya sale bien
+    # print(json.dumps(data, indent=2), flush=True)
 
     if data.get('event') == 'message':
         payload = data.get('payload', {})
         
-        # --- CORRECCIÓN DE NÚMEROS DE EMPRESA (LID) ---
-        # 1. Capturamos el ID CRUDO (Sin tocarlo)
-        sender_raw = payload.get('from', 'Desconocido')
-        participant = payload.get('participant', 'N/A')
-        author = payload.get('author', 'N/A')
-        
-# Si es un LID (Empresa) o Grupo, el número real suele estar en 'participant'
-        if '@lid' in sender_raw or '@g.us' in sender_raw:
-            if participant and '51' in participant:
-                sender_final = participant
-            elif author and '51' in author:
-                sender_final = author
+        # 1. OBTENER DATOS CRUDOS
+        sender_raw = payload.get('from', '')
+        participant_raw = payload.get('participant')
+        author_raw = payload.get('author')
 
-        # Limpieza final estándar (quitar @c.us y :dispositivo)
+        # 2. NORMALIZAR PARTICIPANT (Aquí estaba el error)
+        # Si participant es un diccionario (Objeto), sacamos el string de adentro
+        participant_str = ""
+        if isinstance(participant_raw, dict):
+            participant_str = participant_raw.get('_serialized', '')
+        elif isinstance(participant_raw, str):
+            participant_str = participant_raw
+        
+        # Hacemos lo mismo para author por si acaso
+        author_str = ""
+        if isinstance(author_raw, dict):
+            author_str = author_raw.get('_serialized', '')
+        elif isinstance(author_raw, str):
+            author_str = author_raw
+
+        # 3. ELEGIR EL MEJOR NÚMERO (Prioridad al real sobre el LID)
+        sender_final = sender_raw # Por defecto
+
+        # Si el 'from' tiene @lid o es grupo, buscamos el número real
+        if '@lid' in sender_raw or '@g.us' in sender_raw:
+            if participant_str and '51' in participant_str:
+                sender_final = participant_str
+            elif author_str and '51' in author_str:
+                sender_final = author_str
+        
+        # 4. LIMPIEZA FINAL (Quitar @c.us, :dispositivo, etc)
+        # Convertimos a string por seguridad antes de hacer split
+        sender_final = str(sender_final)
         sender_limpio = sender_final.split('@')[0].split(':')[0]
 
-        # 3. Preparar el cuerpo del mensaje
+        # -------------------------------------------------------
+
         body = payload.get('body', '')
         has_media = payload.get('hasMedia', False)
         
         archivo_bytes = None
+        
         if has_media:
-            # ... (Lógica de descarga igual que antes) ...
             media_info = payload.get('media', {})
             media_url = media_info.get('url')
             mimetype = media_info.get('mimetype', '')
@@ -85,11 +96,6 @@ def recibir_mensaje():
             else:
                 body = "📷 https://www.spanishdict.com/translate/vac%C3%ADa"
 
-        # 4. AGREGAR INFORMACIÓN DE DEBUG AL TEXTO
-        # Esto te permitirá ver en tu app qué números llegaron realmente
-        debug_info = f"\n\n🔍 [DEBUG INFO]\nFrom: {sender_raw}\nParticipant: {participant}\nUsado: {sender_limpio}"
-        body_con_debug = body + debug_info
-
         # Guardar en Base de Datos
         try:
             with engine.connect() as conn:
@@ -97,12 +103,12 @@ def recibir_mensaje():
                     INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
                     VALUES (:tel, 'ENTRANTE', :txt, (NOW() - INTERVAL '5 hours'), FALSE, :data)
                 """), {
-                    "tel": sender_limpio,  # Guardamos el número que creemos correcto
-                    "txt": body_con_debug, # Guardamos el texto con la "trampa" visual
+                    "tel": sender_limpio, 
+                    "txt": body,
                     "data": archivo_bytes
                 })
                 conn.commit()
-            print(f"✅ Guardado: {sender_limpio}")
+            print(f"✅ Guardado mensaje de: {sender_limpio}")
         except Exception as e:
             print(f"❌ Error DB: {e}")
 
