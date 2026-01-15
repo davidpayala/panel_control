@@ -26,16 +26,21 @@ def descargar_media(media_url):
         print(f"❌ Excepción media: {e}")
         return None
 
-def limpiar_dato(dato_crudo):
+# --- FUNCIÓN SALVAVIDAS ---
+def extraer_numero_seguro(campo_raw):
     """
-    Convierte diccionarios, objetos o nulos en un string limpio.
-    Ej: {'_serialized': '51999@c.us'} -> '51999@c.us'
+    Convierte CUALQUIER cosa (Diccionario, Objeto, None) en un string '51999@c.us'
     """
-    if dato_crudo is None:
+    if campo_raw is None:
         return ""
-    if isinstance(dato_crudo, dict):
-        return str(dato_crudo.get('_serialized') or dato_crudo.get('user') or "")
-    return str(dato_crudo)
+    
+    # Si es un objeto (Diccionario), sacamos el ID serializado o el usuario
+    if isinstance(campo_raw, dict):
+        # WAHA suele mandar '_serialized' o 'user'
+        return str(campo_raw.get('_serialized') or campo_raw.get('user') or "")
+    
+    # Si ya es texto, lo devolvemos tal cual
+    return str(campo_raw)
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -45,39 +50,37 @@ def recibir_mensaje():
 
     data = request.json
 
+    # 1. IMPRIMIR DATOS (Para que veas la estructura real en los logs)
+    # print(f"📩 PAYLOAD RAW: {json.dumps(data, indent=2)}") 
+
     if data.get('event') == 'message':
         payload = data.get('payload', {})
         
-        # --- LÓGICA "CAZADOR DE NÚMEROS" ---
-        # Recopilamos todos los posibles lugares donde WAHA esconde el número
-        candidatos = [
-            payload.get('participant'), # Aquí suele estar el real en empresas
-            payload.get('author'),      # A veces aquí
-            payload.get('from')         # Aquí suele venir el LID (malo)
-        ]
-        
-        numero_elegido = None
+        # 2. EXTRACCIÓN SEGURA (Convertimos TODO a texto primero)
+        # Esto evita el crash "dict object has no attribute split"
+        from_str = extraer_numero_seguro(payload.get('from'))
+        participant_str = extraer_numero_seguro(payload.get('participant'))
+        author_str = extraer_numero_seguro(payload.get('author'))
 
-        # 1. BÚSQUEDA PRIORITARIA: Buscamos un número peruano real (51...c.us)
-        for candidato in candidatos:
-            s_cand = limpiar_dato(candidato)
-            # Si contiene '51' Y contiene '@c.us', ¡ES UN NÚMERO REAL!
-            if '51' in s_cand and '@c.us' in s_cand:
-                numero_elegido = s_cand
-                print(f"🎯 Número real encontrado en campo oculto: {numero_elegido}")
-                break # Ya lo encontramos, dejamos de buscar
+        # 3. LÓGICA DE SELECCIÓN (Prioridad al número real 51...)
+        numero_final = from_str # Por defecto
         
-        # 2. FALLBACK: Si no encontramos ninguno con formato peruano, usamos el 'from'
-        if not numero_elegido:
-            numero_elegido = limpiar_dato(payload.get('from'))
-            print(f"⚠️ No se halló número 51... Usando el por defecto: {numero_elegido}")
-
-        # 3. LIMPIEZA FINAL (Quitar @c.us, :dispositivo, etc)
+        candidatos = [participant_str, author_str, from_str]
+        
+        # Buscamos cual de todos tiene el formato de celular Perú ("51" y "@c.us")
+        for cand in candidatos:
+            if '51' in cand and '@c.us' in cand:
+                numero_final = cand
+                print(f"🎯 Número corregido detectado: {numero_final}")
+                break
+        
+        # 4. LIMPIEZA FINAL
+        # Ahora que 'numero_final' es 100% texto, el split funcionará
         try:
-            # Quitamos todo lo que esté después del @ o del :
-            telefono_limpio = numero_elegido.split('@')[0].split(':')[0]
-        except:
-            telefono_limpio = "Error_Parsing"
+            telefono_limpio = numero_final.split('@')[0].split(':')[0]
+        except Exception as e:
+            print(f"⚠️ Error limpiando número: {e}")
+            telefono_limpio = "Error"
 
         # -------------------------------------------------------
 
@@ -113,7 +116,7 @@ def recibir_mensaje():
                     "data": archivo_bytes
                 })
                 conn.commit()
-            print(f"✅ Guardado: {telefono_limpio}")
+            print(f"✅ Guardado mensaje de: {telefono_limpio}")
         except Exception as e:
             print(f"❌ Error DB: {e}")
 
