@@ -4,6 +4,7 @@ import requests
 import urllib.parse
 import time
 import pandas as pd
+import base64
 from sqlalchemy import text
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -12,83 +13,16 @@ from googleapiclient.discovery import build
 from database import engine
 
 # ==============================================================================
+# CONFIGURACIÓN WAHA (WhatsApp HTTP API)
+# ==============================================================================
+WAHA_URL = os.getenv("WAHA_URL") 
+WAHA_SESSION = os.getenv("WAHA_SESSION", "default") 
+WAHA_KEY = os.getenv("WAHA_KEY") 
+
+# ==============================================================================
 # FUNCIONES AUXILIARES
 # ==============================================================================
 
-# --- FUNCIÓN 1: SUBIR ARCHIVO A META ---
-def subir_archivo_meta(archivo_bytes, mime_type):
-    token = os.getenv("WHATSAPP_TOKEN")
-    phone_id = os.getenv("WHATSAPP_PHONE_ID")
-    
-    # 1. Validación Previa
-    if not token:
-        return None, "❌ Error: Variable WHATSAPP_TOKEN está vacía o no existe."
-    if not phone_id:
-        return None, "❌ Error: Variable WHATSAPP_PHONE_ID está vacía o no existe."
-
-    # Limpiamos el ID por si tiene espacios accidentales
-    phone_id = str(phone_id).strip()
-
-    url = f"https://graph.facebook.com/v17.0/{phone_id}/media"
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    files = {
-        'file': ('archivo', archivo_bytes, mime_type),
-        'messaging_product': (None, 'whatsapp')
-    }
-    
-    try:
-        # Imprimimos en la consola de Railway para tener registro
-        print(f"📡 Subiendo archivo a URL: {url}")
-        
-        r = requests.post(url, headers=headers, files=files)
-        
-        if r.status_code == 200:
-            return r.json().get("id"), None
-        else:
-            # AQUÍ ESTÁ LA CLAVE: Devolvemos el ID usado en el mensaje de error
-            return None, f"⚠️ Falló usando ID: '{phone_id}'. Meta dice: {r.text}"
-            
-    except Exception as e:
-        return None, f"Excepción crítica usando ID '{phone_id}': {str(e)}"
-    
-
-# --- FUNCIÓN 2: ENVIAR EL MENSAJE CON EL ARCHIVO ---
-def enviar_mensaje_media(telefono, media_id, tipo_archivo, caption="", filename="archivo"):
-    token = os.getenv("WHATSAPP_TOKEN")
-    phone_id = os.getenv("WHATSAPP_PHONE_ID")
-    url = f"https://graph.facebook.com/v17.0/{phone_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
-    # Determinar si es imagen o documento
-    tipo_payload = "image" if "image" in tipo_archivo else "document"
-    
-    data = {
-        "messaging_product": "whatsapp",
-        "to": telefono,
-        "type": tipo_payload,
-        tipo_payload: {
-            "id": media_id,
-            "caption": caption
-        }
-    }
-    
-    # Si es documento, agregamos el nombre del archivo para que se vea bonito
-    if tipo_payload == "document":
-        data["document"]["filename"] = filename
-
-    try:
-        r = requests.post(url, headers=headers, json=data)
-        if r.status_code == 200:
-            return True, r.json()
-        else:
-            return False, r.text
-    except Exception as e:
-        return False, str(e)
-    
 def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
     # Nota: Esta función manipula st.session_state, asegúrate de que 'carrito' exista en app.py
     if 'carrito' not in st.session_state:
@@ -96,7 +30,6 @@ def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=N
 
     # Validar stock si es de inventario
     if es_inventario:
-        # Verificar si ya está en el carrito para sumar
         cant_en_carrito = sum(item['cantidad'] for item in st.session_state.carrito if item['sku'] == sku)
         if (cant_en_carrito + cantidad) > stock_max:
             st.error(f"❌ No hay suficiente stock. Disponibles: {stock_max}, En carrito: {cant_en_carrito}")
@@ -112,58 +45,119 @@ def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=N
     })
     st.success(f"Añadido: {nombre}")
 
-# Función para descargar fotos de WhatsApp (Con caché para velocidad)
+
+# ==============================================================================
+# LÓGICA WHATSAPP (WAHA)
+# ==============================================================================
+
+def formatear_numero_waha(numero):
+    """WAHA espera formato internacional sin símbolos: 51999888777"""
+    n = str(numero).replace("+", "").replace(" ", "").replace("-", "").strip()
+    if len(n) == 9: # Caso Perú sin 51
+        return f"51{n}"
+    return n
+
+# --- FUNCIÓN 1: ENVIAR TEXTO SIMPLE ---
+def enviar_mensaje_whatsapp(numero, texto):
+    if not WAHA_URL:
+        return False, "⚠️ Falta WAHA_URL en .env"
+
+    number_clean = formatear_numero_waha(numero)
+    chat_id = f"{number_clean}@c.us"
+    
+    url = f"{WAHA_URL}/api/sendText"
+    
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY 
+    
+    payload = {
+        "session": WAHA_SESSION,
+        "chatId": chat_id,
+        "text": texto
+    }
+
+    try:
+        r = requests.post(url, headers=headers, json=payload)
+        if r.status_code == 201 or r.status_code == 200:
+            return True, r.json()
+        else:
+            return False, f"Error WAHA {r.status_code}: {r.text}"
+    except Exception as e:
+        return False, str(e)
+
+# --- FUNCIÓN 2: PREPARAR ARCHIVO (REEMPLAZA A SUBIR_ARCHIVO_META) ---
+def subir_archivo_meta(archivo_bytes, mime_type):
+    """
+    WAHA envía archivos en Base64 o URL. Aquí convertimos a Base64.
+    Mantenemos el nombre 'subir_archivo_meta' para no romper tu código en compras.py
+    """
+    try:
+        b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
+        data_uri = f"data:{mime_type};base64,{b64_data}"
+        return data_uri, None
+    except Exception as e:
+        return None, str(e)
+
+# --- FUNCIÓN 3: ENVIAR MULTIMEDIA ---
+def enviar_mensaje_media(telefono, media_id, tipo_archivo, caption="", filename="archivo"):
+    """
+    'media_id' aquí es el Data URI (base64 completo) que generamos arriba.
+    """
+    if not WAHA_URL: return False, "Falta URL WAHA"
+
+    number_clean = formatear_numero_waha(telefono)
+    chat_id = f"{number_clean}@c.us"
+    
+    url = f"{WAHA_URL}/api/sendFile"
+    
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+    
+    payload = {
+        "session": WAHA_SESSION,
+        "chatId": chat_id,
+        "file": {
+            "mimetype": tipo_archivo,
+            "filename": filename,
+            "data": media_id # Aquí va el string largo base64
+        },
+        "caption": caption
+    }
+
+    try:
+        r = requests.post(url, headers=headers, json=payload)
+        if r.status_code == 201 or r.status_code == 200:
+            return True, r.json()
+        else:
+            return False, f"Error WAHA: {r.text}"
+    except Exception as e:
+        return False, str(e)
+
+# Función para descargar fotos (Placeholder para WAHA)
 @st.cache_data(show_spinner=False)
 def obtener_imagen_whatsapp(media_id):
-    token = os.getenv("WHATSAPP_TOKEN")
-    if not token: return None
-    
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    try:
-        # 1. Pedimos a Facebook la URL real de la imagen
-        url_info = f"https://graph.facebook.com/v17.0/{media_id}"
-        r_info = requests.get(url_info, headers=headers)
-        
-        if r_info.status_code == 200:
-            url_descarga = r_info.json().get("url")
-            
-            # 2. Descargamos los bytes de la imagen
-            r_img = requests.get(url_descarga, headers=headers)
-            if r_img.status_code == 200:
-                return r_img.content
-    except:
-        pass
+    # WAHA maneja esto diferente, por ahora retornamos None para evitar errores
     return None
 
 
-# Función para generar el feed de facebook
+# ==============================================================================
+# OTRAS FUNCIONES (FACEBOOK / ESTADOS / GOOGLE)
+# ==============================================================================
+
 def generar_feed_facebook():
     with engine.connect() as conn:
-        # He cambiado p.url_compra por un link construido hacia TU web
         query = text("""
             SELECT 
                 v.sku as id, 
-                
-                -- TITULO: Marca + Modelo + Color + (Variante si existe)
                 p.marca || ' ' || p.modelo || ' ' || p.nombre || ' ' || COALESCE(v.nombre_variante, '') as title,
-                
-                -- DESCRIPCION:
                 'Lentes de contacto ' || p.marca || ' color ' || p.nombre || '. Disponibles en kmlentes.pe' as description,
-                
-                -- DISPONIBILIDAD:
                 CASE WHEN (v.stock_interno + v.stock_externo) > 0 THEN 'in_stock' ELSE 'out_of_stock' END as availability,
-                
                 'new' as condition,
                 v.precio || ' PEN' as price,
-                
-                -- CORRECCIÓN AQUÍ: ENLACE A TU WEB (Búsqueda por SKU)
                 'https://kmlentes.pe/?s=' || v.sku || '&post_type=product' as link,
-                
                 p.url_imagen as image_link,
                 p.marca as brand,
                 v.sku as mpn
-                
             FROM Variantes v
             JOIN Productos p ON v.id_producto = p.id_producto
             WHERE p.url_imagen IS NOT NULL 
@@ -171,24 +165,16 @@ def generar_feed_facebook():
         """)
         df_feed = pd.read_sql(query, conn)
 
-    # Guardar en carpeta estática
     if not os.path.exists('static'):
         os.makedirs('static')
         
     ruta_archivo = "static/feed_facebook.csv" 
     df_feed.to_csv(ruta_archivo, index=False)
-    
     return len(df_feed)
 
 
-# --- FUNCIÓN AUXILIAR PARA GUARDAR CAMBIOS ---
 def actualizar_estados(df_modificado):
-    """
-    Recorre el DataFrame modificado por el usuario y actualiza 
-    el estado y fecha de cada cliente en la base de datos.
-    """
-    if df_modificado.empty:
-        return
+    if df_modificado.empty: return
 
     with engine.connect() as conn:
         trans = conn.begin()
@@ -211,59 +197,40 @@ def actualizar_estados(df_modificado):
             st.error(f"Error al actualizar: {e}")
 
 # ==============================================================================
-# FUNCIÓN DE ENVÍO A WHATSAPP (TEXTO SIMPLE)
-# ==============================================================================
-def enviar_mensaje_whatsapp(numero, texto):
-    # 1. Credenciales
-    TOKEN = os.getenv("WHATSAPP_TOKEN")
-    PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
-
-    if not TOKEN or not PHONE_ID:
-        return False, "⚠️ Faltan credenciales en .env"
-
-    url = f"https://graph.facebook.com/v17.0/{PHONE_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Content-Type": "application/json"
-    }
-    
-    # --- 2. LIMPIEZA Y FORMATO DEL NÚMERO ---
-    numero_limpio = str(numero).replace("+", "").replace(" ", "").replace("-", "").strip()
-    
-    if len(numero_limpio) == 9:
-        numero_final = f"51{numero_limpio}"
-    else:
-        numero_final = numero_limpio
-    
-    data = {
-        "messaging_product": "whatsapp",
-        "to": numero_final,
-        "type": "text",
-        "text": {"body": texto}
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            return True, response.json()
-        else:
-            return False, response.text
-    except Exception as e:
-        return False, str(e)
-    
-# ==============================================================================
 # LÓGICA GOOGLE
 # ==============================================================================
+
+def normalizar_celular(numero):
+    if not numero: return ""
+    solo_numeros = "".join(filter(str.isdigit, str(numero)))
+    if len(solo_numeros) == 11 and solo_numeros.startswith("51"):
+        return solo_numeros[2:]
+    if len(solo_numeros) > 9:
+        return solo_numeros[-9:]
+    return solo_numeros
+
+def get_google_service():
+    if not os.path.exists('token.json'):
+        token_content = os.getenv("GOOGLE_TOKEN_JSON")
+        if token_content:
+            with open("token.json", "w") as f:
+                f.write(token_content)
     
+    if os.path.exists('token.json'):
+        try:
+            creds = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/contacts'])
+            return build('people', 'v1', credentials=creds)
+        except Exception as e:
+            return None
+    return None
+
 def sincronizar_desde_google_batch():
-    """Recorre clientes con nombre vacío, los busca en Google y actualiza sus datos reales."""
     service = get_google_service()
     if not service:
         st.error("No hay conexión con Google (token.json).")
         return
 
     with engine.connect() as conn:
-        # 1. Buscamos clientes pendientes
         df_pendientes = pd.read_sql(text("""
             SELECT id_cliente, telefono, nombre_corto, google_id 
             FROM Clientes 
@@ -279,35 +246,25 @@ def sincronizar_desde_google_batch():
         total = len(df_pendientes)
         actualizados = 0
 
-        # 2. Descargamos agenda de Google
         agenda_google = {}
         try:
             page_token = None
             while True:
                 results = service.people().connections().list(
-                    resourceName='people/me',
-                    pageSize=1000, 
-                    personFields='names,phoneNumbers',
-                    pageToken=page_token
+                    resourceName='people/me', pageSize=1000, personFields='names,phoneNumbers', pageToken=page_token
                 ).execute()
                 
                 for person in results.get('connections', []):
                     phones = person.get('phoneNumbers', [])
                     names = person.get('names', [])
-                    
                     if phones and names:
                         g_nombre = names[0].get('givenName', '')
                         g_apellido = names[0].get('familyName', '')
                         g_id = person.get('resourceName')
-                        
                         for phone in phones:
                             clean_num = normalizar_celular(phone.get('value'))
                             if clean_num:
-                                agenda_google[clean_num] = {
-                                    'nombre': g_nombre,
-                                    'apellido': g_apellido,
-                                    'google_id': g_id
-                                }
+                                agenda_google[clean_num] = {'nombre': g_nombre, 'apellido': g_apellido, 'google_id': g_id}
                 
                 page_token = results.get('nextPageToken')
                 if not page_token: break
@@ -315,114 +272,45 @@ def sincronizar_desde_google_batch():
             st.error(f"Error descargando agenda de Google: {e}")
             return
 
-        # 3. Cruzamos la información
         try:
             for idx, row in df_pendientes.iterrows():
                 telefono_db = normalizar_celular(row['telefono'])
-                
                 if telefono_db in agenda_google:
                     datos_google = agenda_google[telefono_db]
-                    
-                    conn.execute(text("""
-                        UPDATE Clientes 
-                        SET nombre=:n, apellido=:a, google_id=:gid 
-                        WHERE id_cliente=:id
-                    """), {
-                        "n": datos_google['nombre'],
-                        "a": datos_google['apellido'],
-                        "gid": datos_google['google_id'],
-                        "id": row['id_cliente']
-                    })
+                    conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, google_id=:gid WHERE id_cliente=:id"), 
+                                {"n": datos_google['nombre'], "a": datos_google['apellido'], "gid": datos_google['google_id'], "id": row['id_cliente']})
                     actualizados += 1
-                
                 progress_bar.progress((idx + 1) / total)
             
             conn.commit() 
-            
             st.success(f"✅ Éxito: Se actualizaron {actualizados} clientes desde Google.")
             time.sleep(2)
             st.rerun()
-            
         except Exception as e:
             st.error(f"Error actualizando DB: {e}")
 
-def normalizar_celular(numero):
-    """
-    Convierte cualquier formato (+51 999..., 999-999, etc) 
-    a un formato limpio de 9 dígitos para comparar.
-    """
-    if not numero: return ""
-    
-    # 1. Dejar solo números (borrar +, espacios, guiones)
-    solo_numeros = "".join(filter(str.isdigit, str(numero)))
-    
-    # 2. Si tiene 11 dígitos y empieza con 51 (ej: 51999888777), quitar el 51
-    if len(solo_numeros) == 11 and solo_numeros.startswith("51"):
-        return solo_numeros[2:]
-        
-    # 3. Si tiene más dígitos, intentamos tomar los últimos 9
-    if len(solo_numeros) > 9:
-        return solo_numeros[-9:]
-        
-    return solo_numeros
-
-# ==============================================================================
-# LÓGICA GOOGLE: SINCRONIZACIÓN REAL-TIME
-# ==============================================================================
-
-def get_google_service():
-    # 1. SI ESTAMOS EN LA NUBE Y NO EXISTE EL ARCHIVO, LO CREAMOS DESDE LA VARIABLE SECRETA
-    if not os.path.exists('token.json'):
-        token_content = os.getenv("GOOGLE_TOKEN_JSON")
-        if token_content:
-            with open("token.json", "w") as f:
-                f.write(token_content)
-    
-    # 2. AHORA SÍ, LEEMOS EL ARCHIVO COMO SIEMPRE
-    if os.path.exists('token.json'):
-        try:
-            creds = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/contacts'])
-            return build('people', 'v1', credentials=creds)
-        except Exception as e:
-            return None
-    return None
-
 def buscar_contacto_google(telefono):
-    """Busca si existe un contacto en Google por teléfono y devuelve su ID y datos."""
     service = get_google_service()
     if not service: return None
-    
-    # Normalizamos para buscar
     tel_busqueda = normalizar_celular(telefono)
     if len(tel_busqueda) < 7: return None
 
-    # Descargamos agenda (paginada) para buscar
     page_token = None
     while True:
         results = service.people().connections().list(
-            resourceName='people/me',
-            pageSize=1000, 
-            personFields='names,phoneNumbers',
-            pageToken=page_token
+            resourceName='people/me', pageSize=1000, personFields='names,phoneNumbers', pageToken=page_token
         ).execute()
-        
         for person in results.get('connections', []):
             for phone in person.get('phoneNumbers', []):
                 if normalizar_celular(phone.get('value', '')) == tel_busqueda:
-                    return {
-                        'resourceName': person.get('resourceName'), # El ID de Google
-                        'etag': person.get('etag') # Necesario para editar
-                    }
-        
+                    return {'resourceName': person.get('resourceName'), 'etag': person.get('etag')}
         page_token = results.get('nextPageToken')
         if not page_token: break
     return None
 
 def crear_en_google(nombre, apellido, telefono):
-    """Crea el contacto en Google y retorna su google_id."""
     service = get_google_service()
     if not service: return None
-    
     try:
         resultado = service.people().createContact(body={
             "names": [{"givenName": nombre, "familyName": apellido}],
@@ -434,28 +322,13 @@ def crear_en_google(nombre, apellido, telefono):
         return None
 
 def actualizar_en_google(google_id, nombre, apellido, telefono):
-    """Actualiza un contacto existente en Google."""
     service = get_google_service()
     if not service: return False
-
     try:
-        # 1. Obtenemos el contacto actual para sacar su 'etag' (obligatorio para editar)
-        contacto = service.people().get(
-            resourceName=google_id,
-            personFields='names,phoneNumbers'
-        ).execute()
-        
-        # 2. Preparamos la actualización
+        contacto = service.people().get(resourceName=google_id, personFields='names,phoneNumbers').execute()
         contacto['names'] = [{"givenName": nombre, "familyName": apellido}]
         contacto['phoneNumbers'] = [{"value": telefono}]
-        
-        # 3. Enviamos cambios
-        service.people().updateContact(
-            resourceName=google_id,
-            updatePersonFields='names,phoneNumbers',
-            body=contacto
-        ).execute()
+        service.people().updateContact(resourceName=google_id, updatePersonFields='names,phoneNumbers', body=contacto).execute()
         return True
     except Exception as e:
-        st.warning(f"No se pudo actualizar en Google (¿Quizás se borró?): {e}")
         return False
