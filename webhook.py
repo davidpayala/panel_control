@@ -28,27 +28,43 @@ def descargar_media(media_url):
         return None
 
 @app.route('/webhook', methods=['POST'])
-
 def recibir_mensaje():
+    # 1. Seguridad
     api_key = request.headers.get('X-Api-Key')
     if WAHA_KEY and api_key != WAHA_KEY:
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.json
+    
+    # ---------------------------------------------------------
+    # 🕵️‍♂️ DEBUG: Descomenta esto si sigue fallando para ver qué llega
+    # print(f"📩 PAYLOAD RAW: {data}", flush=True) 
+    # ---------------------------------------------------------
 
     if data.get('event') == 'message':
         payload = data.get('payload', {})
         
-        # --- AQUÍ ESTÁ LA MAGIA PARA ARREGLAR EL NÚMERO ---
+        # --- CORRECCIÓN DE NÚMEROS DE EMPRESA (LID) ---
         sender_raw = payload.get('from', '')
         
-        # 1. Limpiar dominio (@c.us)
+        # A veces las empresas mandan desde '12345@lid'. Eso no sirve para responder.
+        # El número real suele venir en 'author' o 'participant'.
+        if '@lid' in sender_raw:
+            # Intentamos buscar el número real en otros campos
+            numero_alternativo = payload.get('author') or payload.get('participant')
+            if numero_alternativo:
+                print(f"🔄 Corrigiendo ID de Empresa: Cambiando {sender_raw} por {numero_alternativo}")
+                sender_raw = numero_alternativo
+
+        # --- LIMPIEZA ESTÁNDAR ---
+        # 1. Quitar dominio (@c.us, @s.whatsapp.net, @lid)
         sender = sender_raw.split('@')[0]
         
-        # 2. Limpiar ID de dispositivo (:12, :8)
-        # Esto arregla que te salga "otro numero"
+        # 2. Quitar sufijo de dispositivo (:8, :24)
         if ':' in sender:
             sender = sender.split(':')[0]
+
+        # -------------------------------------------------------
 
         body = payload.get('body', '')
         has_media = payload.get('hasMedia', False)
@@ -70,7 +86,7 @@ def recibir_mensaje():
             else:
                 body = "📷 [Imagen] (URL no disponible)"
 
-        # Guardar en Base de Datos con el número LIMPIO
+        # Guardar en Base de Datos
         try:
             with engine.connect() as conn:
                 conn.execute(text("""
