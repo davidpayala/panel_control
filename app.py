@@ -14,6 +14,18 @@ import utils
 # Importar las vistas
 from views import ventas, compras, inventario, clientes, seguimiento, catalogo, facturacion, chats
 
+
+# ESTO ACTUALIZA TU BASE DE DATOS AUTOMÁTICAMENTE
+try:
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS direccion TEXT;"))
+        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS notas TEXT;"))
+        conn.commit()
+    print("✅ Base de datos actualizada: Columnas agregadas.")
+except Exception as e:
+    print(f"ℹ️ (Nota) La base de datos ya estaba actualizada o error menor: {e}")
+# ------------------------------------------------
+
 # Cargar variables
 load_dotenv()
 
