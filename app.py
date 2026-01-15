@@ -34,7 +34,7 @@ def check_password():
 if 'carrito' not in st.session_state:
     st.session_state.carrito = []
 
-# --- CALCULAR NOTIFICACIONES (CHAT) ---
+# --- CALCULAR NOTIFICACIONES (Igual que antes) ---
 try:
     with engine.connect() as conn:
         n_no_leidos = conn.execute(text(
@@ -43,15 +43,14 @@ try:
 except:
     n_no_leidos = 0
 
-# Calculamos el texto bonito, PERO NO LO USAREMOS COMO CLAVE
 texto_dinamico_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
 
-# --- BARRA LATERAL (SIDEBAR) ---
+# --- BARRA LATERAL CON ÍNDICE FORZADO ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
     st.title("Menú K&M")
     
-    # 1. Definimos una lista de claves ESTÁTICAS (nunca cambian)
+    # 1. Lista ESTÁTICA de opciones (las llaves internas)
     OPCIONES_MENU = [
         "VENTA", 
         "COMPRAS", 
@@ -60,10 +59,21 @@ with st.sidebar:
         "SEGUIMIENTO", 
         "CATALOGO",
         "FACTURACION",
-        "CHAT" # Esta clave interna nunca cambiará, aunque cambie el número de mensajes
+        "CHAT" 
     ]
 
-    # 2. Función para "maquillar" las claves y que se vean bonitas
+    # 2. Inicializar la variable de control en Session State si no existe
+    if "indice_menu" not in st.session_state:
+        st.session_state.indice_menu = 0
+
+    # 3. Función callback que se ejecuta AL HACER CLIC
+    def actualizar_indice():
+        # Buscamos qué opción seleccionó el usuario en el radio button
+        opcion_elegida = st.session_state.radio_navegacion
+        # Guardamos su número (índice) en la memoria segura
+        st.session_state.indice_menu = OPCIONES_MENU.index(opcion_elegida)
+
+    # 4. Función de formateo visual
     def formatear_menu(opcion):
         mapeo = {
             "VENTA": "🛒 Venta (POS)",
@@ -73,24 +83,24 @@ with st.sidebar:
             "SEGUIMIENTO": "📆 Seguimiento",
             "CATALOGO": "🔧 Catálogo",
             "FACTURACION": "💰 Facturación",
-            "CHAT": texto_dinamico_chat # <--- AQUÍ USAMOS EL TEXTO DINÁMICO
+            "CHAT": texto_dinamico_chat # <--- El texto cambia aquí
         }
         return mapeo.get(opcion, opcion)
 
-    # 3. El Radio Button usa las claves estáticas
+    # 5. EL WIDGET (Aquí está el truco: index=...)
     seleccion_interna = st.radio(
         "Ir a:", 
         OPCIONES_MENU,
-        format_func=formatear_menu, # <--- ESTO ES LA MAGIA
-        key="navegacion_principal" 
+        index=st.session_state.indice_menu, # <--- OBLIGAMOS A MANTENER LA POSICIÓN
+        format_func=formatear_menu,
+        key="radio_navegacion",
+        on_change=actualizar_indice # <--- Guardamos el cambio inmediatamente
     )
     
     st.divider()
     st.caption("Sistema v2.0 - WAHA")
 
-# --- RENDERIZADO DE PÁGINAS (Usamos las claves estáticas) ---
-
-# Título dinámico en la parte superior (opcional)
+# --- RENDERIZADO (Usamos la variable seleccion_interna) ---
 titulo_visual = formatear_menu(seleccion_interna).split('(')[0]
 st.title(f"🛒 KM - {titulo_visual}") 
 st.markdown("---")
