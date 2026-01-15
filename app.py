@@ -35,7 +35,6 @@ if 'carrito' not in st.session_state:
     st.session_state.carrito = []
 
 # --- CALCULAR NOTIFICACIONES (CHAT) ---
-# Esto define el texto del botón, ej: "💬 Chat (2)"
 try:
     with engine.connect() as conn:
         n_no_leidos = conn.execute(text(
@@ -44,59 +43,78 @@ try:
 except:
     n_no_leidos = 0
 
-titulo_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
+# Calculamos el texto bonito, PERO NO LO USAREMOS COMO CLAVE
+texto_dinamico_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
 
 # --- BARRA LATERAL (SIDEBAR) ---
-# Usamos sidebar en lugar de tabs para evitar que se reinicie la vista al recargar
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100) # O tu logo
+    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
     st.title("Menú K&M")
     
-    # LA CLAVE DEL ÉXITO: key="navegacion_principal"
-    # Esto hace que Streamlit recuerde dónde estabas aunque la página se recargue.
-    menu_seleccionado = st.radio(
+    # 1. Definimos una lista de claves ESTÁTICAS (nunca cambian)
+    OPCIONES_MENU = [
+        "VENTA", 
+        "COMPRAS", 
+        "INVENTARIO", 
+        "CLIENTES", 
+        "SEGUIMIENTO", 
+        "CATALOGO",
+        "FACTURACION",
+        "CHAT" # Esta clave interna nunca cambiará, aunque cambie el número de mensajes
+    ]
+
+    # 2. Función para "maquillar" las claves y que se vean bonitas
+    def formatear_menu(opcion):
+        mapeo = {
+            "VENTA": "🛒 Venta (POS)",
+            "COMPRAS": "📦 Compras",
+            "INVENTARIO": "🔎 Inventario",
+            "CLIENTES": "👤 Clientes",
+            "SEGUIMIENTO": "📆 Seguimiento",
+            "CATALOGO": "🔧 Catálogo",
+            "FACTURACION": "💰 Facturación",
+            "CHAT": texto_dinamico_chat # <--- AQUÍ USAMOS EL TEXTO DINÁMICO
+        }
+        return mapeo.get(opcion, opcion)
+
+    # 3. El Radio Button usa las claves estáticas
+    seleccion_interna = st.radio(
         "Ir a:", 
-        [
-            "🛒 Venta (POS)", 
-            "📦 Compras", 
-            "🔎 Inventario", 
-            "👤 Clientes", 
-            "📆 Seguimiento", 
-            "🔧 Catálogo",
-            "💰 Facturación",
-            titulo_chat # El texto dinámico del chat
-        ],
+        OPCIONES_MENU,
+        format_func=formatear_menu, # <--- ESTO ES LA MAGIA
         key="navegacion_principal" 
     )
     
     st.divider()
     st.caption("Sistema v2.0 - WAHA")
 
-# --- RENDERIZADO DE PÁGINAS ---
-st.title(f"🛒 KM - {menu_seleccionado.split('(')[0]}") # Título dinámico
+# --- RENDERIZADO DE PÁGINAS (Usamos las claves estáticas) ---
+
+# Título dinámico en la parte superior (opcional)
+titulo_visual = formatear_menu(seleccion_interna).split('(')[0]
+st.title(f"🛒 KM - {titulo_visual}") 
 st.markdown("---")
 
-if menu_seleccionado == "🛒 Venta (POS)":
+if seleccion_interna == "VENTA":
     ventas.render_ventas()
 
-elif menu_seleccionado == "📦 Compras":
+elif seleccion_interna == "COMPRAS":
     compras.render_compras()
 
-elif menu_seleccionado == "🔎 Inventario":
+elif seleccion_interna == "INVENTARIO":
     inventario.render_inventario()
 
-elif menu_seleccionado == "👤 Clientes":
+elif seleccion_interna == "CLIENTES":
     clientes.render_clientes()
 
-elif menu_seleccionado == "📆 Seguimiento":
+elif seleccion_interna == "SEGUIMIENTO":
     seguimiento.render_seguimiento()
 
-elif menu_seleccionado == "🔧 Catálogo":
+elif seleccion_interna == "CATALOGO":
     catalogo.render_catalogo()
 
-elif menu_seleccionado == "💰 Facturación":
+elif seleccion_interna == "FACTURACION":
     facturacion.render_facturacion()
 
-elif menu_seleccionado == titulo_chat:
-    # Aquí llamamos al chat que tiene el st_autorefresh
+elif seleccion_interna == "CHAT":
     chats.render_chat()
