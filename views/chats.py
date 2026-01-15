@@ -7,11 +7,12 @@ import requests
 
 # Importamos lo compartido
 from database import engine 
-from utils import subir_archivo_meta, enviar_mensaje_media
+# AQUI EL CAMBIO IMPORTANTE: Importamos también enviar_mensaje_whatsapp
+from utils import subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp
 
 def render_chat():
     # --- TODO EL CÓDIGO DEBE ESTAR INDENTADO AQUÍ DENTRO ---
-    st.subheader("💬 Chat Center")
+    st.subheader("💬 Chat Center (WAHA)")
 
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
@@ -43,7 +44,8 @@ def render_chat():
 
         for chat in lista_chats:
             tel, nombre = chat.telefono, chat.nombre_mostrar
-            hora = chat.ultima_fecha.strftime('%d/%m %H:%M')
+            # Manejo seguro de fechas
+            hora = chat.ultima_fecha.strftime('%d/%m %H:%M') if chat.ultima_fecha else ""
             notif = f"🔴 {chat.no_leidos}" if chat.no_leidos > 0 else ""
             tipo_btn = "primary" if st.session_state['chat_actual_telefono'] == tel else "secondary"
 
@@ -61,11 +63,11 @@ def render_chat():
             
             contenedor_mensajes = st.container(height=450)
             
-            # A. Leer DB (Incluyendo la nueva columna archivo_data)
+            # A. Leer DB 
             with engine.connect() as conn:
                 conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :t AND tipo='ENTRANTE'"), {"t": telefono_activo})
                 conn.commit()
-                # ¡OJO! Aquí agregamos archivo_data a la consulta SELECT
+                
                 historial = pd.read_sql(text("""
                     SELECT tipo, contenido, fecha, archivo_data 
                     FROM mensajes 
@@ -84,28 +86,29 @@ def render_chat():
                     
                     with st.chat_message(role, avatar=avatar):
                         contenido = row['contenido']
-                        data_binaria = row['archivo_data'] # Los bytes de la imagen
+                        data_binaria = row['archivo_data'] 
 
-                        # 1. SI HAY IMAGEN GUARDADA (Mensajes salientes nuevos)
+                        # 1. SI HAY IMAGEN GUARDADA (Mensajes nuevos)
                         if data_binaria is not None:
-                            # Mostramos la etiqueta (nombre del archivo)
                             st.markdown(f"**{contenido}**")
                             try:
-                                # Convertimos los datos crudos en un stream de archivo
                                 imagen_stream = io.BytesIO(data_binaria)
                                 st.image(imagen_stream, width=250)
                             except Exception as e:
-                                st.error(f"Error técnico mostrando imagen: {e}")
+                                st.error(f"Error visualizando imagen: {e}")
 
-                        # 2. SI ES MENSAJE DE TEXTO O MULTIMEDIA ENTRANTE (Lógica anterior)
-                        elif "|ID:" in contenido:
-                            partes = contenido.split("|ID:")
-                            texto_vis = partes[0].strip()
-                            st.markdown(f"**{texto_vis}**")
+                        # 2. SI ES MENSAJE DE TEXTO
                         else:
-                            st.markdown(contenido)
+                            # Limpieza visual de IDs antiguos si existen
+                            if "|ID:" in contenido:
+                                partes = contenido.split("|ID:")
+                                st.markdown(partes[0].strip())
+                            else:
+                                st.markdown(contenido)
                         
-                        st.caption(f"{row['fecha'].strftime('%H:%M')} - {row['tipo']}")
+                        # Hora del mensaje
+                        hora_msg = row['fecha'].strftime('%H:%M') if row['fecha'] else ""
+                        st.caption(f"{hora_msg} - {row['tipo']}")
 
             # ============================================================
             # C. ÁREA DE ENVÍO
@@ -117,79 +120,69 @@ def render_chat():
                 
                 if archivo_upload is not None:
                     if st.button("📤 Enviar Archivo", key="btn_send_media"):
-                        with st.spinner("Subiendo a WhatsApp..."):
+                        with st.spinner("Enviando a través de WAHA..."):
                             
-                            bytes_data = archivo_upload.getvalue() # Leemos los bytes
+                            bytes_data = archivo_upload.getvalue() 
                             mime_type = archivo_upload.type
                             nombre_archivo = archivo_upload.name
                             
-                            # 1. Subir a Meta
-                            media_id, error_upload = subir_archivo_meta(bytes_data, mime_type)
+                            # 1. Preparar archivo (Base64) usando utils
+                            media_uri, error_upload = subir_archivo_meta(bytes_data, mime_type)
                             
                             if error_upload:
                                 st.error(error_upload)
                             else:
-                                # 2. Enviar mensaje en WhatsApp
+                                # 2. Enviar mensaje multimedia usando utils
                                 exito, resp = enviar_mensaje_media(
                                     telefono=telefono_activo,
-                                    media_id=media_id,
+                                    media_id=media_uri, # Ahora pasamos el URI base64
                                     tipo_archivo=mime_type,
                                     caption="",
                                     filename=nombre_archivo
                                 )
                                 
                                 if exito:
-                                    # 3. Guardar en DB (AHORA INCLUYENDO LOS BYTES)
+                                    # 3. Guardar en DB
                                     tel_guardar = telefono_activo.replace("+", "").strip()
                                     if len(tel_guardar) == 9: tel_guardar = f"51{tel_guardar}"
                                     
-                                    etiqueta_db = f"📷 [Imagen enviada] {nombre_archivo}" if "image" in mime_type else f"📎 [Archivo enviado] {nombre_archivo}"
+                                    etiqueta_db = f"📷 [Imagen] {nombre_archivo}" if "image" in mime_type else f"📎 [Archivo] {nombre_archivo}"
                                     
                                     with engine.connect() as conn:
-                                        # Usamos :data para pasar los bytes de forma segura
                                         conn.execute(text("""
                                             INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
                                             VALUES (:tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE, :data)
                                         """), {
                                             "tel": tel_guardar, 
                                             "txt": etiqueta_db, 
-                                            "data": bytes_data # <--- ¡Aquí guardamos la foto!
+                                            "data": bytes_data 
                                         })
                                         conn.commit()
                                     
-                                    st.success("¡Enviado correctamente!")
+                                    st.success("¡Enviado!")
                                     st.rerun()
                                 else:
-                                    st.error(f"Error al enviar mensaje: {resp}")
+                                    st.error(f"Error al enviar: {resp}")
 
+            # --- ENVÍO DE TEXTO NORMAL (CORREGIDO) ---
             if prompt:
-                # Lógica de texto normal
-                try:
-                    tk = os.getenv("WHATSAPP_TOKEN")
-                    pid = os.getenv("WHATSAPP_PHONE_ID")
-                    headers = {"Authorization": f"Bearer {tk}", "Content-Type": "application/json"}
-                    data_txt = {
-                        "messaging_product": "whatsapp", "to": telefono_activo, "type": "text",
-                        "text": {"body": prompt}
-                    }
-                    r_txt = requests.post(f"https://graph.facebook.com/v17.0/{pid}/messages", headers=headers, json=data_txt)
+                # Usamos la función de utils en lugar de requests directo
+                exito, resp = enviar_mensaje_whatsapp(telefono_activo, prompt)
+                
+                if exito:
+                    # Guardar en DB
+                    tel_guardar = telefono_activo.replace("+", "").strip()
+                    if len(tel_guardar) == 9: tel_guardar = f"51{tel_guardar}"
                     
-                    if r_txt.status_code == 200:
-                        tel_guardar = telefono_activo.replace("+", "").strip()
-                        if len(tel_guardar) == 9: tel_guardar = f"51{tel_guardar}"
-                        with engine.connect() as conn:
-                            # Texto normal no lleva archivo_data (se pasa None)
-                            conn.execute(text("""
-                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
-                                VALUES (:tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE, NULL)
-                            """), {"tel": tel_guardar, "txt": prompt})
-                            conn.commit()
-                        st.rerun()
-                    else:
-                        st.error(f"Error enviando texto: {r_txt.text}")
-                except Exception as e:
-                    st.error(f"Error de conexión: {e}")
+                    with engine.connect() as conn:
+                        conn.execute(text("""
+                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
+                            VALUES (:tel, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE, NULL)
+                        """), {"tel": tel_guardar, "txt": prompt})
+                        conn.commit()
+                    st.rerun()
+                else:
+                    st.error(f"Error enviando mensaje: {resp}")
 
         else:
             st.markdown("<div style='text-align: center; margin-top: 50px; color: gray;'><h3>👈 Selecciona un cliente de la lista</h3></div>", unsafe_allow_html=True)
-            
