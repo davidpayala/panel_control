@@ -97,7 +97,7 @@ def render_chat():
             
             if prompt: enviar_texto_chat(telefono_activo, prompt)
 
-# --- INFO AVANZADA (CORREGIDO: fecha_registro) ---
+# --- INFO AVANZADA Y EDICIÓN ---
 def mostrar_info_avanzada(telefono):
     with engine.connect() as conn:
         res_cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono}).fetchone()
@@ -106,11 +106,7 @@ def mostrar_info_avanzada(telefono):
             st.error("Cliente no registrado.")
             if st.button("Crear Ficha"):
                  with engine.connect() as conn:
-                    # CORREGIDO: Usamos fecha_registro
-                    conn.execute(text("""
-                        INSERT INTO Clientes (telefono, activo, fecha_registro) 
-                        VALUES (:t, TRUE, NOW())
-                    """), {"t": telefono})
+                    conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro) VALUES (:t, TRUE, NOW())"), {"t": telefono})
                     conn.commit()
                     st.rerun()
             return
@@ -118,46 +114,67 @@ def mostrar_info_avanzada(telefono):
         cl = res_cliente._mapping
         id_del_cliente = cl.get('id_cliente') or cl.get('id')
 
-        if id_del_cliente:
-            dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE id_cliente=:id"), conn, params={"id": id_del_cliente})
-        else:
-            dirs = pd.DataFrame()
+        # --- FORMULARIO DE EDICIÓN DATOS BÁSICOS ---
+        c1, c2, c3 = st.columns(3)
+        with c1: 
+            nuevo_nombre = st.text_input("Nombre Corto", value=cl.get('nombre_corto') or "")
+        with c2: 
+            nuevo_estado = st.selectbox("Estado", ["Sin empezar", "En proceso", "Cerrado"], index=0 if not cl.get('estado') else ["Sin empezar", "En proceso", "Cerrado"].index(cl.get('estado')))
+        with c3: 
+            st.text_input("Fecha Reg.", value=str(cl.get('fecha_registro') or ""), disabled=True)
 
-    c1, c2, c3 = st.columns(3)
-    with c1: st.text_input("Nombre Corto", value=cl.get('nombre_corto') or "", disabled=True)
-    with c2: st.text_input("Estado", value=cl.get('estado') or "", disabled=True)
-    with c3: st.text_input("Fecha Seg.", value=str(cl.get('fecha_seguimiento') or ""), disabled=True)
+        if st.button("💾 Guardar Datos Básicos"):
+            with engine.connect() as conn:
+                conn.execute(text("UPDATE Clientes SET nombre_corto=:n, estado=:e WHERE id_cliente=:id"),
+                             {"n": nuevo_nombre, "e": nuevo_estado, "id": id_del_cliente})
+                conn.commit()
+            st.success("Guardado")
+            st.rerun()
 
-    col_g1, col_g2 = st.columns([3, 1])
-    with col_g1:
-        st.caption(f"Google ID: {cl.get('google_id') or 'Sin sincronizar'}")
-        st.caption(f"Nombre: {cl.get('nombre') or '-'} {cl.get('apellido') or '-'}")
-    with col_g2:
-        st.button("🔄 Sync", disabled=True) 
+        # --- GOOGLE SYNC ---
+        col_g1, col_g2 = st.columns([3, 1])
+        with col_g1:
+            st.caption(f"Google ID: {cl.get('google_id') or 'Sin sincronizar'}")
+        with col_g2:
+            if st.button("🔄 Sync"):
+                # Aquí iría la lógica de sync si quieres activarla
+                st.toast("Función Sync invocada")
 
-    st.markdown("#### 📍 Direcciones Registradas")
-    if dirs.empty:
-        st.warning("⚠️ No tiene direcciones.")
-    else:
-        tiene_agencia = False
-        tiene_moto = False
-        for _, row in dirs.iterrows():
-            tipo = row.get('tipo_envio', 'GENERAL')
-            direccion = row.get('direccion', '')
-            if tipo == 'AGENCIA': 
-                tiene_agencia = True
-                badge = '<span class="badge-agencia">🏢 AGENCIA</span>'
-            elif tipo == 'MOTO': 
-                tiene_moto = True
-                badge = '<span class="badge-moto">🏍️ MOTO</span>'
-            else:
-                badge = f"<span>{tipo}</span>"
-            st.markdown(f"{badge} **{direccion}**", unsafe_allow_html=True)
+        # --- DIRECCIONES ---
+        st.markdown("#### 📍 Direcciones Registradas")
         
-        st.markdown("---")
-        if tiene_agencia and tiene_moto: st.success("✅ HÍBRIDO")
-        elif tiene_agencia: st.info("📦 AGENCIA")
-        elif tiene_moto: st.warning("🛵 MOTO")
+        # 1. Listar existentes
+        if id_del_cliente:
+            dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE id_cliente=:id AND activo=TRUE"), conn, params={"id": id_del_cliente})
+            
+            if dirs.empty:
+                st.warning("⚠️ No tiene direcciones.")
+            else:
+                for _, row in dirs.iterrows():
+                    tipo = row.get('tipo_envio', 'GENERAL')
+                    badge = "🏢" if tipo == 'AGENCIA' else "🏍️"
+                    st.markdown(f"**{badge} {tipo}**: {row['direccion']} ({row.get('distrito') or '-'})")
+
+        # 2. Agregar Nueva Dirección
+        with st.expander("➕ Agregar Nueva Dirección"):
+            with st.form("form_direccion"):
+                d_tipo = st.selectbox("Tipo Envío", ["AGENCIA", "MOTO"])
+                d_texto = st.text_input("Dirección Exacta")
+                d_distrito = st.text_input("Distrito / Ciudad")
+                d_ref = st.text_input("Referencia")
+                
+                if st.form_submit_button("Guardar Dirección"):
+                    if d_texto:
+                        with engine.connect() as conn:
+                            conn.execute(text("""
+                                INSERT INTO Direcciones (id_cliente, direccion, tipo_envio, distrito, referencia, activo)
+                                VALUES (:id, :dir, :tipo, :dis, :ref, TRUE)
+                            """), {"id": id_del_cliente, "dir": d_texto, "tipo": d_tipo, "dis": d_distrito, "ref": d_ref})
+                            conn.commit()
+                        st.success("Dirección agregada")
+                        st.rerun()
+                    else:
+                        st.error("Escribe una dirección")
 
 def enviar_texto_chat(telefono, texto):
     exito, resp = enviar_mensaje_whatsapp(telefono, texto)
