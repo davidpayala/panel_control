@@ -10,6 +10,151 @@ from streamlit_autorefresh import st_autorefresh  # <--- IMPORTACIÓN NUEVA
 from database import engine 
 from utils import subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp
 
+def mostrar_vista_chats():
+    st.title("💬 Chat Center")
+
+    # Layout: Columna izquierda (Lista) - Columna derecha (Chat y Datos)
+    col_lista, col_chat = st.columns([1, 2.5])
+
+    # ==========================================================================
+    # 1. COLUMNA IZQUIERDA: LISTA DE CONTACTOS CON NOMBRES
+    # ==========================================================================
+    with col_lista:
+        st.subheader("Conversaciones")
+        
+        # Consulta INTELIGENTE: Trae el último mensaje Y el nombre del cliente
+        query_chats = """
+            SELECT DISTINCT ON (m.telefono) 
+                m.telefono, 
+                m.contenido, 
+                m.fecha,
+                m.leido,
+                c.nombre,
+                c.apellido
+            FROM mensajes m
+            LEFT JOIN Clientes c ON m.telefono = c.telefono
+            ORDER BY m.telefono, m.fecha DESC
+        """
+        
+        with engine.connect() as conn:
+            df_chats = pd.read_sql(text(query_chats), conn)
+            # Reordenamos por fecha real (el DISTINCT ON desordena un poco)
+            df_chats = df_chats.sort_values(by="fecha", ascending=False)
+
+        for i, row in df_chats.iterrows():
+            tel = row['telefono']
+            
+            # Lógica del Nombre: Si tiene Nombre en DB úsalo, si no, usa el Teléfono
+            nombre_mostrar = row['nombre'] if row['nombre'] else tel
+            if row['apellido']:
+                nombre_mostrar += f" {row['apellido']}"
+            
+            # Estilo del botón (Negrita si no leyó)
+            icono = "🟢" if not row['leido'] else "👤"
+            label_boton = f"{icono} {nombre_mostrar}\nMessage: {row['contenido'][:20]}..."
+            
+            if st.button(label_boton, key=f"chat_{tel}", use_container_width=True):
+                st.session_state.chat_actual = tel
+                st.session_state.nombre_actual = nombre_mostrar # Guardamos el nombre para el header
+                st.rerun()
+
+    # ==========================================================================
+    # 2. COLUMNA DERECHA: CONVERSACIÓN ACTIVA
+    # ==========================================================================
+    with col_chat:
+        if 'chat_actual' in st.session_state:
+            telefono_activo = st.session_state.chat_actual
+            nombre_activo = st.session_state.get('nombre_actual', telefono_activo)
+            
+            # --- HEADER DEL CHAT ---
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.markdown(f"### 💬 Chat con: **{nombre_activo}**")
+                st.caption(f"Tel: {telefono_activo}")
+            with c2:
+                # Botón para ver info detallada
+                ver_info = st.toggle("Ver Ficha Cliente", value=True)
+
+            st.divider()
+
+            # --- PANEL DE INFORMACIÓN DEL CLIENTE (Lado Derecho o Expander) ---
+            if ver_info:
+                with st.expander("📂 Información del Cliente y Envíos", expanded=True):
+                    cargar_info_cliente(telefono_activo)
+
+            # --- MOSTRAR MENSAJES (Tu lógica actual de chat) ---
+            cargar_mensajes_chat(telefono_activo)
+            
+            # --- INPUT DE RESPUESTA ---
+            # (Aquí va tu input de texto normal)
+
+# ==============================================================================
+# FUNCIÓN AUXILIAR: CARGAR INFO DEL CLIENTE
+# ==============================================================================
+def cargar_info_cliente(telefono):
+    with engine.connect() as conn:
+        # Traemos todo lo que sepamos del cliente
+        res = conn.execute(text("SELECT * FROM Clientes WHERE telefono = :t"), {"t": telefono}).fetchone()
+        
+        if res:
+            # Convertimos a diccionario para fácil acceso
+            cliente = res._mapping
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                nuevo_nombre = st.text_input("Nombre", value=cliente['nombre'] or "")
+                nuevo_apellido = st.text_input("Apellido", value=cliente['apellido'] or "")
+            with c2:
+                nueva_direccion = st.text_area("🏠 Dirección de Envío", value=cliente['direccion'] or "")
+                # Asumo que tienes un campo email o notas, si no, bórralo
+                notas = st.text_area("📝 Notas / Referencia", value=cliente.get('notas', ''))
+
+            if st.button("💾 Guardar Datos del Cliente"):
+                conn.execute(text("""
+                    UPDATE Clientes 
+                    SET nombre=:n, apellido=:a, direccion=:d, notas=:nt 
+                    WHERE telefono=:t
+                """), {
+                    "n": nuevo_nombre, "a": nuevo_apellido, 
+                    "d": nueva_direccion, "nt": notas, "t": telefono
+                })
+                conn.commit()
+                st.success("Datos actualizados!")
+                st.rerun()
+        else:
+            st.warning("Este cliente aún no está registrado en la tabla Clientes.")
+            if st.button("Crear Ficha Ahora"):
+                conn.execute(text("INSERT INTO Clientes (telefono, activo) VALUES (:t, TRUE)"), {"t": telefono})
+                conn.commit()
+                st.rerun()
+
+# ==============================================================================
+# FUNCIÓN AUXILIAR: CARGAR MENSAJES (Simplificada)
+# ==============================================================================
+def cargar_mensajes_chat(telefono):
+    # Aquí pones tu lógica actual de cargar burbujas de chat
+    # Solo asegúrate de marcar como LEÍDO al abrir
+    with engine.connect() as conn:
+        conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :t"), {"t": telefono})
+        conn.commit()
+        
+        msgs = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono = :t ORDER BY fecha ASC"), conn, params={"t": telefono})
+    
+    # Renderizar burbujas... (Tu código actual)
+    chat_container = st.container(height=400)
+    with chat_container:
+        for i, m in msgs.iterrows():
+            es_mio = (m['tipo'] == 'SALIENTE')
+            alignment = "flex-end" if es_mio else "flex-start"
+            color = "#dcf8c6" if es_mio else "#ffffff"
+            
+            st.markdown(f"""
+            <div style='display: flex; justify-content: {alignment}; margin-bottom: 5px;'>
+                <div style='background-color: {color}; padding: 10px; border-radius: 10px; max-width: 70%; color: black;'>
+                    {m['contenido']}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 def render_chat():
     # --- LÍNEA MÁGICA: Recarga la página cada 4000ms (4 segundos) ---
     st_autorefresh(interval=4000, key="chat_autorefresh")
