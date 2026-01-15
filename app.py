@@ -16,14 +16,34 @@ from views import ventas, compras, inventario, clientes, seguimiento, catalogo, 
 
 
 # ESTO ACTUALIZA TU BASE DE DATOS AUTOMÁTICAMENTE
+# --- EN APP.PY (Bloque de Migración) ---
 try:
     with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS direccion TEXT;"))
-        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS notas TEXT;"))
+        # 1. Actualizar tabla Clientes con tus nuevos campos
+        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_corto TEXT;"))
+        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS medio_contacto TEXT DEFAULT 'WhatsApp';"))
+        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS codigo_contacto TEXT;"))
+        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS fecha_seguimiento DATE;"))
+        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id TEXT;"))
+        
+        # 2. Crear tabla Direcciones (Si no existe)
+        # Relacionada por 'telefono' del cliente
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Direcciones (
+                id SERIAL PRIMARY KEY,
+                telefono TEXT, 
+                direccion TEXT,
+                tipo_envio TEXT, -- 'AGENCIA' o 'MOTO'
+                departamento TEXT,
+                provincia TEXT,
+                distrito TEXT,
+                referencia TEXT
+            );
+        """))
         conn.commit()
-    print("✅ Base de datos actualizada: Columnas agregadas.")
+    print("✅ Base de datos actualizada con nuevas reglas.")
 except Exception as e:
-    print(f"ℹ️ (Nota) La base de datos ya estaba actualizada o error menor: {e}")
+    print(f"Nota DB: {e}")
 # ------------------------------------------------
 
 # Cargar variables

@@ -4,6 +4,8 @@ from database import engine
 import os
 import requests
 import json
+from datetime import datetime
+import pytz # Asegúrate de tener pytz en requirements.txt, si no usa datetime normal
 
 app = Flask(__name__)
 
@@ -23,7 +25,8 @@ def descargar_media(media_url):
         print(f"❌ Error media: {e}")
         return None
 
-def limpiar_numero(valor_raw):
+def limpiar_numero_full(valor_raw):
+    """Devuelve el número COMPLETO con 51 (ej: 51986203398)"""
     if not valor_raw: return ""
     texto = str(valor_raw)
     if isinstance(valor_raw, dict):
@@ -41,23 +44,33 @@ def recibir_mensaje():
     if data.get('event') == 'message':
         payload = data.get('payload', {})
         
-        # 1. LÓGICA DE RECUPERACIÓN DE NÚMERO (La que ya funciona)
+        # 1. OBTENER NÚMERO (Usando la lógica Alt que ya funcionaba)
         candidato_alt = payload.get('_data', {}).get('key', {}).get('remoteJidAlt')
         candidatos = [candidato_alt, payload.get('participant'), payload.get('author'), payload.get('from')]
         
-        numero_final = "Desconocido"
+        numero_full = "Desconocido"
         for cand in candidatos:
-            limpio = limpiar_numero(cand)
+            limpio = limpiar_numero_full(cand)
             if limpio.startswith('51') and len(limpio) >= 11:
-                numero_final = limpio
+                numero_full = limpio
                 break
         
-        if numero_final == "Desconocido":
-            numero_final = limpiar_numero(payload.get('from'))
+        if numero_full == "Desconocido":
+            numero_full = limpiar_numero_full(payload.get('from'))
 
-        # 2. CAPTURAR NOMBRE DE WHATSAPP (NotifyName)
-        # Esto es el nombre que el usuario se puso en su perfil
-        nombre_wsp = payload.get('_data', {}).get('notifyName') or payload.get('pushName') or "Cliente Nuevo"
+        # 2. PREPARAR DATOS PARA TABLA CLIENTES
+        # A. Numero Corto (986203398)
+        if numero_full.startswith("51") and len(numero_full) == 11:
+            numero_corto = numero_full[2:] 
+        else:
+            numero_corto = numero_full # Por si acaso
+
+        # B. Nombre WhatsApp (PushName)
+        nombre_wsp = payload.get('_data', {}).get('notifyName') or payload.get('pushName') or ""
+        
+        # C. Fecha Hoy (2026-01-15)
+        # Usamos zona horaria Perú si es posible, sino UTC
+        fecha_hoy = datetime.now().strftime('%Y-%m-%d')
 
         # 3. GUARDAR MENSAJE
         body = payload.get('body', '')
@@ -72,23 +85,48 @@ def recibir_mensaje():
 
         try:
             with engine.connect() as conn:
-                # A. Insertar mensaje
+                # INSERT MENSAJE
                 conn.execute(text("""
                     INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
                     VALUES (:tel, 'ENTRANTE', :txt, (NOW() - INTERVAL '5 hours'), FALSE, :data)
-                """), {"tel": numero_final, "txt": body, "data": archivo_bytes})
+                """), {"tel": numero_full, "txt": body, "data": archivo_bytes})
                 
-                # B. Asegurar que el cliente exista (UPSERT LIGERO)
-                # Si el numero no existe en clientes, lo crea con el nombre de WhatsApp.
-                # Si ya existe, NO toca el nombre (para respetar si tú lo editaste manualmente).
+                # INSERT / UPDATE CLIENTE (Tus reglas específicas)
+                # Solo insertamos si NO existe. Si existe, no tocamos nada (ON CONFLICT DO NOTHING)
                 conn.execute(text("""
-                    INSERT INTO Clientes (nombre, telefono, activo, fecha_creacion)
-                    VALUES (:nom, :tel, TRUE, (NOW() - INTERVAL '5 hours'))
+                    INSERT INTO Clientes (
+                        telefono, 
+                        codigo_contacto, 
+                        nombre_corto, 
+                        nombre, 
+                        medio_contacto, 
+                        estado, 
+                        fecha_seguimiento, 
+                        activo,
+                        fecha_creacion
+                    )
+                    VALUES (
+                        :tel,          -- telefono (con 51)
+                        :cod,          -- codigo_contacto (con 51)
+                        :corto,        -- nombre_corto (9 digitos)
+                        :nom_wsp,      -- nombre (Wsp placeholder)
+                        'WhatsApp',    -- medio_contacto
+                        'Sin empezar', -- estado
+                        :fec,          -- fecha_seguimiento (YYYY-MM-DD)
+                        TRUE,
+                        (NOW() - INTERVAL '5 hours')
+                    )
                     ON CONFLICT (telefono) DO NOTHING
-                """), {"nom": nombre_wsp, "tel": numero_final})
+                """), {
+                    "tel": numero_full,
+                    "cod": numero_full,
+                    "corto": numero_corto,
+                    "nom_wsp": nombre_wsp,
+                    "fec": fecha_hoy
+                })
                 
                 conn.commit()
-            print(f"✅ Guardado: {numero_final} ({nombre_wsp})")
+            print(f"✅ Guardado: {numero_full} ({numero_corto})")
         except Exception as e:
             print(f"❌ Error DB: {e}")
 
