@@ -12,7 +12,7 @@ from utils import subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whats
 # ==============================================================================
 # FUNCIÓN PRINCIPAL (Llamada desde app.py)
 # ==============================================================================
-def mostrar_vista_chats():
+def render_chat():   # <--- AQUÍ ESTABA EL CAMBIO DE NOMBRE
     # 1. AUTO-REFRESH: Recarga cada 5 segundos para ver mensajes nuevos
     st_autorefresh(interval=5000, key="chat_autorefresh")
     
