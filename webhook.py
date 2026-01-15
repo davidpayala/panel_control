@@ -3,6 +3,7 @@ from sqlalchemy import text
 from database import engine
 import os
 import requests
+import json 
 
 app = Flask(__name__)
 
@@ -36,55 +37,58 @@ def recibir_mensaje():
 
     data = request.json
     
-    # ---------------------------------------------------------
-    # 🕵️‍♂️ DEBUG: Descomenta esto si sigue fallando para ver qué llega
-    # print(f"📩 PAYLOAD RAW: {data}", flush=True) 
-    # ---------------------------------------------------------
+# -------------------------------------------------------------
+    # 🕵️‍♂️ ZONA DE DIAGNÓSTICO (RAYOS X)
+    # -------------------------------------------------------------
+    # Esto imprimirá TODO lo que llega a los logs de Railway
+    print(f"\n🛑 --- NUEVO MENSAJE RECIBIDO ---", flush=True)
+    print(json.dumps(data, indent=2), flush=True) 
+    # -----
+
 
     if data.get('event') == 'message':
         payload = data.get('payload', {})
         
         # --- CORRECCIÓN DE NÚMEROS DE EMPRESA (LID) ---
-        sender_raw = payload.get('from', '')
+        # 1. Capturamos el ID CRUDO (Sin tocarlo)
+        sender_raw = payload.get('from', 'Desconocido')
+        participant = payload.get('participant', 'N/A')
+        author = payload.get('author', 'N/A')
         
-        # A veces las empresas mandan desde '12345@lid'. Eso no sirve para responder.
-        # El número real suele venir en 'author' o 'participant'.
-        if '@lid' in sender_raw:
-            # Intentamos buscar el número real en otros campos
-            numero_alternativo = payload.get('author') or payload.get('participant')
-            if numero_alternativo:
-                print(f"🔄 Corrigiendo ID de Empresa: Cambiando {sender_raw} por {numero_alternativo}")
-                sender_raw = numero_alternativo
+# Si es un LID (Empresa) o Grupo, el número real suele estar en 'participant'
+        if '@lid' in sender_raw or '@g.us' in sender_raw:
+            if participant and '51' in participant:
+                sender_final = participant
+            elif author and '51' in author:
+                sender_final = author
 
-        # --- LIMPIEZA ESTÁNDAR ---
-        # 1. Quitar dominio (@c.us, @s.whatsapp.net, @lid)
-        sender = sender_raw.split('@')[0]
-        
-        # 2. Quitar sufijo de dispositivo (:8, :24)
-        if ':' in sender:
-            sender = sender.split(':')[0]
+        # Limpieza final estándar (quitar @c.us y :dispositivo)
+        sender_limpio = sender_final.split('@')[0].split(':')[0]
 
-        # -------------------------------------------------------
-
+        # 3. Preparar el cuerpo del mensaje
         body = payload.get('body', '')
         has_media = payload.get('hasMedia', False)
         
         archivo_bytes = None
-        
-        # Lógica de Imágenes
         if has_media:
+            # ... (Lógica de descarga igual que antes) ...
             media_info = payload.get('media', {})
             media_url = media_info.get('url')
             mimetype = media_info.get('mimetype', '')
             if media_url:
                 archivo_bytes = descargar_media(media_url)
                 if archivo_bytes:
-                    tipo_icono = "📷 Imagen" if "image" in mimetype else "📎 Archivo"
-                    body = f"{tipo_icono} recibida"
+                    tipo_icono = "📷" if "image" in mimetype else "📎"
+                    body = f"{tipo_icono} Archivo recibido"
                 else:
-                    body = "⚠️ Error descargando imagen"
+                    body = "⚠️ Error imagen"
             else:
-                body = "📷 [Imagen] (URL no disponible)"
+                body = "📷 https://www.spanishdict.com/translate/vac%C3%ADa"
+
+        # 4. AGREGAR INFORMACIÓN DE DEBUG AL TEXTO
+        # Esto te permitirá ver en tu app qué números llegaron realmente
+        debug_info = f"\n\n🔍 [DEBUG INFO]\nFrom: {sender_raw}\nParticipant: {participant}\nUsado: {sender_limpio}"
+        body_con_debug = body + debug_info
 
         # Guardar en Base de Datos
         try:
@@ -93,12 +97,12 @@ def recibir_mensaje():
                     INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
                     VALUES (:tel, 'ENTRANTE', :txt, (NOW() - INTERVAL '5 hours'), FALSE, :data)
                 """), {
-                    "tel": sender, 
-                    "txt": body,
+                    "tel": sender_limpio,  # Guardamos el número que creemos correcto
+                    "txt": body_con_debug, # Guardamos el texto con la "trampa" visual
                     "data": archivo_bytes
                 })
                 conn.commit()
-            print(f"✅ Mensaje de {sender} guardado.")
+            print(f"✅ Guardado: {sender_limpio}")
         except Exception as e:
             print(f"❌ Error DB: {e}")
 
