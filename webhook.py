@@ -26,6 +26,22 @@ def descargar_media(media_url):
         print(f"❌ Excepción media: {e}")
         return None
 
+# --- FUNCIÓN DE SEGURIDAD NUCLEAR ---
+def extraer_string_seguro(campo_raw):
+    """
+    Convierte CUALQUIER cosa (Dict, Objeto, None) en un string seguro.
+    Evita el error 'AttributeError: dict object has no attribute split'
+    """
+    if campo_raw is None:
+        return ""
+    
+    if isinstance(campo_raw, dict):
+        # Si es un objeto, intentamos sacar el ID serializado o el usuario
+        return str(campo_raw.get('_serialized') or campo_raw.get('user') or campo_raw.get('id') or "")
+    
+    # Si ya es texto, lo devolvemos asegurando que sea string
+    return str(campo_raw)
+
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
     api_key = request.headers.get('X-Api-Key')
@@ -33,50 +49,40 @@ def recibir_mensaje():
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.json
-
-    # (Opcional) Debug para ver si ya sale bien
+    
+    # Debug: Imprime lo que llega para que lo veas en los logs si falla algo más
     # print(json.dumps(data, indent=2), flush=True)
 
     if data.get('event') == 'message':
         payload = data.get('payload', {})
         
-        # 1. OBTENER DATOS CRUDOS
-        sender_raw = payload.get('from', '')
-        participant_raw = payload.get('participant')
-        author_raw = payload.get('author')
+        # 1. EXTRACCIÓN SEGURA (Esto arregla el crash)
+        # Pasamos todo por la función de seguridad. Ya no importa si llega como objeto o texto.
+        sender_str = extraer_string_seguro(payload.get('from'))
+        participant_str = extraer_string_seguro(payload.get('participant'))
+        author_str = extraer_string_seguro(payload.get('author'))
 
-        # 2. NORMALIZAR PARTICIPANT (Aquí estaba el error)
-        # Si participant es un diccionario (Objeto), sacamos el string de adentro
-        participant_str = ""
-        if isinstance(participant_raw, dict):
-            participant_str = participant_raw.get('_serialized', '')
-        elif isinstance(participant_raw, str):
-            participant_str = participant_raw
+        # 2. LOGICA DE SELECCIÓN (Detectar Empresas/LID)
+        numero_final = sender_str # Por defecto usamos el 'from'
+
+        # Si viene de una empresa (@lid) o grupo (@g.us), el número real suele estar en 'participant'
+        # Buscamos cual de los campos extra tiene un formato de celular peruano (empieza con 51 y termina en c.us)
+        if '@lid' in sender_str or '@g.us' in sender_str:
+            if participant_str and '51' in participant_str and '@c.us' in participant_str:
+                numero_final = participant_str
+            elif author_str and '51' in author_str and '@c.us' in author_str:
+                numero_final = author_str
         
-        # Hacemos lo mismo para author por si acaso
-        author_str = ""
-        if isinstance(author_raw, dict):
-            author_str = author_raw.get('_serialized', '')
-        elif isinstance(author_raw, str):
-            author_str = author_raw
-
-        # 3. ELEGIR EL MEJOR NÚMERO (Prioridad al real sobre el LID)
-        sender_final = sender_raw # Por defecto
-
-        # Si el 'from' tiene @lid o es grupo, buscamos el número real
-        if '@lid' in sender_raw or '@g.us' in sender_raw:
-            if participant_str and '51' in participant_str:
-                sender_final = participant_str
-            elif author_str and '51' in author_str:
-                sender_final = author_str
-        
-        # 4. LIMPIEZA FINAL (Quitar @c.us, :dispositivo, etc)
-        # Convertimos a string por seguridad antes de hacer split
-        sender_final = str(sender_final)
-        sender_limpio = sender_final.split('@')[0].split(':')[0]
+        # 3. LIMPIEZA FINAL
+        # Quitamos @c.us, @lid y los sufijos de dispositivo (:8)
+        # Al usar .split sobre una variable que YA pasamos por extraer_string_seguro, es imposible que falle.
+        try:
+            telefono_limpio = numero_final.split('@')[0].split(':')[0]
+        except:
+            telefono_limpio = "Error_Parsing"
 
         # -------------------------------------------------------
-
+        
         body = payload.get('body', '')
         has_media = payload.get('hasMedia', False)
         
@@ -103,12 +109,12 @@ def recibir_mensaje():
                     INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
                     VALUES (:tel, 'ENTRANTE', :txt, (NOW() - INTERVAL '5 hours'), FALSE, :data)
                 """), {
-                    "tel": sender_limpio, 
+                    "tel": telefono_limpio, 
                     "txt": body,
                     "data": archivo_bytes
                 })
                 conn.commit()
-            print(f"✅ Guardado mensaje de: {sender_limpio}")
+            print(f"✅ Guardado mensaje de: {telefono_limpio} (Original: {sender_str})")
         except Exception as e:
             print(f"❌ Error DB: {e}")
 
