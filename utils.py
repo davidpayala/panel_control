@@ -17,7 +17,7 @@ WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
 WAHA_KEY = os.getenv("WAHA_KEY") 
 
 # ==============================================================================
-# 🏆 FUNCIÓN MAESTRA DE NORMALIZACIÓN (La que faltaba)
+# 🏆 FUNCIÓN MAESTRA DE NORMALIZACIÓN
 # ==============================================================================
 def normalizar_telefono_maestro(entrada):
     """
@@ -27,7 +27,6 @@ def normalizar_telefono_maestro(entrada):
     if not entrada: return None
 
     # 1. Limpieza brutal: Solo dejar números
-    # str(entrada) convierte objetos a texto si vienen sucios
     sucio = str(entrada)
     if isinstance(entrada, dict):
         sucio = str(entrada.get('user') or entrada.get('_serialized') or "")
@@ -35,7 +34,6 @@ def normalizar_telefono_maestro(entrada):
     # Quitar todo lo que no sea número
     solo_numeros = "".join(filter(str.isdigit, sucio))
     
-    # Validar que quedó algo
     if not solo_numeros: return None
     
     # 2. Lógica Perú (Detectar 9 dígitos)
@@ -43,36 +41,30 @@ def normalizar_telefono_maestro(entrada):
     local = solo_numeros
     
     if len(solo_numeros) == 9:
-        # Es un local (986...), le agregamos el 51
         full = f"51{solo_numeros}"
         local = solo_numeros
     elif len(solo_numeros) == 11 and solo_numeros.startswith("51"):
-        # Ya tiene el 51 (51986...), extraemos el local
         full = solo_numeros
         local = solo_numeros[2:]
     
     # 3. Retornar paquete con formatos listos
     return {
-        "db": full,                  # 51986203398 (Para guardar en SQL)
-        "waha": f"{full}@c.us",      # 51986203398@c.us (Para enviar mensajes)
-        "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}", # +51 986 203 398 (Bonito)
-        "corto": local               # 986203398 (Para ver rápido)
+        "db": full,                  # 51986203398
+        "waha": f"{full}@c.us",      # 51986203398@c.us
+        "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}", # +51 986 203 398
+        "corto": local               # 986203398
     }
 
 # ==============================================================================
 # FUNCIONES DE ENVÍO (WAHA)
 # ==============================================================================
-
 def formatear_numero_waha(numero):
-    """Usa la normalizadora para asegurar formato WAHA"""
     norm = normalizar_telefono_maestro(numero)
-    if norm: return norm['db'] # Devolvemos formato 51999...
+    if norm: return norm['db']
     return str(numero)
 
-# --- 1. ENVIAR TEXTO ---
 def enviar_mensaje_whatsapp(numero, texto):
     if not WAHA_URL: return False, "⚠️ Falta WAHA_URL en .env"
-
     number_clean = formatear_numero_waha(numero)
     chat_id = f"{number_clean}@c.us"
     
@@ -80,33 +72,21 @@ def enviar_mensaje_whatsapp(numero, texto):
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY 
     
-    payload = {
-        "session": WAHA_SESSION,
-        "chatId": chat_id,
-        "text": texto
-    }
-
+    payload = {"session": WAHA_SESSION, "chatId": chat_id, "text": texto}
     try:
         r = requests.post(url, headers=headers, json=payload)
-        if r.status_code in [200, 201]:
-            return True, r.json()
+        if r.status_code in [200, 201]: return True, r.json()
         return False, f"Error WAHA {r.status_code}: {r.text}"
-    except Exception as e:
-        return False, str(e)
+    except Exception as e: return False, str(e)
 
-# --- 2. PREPARAR ARCHIVO ---
 def subir_archivo_meta(archivo_bytes, mime_type):
     try:
         b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
-        data_uri = f"data:{mime_type};base64,{b64_data}"
-        return data_uri, None
-    except Exception as e:
-        return None, str(e)
+        return f"data:{mime_type};base64,{b64_data}", None
+    except Exception as e: return None, str(e)
 
-# --- 3. ENVIAR MULTIMEDIA ---
 def enviar_mensaje_media(telefono, media_uri, tipo_archivo, caption="", filename="archivo"):
     if not WAHA_URL: return False, "Falta URL WAHA"
-
     number_clean = formatear_numero_waha(telefono)
     chat_id = f"{number_clean}@c.us"
     
@@ -115,28 +95,19 @@ def enviar_mensaje_media(telefono, media_uri, tipo_archivo, caption="", filename
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
     
     payload = {
-        "session": WAHA_SESSION,
-        "chatId": chat_id,
-        "file": {
-            "mimetype": tipo_archivo,
-            "filename": filename,
-            "data": media_uri 
-        },
+        "session": WAHA_SESSION, "chatId": chat_id,
+        "file": {"mimetype": tipo_archivo, "filename": filename, "data": media_uri},
         "caption": caption
     }
-
     try:
         r = requests.post(url, headers=headers, json=payload)
-        if r.status_code in [200, 201]:
-            return True, r.json()
+        if r.status_code in [200, 201]: return True, r.json()
         return False, f"Error WAHA: {r.text}"
-    except Exception as e:
-        return False, str(e)
+    except Exception as e: return False, str(e)
 
 # ==============================================================================
 # LÓGICA GOOGLE (Contactos)
 # ==============================================================================
-
 def get_google_service():
     if not os.path.exists('token.json'):
         token_content = os.getenv("GOOGLE_TOKEN_JSON")
@@ -149,11 +120,23 @@ def get_google_service():
         except: return None
     return None
 
+# --- LA FUNCIÓN QUE FALTABA ---
+def buscar_contacto_google(query):
+    """Busca un contacto en Google por nombre o teléfono"""
+    srv = get_google_service()
+    if not srv: return None
+    try:
+        # Intenta buscar usando la API searchContacts
+        res = srv.people().searchContacts(query=query, readMask='names,phoneNumbers').execute()
+        if 'results' in res and len(res['results']) > 0:
+            return res['results'][0]['person']
+    except:
+        pass # Si falla la búsqueda, retornamos None
+    return None
+
 def crear_en_google(nombre, apellido, telefono):
     srv = get_google_service()
     if not srv: return None
-    
-    # Aseguramos formato bonito +51...
     norm = normalizar_telefono_maestro(telefono)
     tel_google = norm['google'] if norm else telefono
 
@@ -168,26 +151,18 @@ def crear_en_google(nombre, apellido, telefono):
 def actualizar_en_google(gid, nombre, apellido, telefono):
     srv = get_google_service()
     if not srv: return False
-    
-    # Aseguramos formato bonito +51...
     norm = normalizar_telefono_maestro(telefono)
     tel_google = norm['google'] if norm else telefono
 
     try:
-        # 1. Obtener contacto actual para conservar otros datos si los tuviera
         c = srv.people().get(resourceName=gid, personFields='names,phoneNumbers').execute()
-        
-        # 2. Actualizar campos
         c['names'] = [{"givenName": nombre, "familyName": apellido}]
         c['phoneNumbers'] = [{"value": tel_google}]
-        
-        # 3. Enviar actualización
         srv.people().updateContact(resourceName=gid, updatePersonFields='names,phoneNumbers', body=c).execute()
         return True
     except: return False
 
 def sincronizar_desde_google_batch():
-    """Función para traer contactos masivamente (Opcional)"""
     service = get_google_service()
     if not service:
         st.error("No hay conexión con Google.")
@@ -207,14 +182,9 @@ def sincronizar_desde_google_batch():
                     names = p.get('names', [])
                     if phones and names:
                         for ph in phones:
-                            # Usamos la normalizadora para indexar
                             norm = normalizar_telefono_maestro(ph.get('value'))
                             if norm:
-                                agenda[norm['db']] = { # Guardamos con clave 51999...
-                                    'n': names[0].get('givenName',''), 
-                                    'a': names[0].get('familyName',''), 
-                                    'gid': p.get('resourceName')
-                                }
+                                agenda[norm['db']] = {'n': names[0].get('givenName',''), 'a': names[0].get('familyName',''), 'gid': p.get('resourceName')}
                 page = res.get('nextPageToken')
                 if not page: break
         except: pass
@@ -231,9 +201,8 @@ def sincronizar_desde_google_batch():
         st.rerun()
 
 # ==============================================================================
-# FUNCIONES AUXILIARES (Carrito, Facebook, etc) - NO BORRAR
+# FUNCIONES AUXILIARES
 # ==============================================================================
-
 def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
     if 'carrito' not in st.session_state: st.session_state.carrito = []
     if es_inventario:
