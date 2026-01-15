@@ -101,74 +101,83 @@ def render_chat():
             
             if prompt: enviar_texto_chat(telefono_activo, prompt)
 
-# --- LÓGICA DE DIRECCIONES Y DATOS ---
+
+# BUSCAR ESTA FUNCIÓN Y REEMPLAZARLA COMPLETA
 def mostrar_info_avanzada(telefono):
     with engine.connect() as conn:
-        # 1. Datos Cliente
-        cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono}).fetchone()
+        # 1. BUSCAR CLIENTE POR TELÉFONO
+        # Obtenemos su ID único (id_cliente o id)
+        res_cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono}).fetchone()
         
-        # 2. Direcciones
-        dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE telefono=:t"), conn, params={"t": telefono})
+        if not res_cliente:
+            st.error("Cliente no registrado en tabla maestra.")
+            if st.button("Crear Ficha"):
+                 with engine.connect() as conn:
+                    # Creamos cliente básico
+                    conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_creacion) VALUES (:t, TRUE, NOW())"), {"t": telefono})
+                    conn.commit()
+                    st.rerun()
+            return
 
-    if cliente:
-        cl = cliente._mapping
-        
-        # Fila 1: Datos Básicos
-        c1, c2, c3 = st.columns(3)
-        with c1: st.text_input("Nombre Corto", value=cl.get('nombre_corto') or "", disabled=True)
-        with c2: st.text_input("Estado", value=cl.get('estado') or "", disabled=True)
-        with c3: st.text_input("Fecha Seg.", value=str(cl.get('fecha_seguimiento') or ""), disabled=True)
+        # Convertimos cliente a diccionario
+        cl = res_cliente._mapping
+        id_del_cliente = cl.get('id_cliente') or cl.get('id') # Soporte para ambos nombres de ID
 
-        # Fila 2: Sincronización Google
-        col_g1, col_g2 = st.columns([3, 1])
-        with col_g1:
-            st.caption(f"Google ID: {cl.get('google_id') or 'Sin sincronizar'}")
-            st.caption(f"Nombre Google: {cl.get('nombre') or '-'} {cl.get('apellido') or '-'}")
-        with col_g2:
-            if st.button("🔄 Sync Google"):
-                # Aquí llamamos a la lógica de actualizar con Google
-                pass 
-
-        # Fila 3: DIRECCIONES (Lectura)
-        st.markdown("#### 📍 Direcciones Registradas")
-        
-        if dirs.empty:
-            st.warning("⚠️ No tiene direcciones registradas.")
+        # 2. BUSCAR DIRECCIONES POR ID (NO POR TELÉFONO)
+        # Aquí es donde fallaba antes. Ahora usamos el ID.
+        if id_del_cliente:
+            dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE id_cliente=:id"), conn, params={"id": id_del_cliente})
         else:
-            tiene_agencia = False
-            tiene_moto = False
-            
-            for _, row in dirs.iterrows():
-                tipo = row['tipo_envio']  # AGENCIA o MOTO
-                direccion = row['direccion']
-                
-                if tipo == 'AGENCIA': 
-                    tiene_agencia = True
-                    badge = '<span class="badge-agencia">🏢 AGENCIA</span>'
-                elif tipo == 'MOTO': 
-                    tiene_moto = True
-                    badge = '<span class="badge-moto">🏍️ MOTO</span>'
-                else:
-                    badge = f"<span>{tipo}</span>"
-                
-                st.markdown(f"{badge} **{direccion}** - {row.get('distrito') or ''}", unsafe_allow_html=True)
-            
-            # Resumen Visual
-            st.markdown("---")
-            if tiene_agencia and tiene_moto:
-                st.success("✅ Cliente HÍBRIDO (Usa Agencia y Moto)")
-            elif tiene_agencia:
-                st.info("📦 Cliente SOLO AGENCIA")
-            elif tiene_moto:
-                st.warning("🛵 Cliente SOLO MOTO")
+            dirs = pd.DataFrame() # Vacío si no hay ID
 
+    # --- MOSTRAR DATOS ---
+    
+    # Fila 1: Datos Básicos
+    c1, c2, c3 = st.columns(3)
+    with c1: st.text_input("Nombre Corto", value=cl.get('nombre_corto') or "", disabled=True)
+    with c2: st.text_input("Estado", value=cl.get('estado') or "", disabled=True)
+    with c3: st.text_input("Fecha Seg.", value=str(cl.get('fecha_seguimiento') or ""), disabled=True)
+
+    # Fila 2: Sincronización Google
+    col_g1, col_g2 = st.columns([3, 1])
+    with col_g1:
+        st.caption(f"Google ID: {cl.get('google_id') or 'Sin sincronizar'}")
+        st.caption(f"Nombre: {cl.get('nombre') or '-'} {cl.get('apellido') or '-'}")
+    with col_g2:
+        st.button("🔄 Sync", disabled=True) 
+
+    # Fila 3: DIRECCIONES (Lectura)
+    st.markdown("#### 📍 Direcciones Registradas")
+    
+    if dirs.empty:
+        st.warning("⚠️ No tiene direcciones registradas.")
     else:
-        st.error("Cliente no registrado en tabla maestra.")
-        if st.button("Crear Ficha"):
-             with engine.connect() as conn:
-                conn.execute(text("INSERT INTO Clientes (telefono, activo) VALUES (:t, TRUE)"), {"t": telefono})
-                conn.commit()
-                st.rerun()
+        tiene_agencia = False
+        tiene_moto = False
+        
+        for _, row in dirs.iterrows():
+            tipo = row.get('tipo_envio', 'GENERAL')  # AGENCIA o MOTO
+            direccion = row.get('direccion', '')
+            
+            if tipo == 'AGENCIA': 
+                tiene_agencia = True
+                badge = '<span class="badge-agencia">🏢 AGENCIA</span>'
+            elif tipo == 'MOTO': 
+                tiene_moto = True
+                badge = '<span class="badge-moto">🏍️ MOTO</span>'
+            else:
+                badge = f"<span style='background:#eee; padding:2px 5px; border-radius:4px'>{tipo}</span>"
+            
+            st.markdown(f"{badge} **{direccion}**", unsafe_allow_html=True)
+        
+        # Resumen Visual
+        st.markdown("---")
+        if tiene_agencia and tiene_moto:
+            st.success("✅ Cliente HÍBRIDO (Usa Agencia y Moto)")
+        elif tiene_agencia:
+            st.info("📦 Cliente SOLO AGENCIA")
+        elif tiene_moto:
+            st.warning("🛵 Cliente SOLO MOTO")
 
 def enviar_texto_chat(telefono, texto):
     exito, resp = enviar_mensaje_whatsapp(telefono, texto)
