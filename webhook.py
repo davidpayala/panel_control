@@ -26,21 +26,16 @@ def descargar_media(media_url):
         print(f"❌ Excepción media: {e}")
         return None
 
-# --- FUNCIÓN DE SEGURIDAD NUCLEAR ---
-def extraer_string_seguro(campo_raw):
+def limpiar_dato(dato_crudo):
     """
-    Convierte CUALQUIER cosa (Dict, Objeto, None) en un string seguro.
-    Evita el error 'AttributeError: dict object has no attribute split'
+    Convierte diccionarios, objetos o nulos en un string limpio.
+    Ej: {'_serialized': '51999@c.us'} -> '51999@c.us'
     """
-    if campo_raw is None:
+    if dato_crudo is None:
         return ""
-    
-    if isinstance(campo_raw, dict):
-        # Si es un objeto, intentamos sacar el ID serializado o el usuario
-        return str(campo_raw.get('_serialized') or campo_raw.get('user') or campo_raw.get('id') or "")
-    
-    # Si ya es texto, lo devolvemos asegurando que sea string
-    return str(campo_raw)
+    if isinstance(dato_crudo, dict):
+        return str(dato_crudo.get('_serialized') or dato_crudo.get('user') or "")
+    return str(dato_crudo)
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -49,45 +44,49 @@ def recibir_mensaje():
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.json
-    
-    # Debug: Imprime lo que llega para que lo veas en los logs si falla algo más
-    # print(json.dumps(data, indent=2), flush=True)
 
     if data.get('event') == 'message':
         payload = data.get('payload', {})
         
-        # 1. EXTRACCIÓN SEGURA (Esto arregla el crash)
-        # Pasamos todo por la función de seguridad. Ya no importa si llega como objeto o texto.
-        sender_str = extraer_string_seguro(payload.get('from'))
-        participant_str = extraer_string_seguro(payload.get('participant'))
-        author_str = extraer_string_seguro(payload.get('author'))
-
-        # 2. LOGICA DE SELECCIÓN (Detectar Empresas/LID)
-        numero_final = sender_str # Por defecto usamos el 'from'
-
-        # Si viene de una empresa (@lid) o grupo (@g.us), el número real suele estar en 'participant'
-        # Buscamos cual de los campos extra tiene un formato de celular peruano (empieza con 51 y termina en c.us)
-        if '@lid' in sender_str or '@g.us' in sender_str:
-            if participant_str and '51' in participant_str and '@c.us' in participant_str:
-                numero_final = participant_str
-            elif author_str and '51' in author_str and '@c.us' in author_str:
-                numero_final = author_str
+        # --- LÓGICA "CAZADOR DE NÚMEROS" ---
+        # Recopilamos todos los posibles lugares donde WAHA esconde el número
+        candidatos = [
+            payload.get('participant'), # Aquí suele estar el real en empresas
+            payload.get('author'),      # A veces aquí
+            payload.get('from')         # Aquí suele venir el LID (malo)
+        ]
         
-        # 3. LIMPIEZA FINAL
-        # Quitamos @c.us, @lid y los sufijos de dispositivo (:8)
-        # Al usar .split sobre una variable que YA pasamos por extraer_string_seguro, es imposible que falle.
+        numero_elegido = None
+
+        # 1. BÚSQUEDA PRIORITARIA: Buscamos un número peruano real (51...c.us)
+        for candidato in candidatos:
+            s_cand = limpiar_dato(candidato)
+            # Si contiene '51' Y contiene '@c.us', ¡ES UN NÚMERO REAL!
+            if '51' in s_cand and '@c.us' in s_cand:
+                numero_elegido = s_cand
+                print(f"🎯 Número real encontrado en campo oculto: {numero_elegido}")
+                break # Ya lo encontramos, dejamos de buscar
+        
+        # 2. FALLBACK: Si no encontramos ninguno con formato peruano, usamos el 'from'
+        if not numero_elegido:
+            numero_elegido = limpiar_dato(payload.get('from'))
+            print(f"⚠️ No se halló número 51... Usando el por defecto: {numero_elegido}")
+
+        # 3. LIMPIEZA FINAL (Quitar @c.us, :dispositivo, etc)
         try:
-            telefono_limpio = numero_final.split('@')[0].split(':')[0]
+            # Quitamos todo lo que esté después del @ o del :
+            telefono_limpio = numero_elegido.split('@')[0].split(':')[0]
         except:
             telefono_limpio = "Error_Parsing"
 
         # -------------------------------------------------------
-        
+
         body = payload.get('body', '')
         has_media = payload.get('hasMedia', False)
         
         archivo_bytes = None
         
+        # Lógica de Imágenes
         if has_media:
             media_info = payload.get('media', {})
             media_url = media_info.get('url')
@@ -114,7 +113,7 @@ def recibir_mensaje():
                     "data": archivo_bytes
                 })
                 conn.commit()
-            print(f"✅ Guardado mensaje de: {telefono_limpio} (Original: {sender_str})")
+            print(f"✅ Guardado: {telefono_limpio}")
         except Exception as e:
             print(f"❌ Error DB: {e}")
 
