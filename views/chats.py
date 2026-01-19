@@ -6,7 +6,8 @@ import os
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh 
 from database import engine 
-from utils import subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp, normalizar_telefono_maestro
+# Importamos la función de búsqueda para el botón Sync
+from utils import subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp, normalizar_telefono_maestro, buscar_contacto_google
 
 def render_chat():
     # Refresco automático cada 5 segundos
@@ -31,7 +32,7 @@ def render_chat():
     with col_lista:
         st.subheader("📩 Bandeja")
         
-        # Consulta inteligente: Muestra Nombre Corto > Nombre Google > Teléfono
+        # Consulta inteligente
         query_lista = """
             SELECT 
                 m.telefono, 
@@ -83,10 +84,8 @@ def render_chat():
             # Mensajes
             contenedor = st.container(height=450)
             with engine.connect() as conn:
-                # Marcar leídos
                 conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_activo})
                 conn.commit()
-                # Cargar historial
                 historial = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha ASC"), conn, params={"t": telefono_activo})
 
             with contenedor:
@@ -140,13 +139,13 @@ def mostrar_info_avanzada(telefono):
 
     # --- FORMULARIO DE EDICIÓN ---
     with st.container():
-        c1, c2, c3 = st.columns(3)
+        st.caption("📝 Datos Generales")
+        c1, c2, c3 = st.columns([1.5, 1.5, 1])
         
-        # 1. Nombre Corto (Lo que se ve en la lista)
-        # Usamos key única para evitar conflictos
-        new_corto = c1.text_input("📝 Nombre Corto (Interno)", value=cl.get('nombre_corto') or "", key="in_corto")
+        # 1. Nombre Corto
+        new_corto = c1.text_input("Nombre Corto (Alias)", value=cl.get('nombre_corto') or "", key="in_corto")
         
-        # 2. Estado (Selectbox)
+        # 2. Estado
         estados_posibles = ["Sin empezar", "Interesado", "En proceso", "Venta cerrada", "Post-venta"]
         estado_actual = cl.get('estado')
         idx_estado = 0
@@ -154,44 +153,70 @@ def mostrar_info_avanzada(telefono):
             idx_estado = estados_posibles.index(estado_actual)
         new_estado = c2.selectbox("Estado", estados_posibles, index=idx_estado, key="in_estado")
 
-        # 3. Botón de Guardar (Grande y visible)
-        c3.write("") # Espaciador
-        c3.write("") # Espaciador
-        if c3.button("💾 GUARDAR CAMBIOS", type="primary"):
-            with engine.connect() as conn:
-                conn.execute(text("""
-                    UPDATE Clientes 
-                    SET nombre_corto=:nc, estado=:est 
-                    WHERE telefono=:tel
-                """), {"nc": new_corto, "est": new_estado, "tel": telefono})
-                conn.commit()
-            st.success("¡Guardado!")
-            st.rerun()
-
-    # --- DATOS DE GOOGLE (Desglosados) ---
-    st.caption("Datos sincronizados con Google / WhatsApp")
-    cg1, cg2, cg3 = st.columns([2, 2, 1])
+    # --- DATOS DE CONTACTO (GOOGLE / MANUAL) ---
+    st.caption("👤 Datos Personales (Google / Manual)")
+    cg1, cg2, cg3 = st.columns([1.5, 1.5, 1])
     
-    # Mostramos Nombre y Apellido por separado para ver si falta alguno
-    with cg1: st.text_input("Nombre", value=cl.get('nombre') or "", disabled=True) # Solo lectura (viene de Google)
-    with cg2: st.text_input("Apellido", value=cl.get('apellido') or "", disabled=True)
+    # AHORA SON EDITABLES (Quitamos disabled=True)
+    new_nombre = cg1.text_input("Nombre", value=cl.get('nombre') or "", key="in_nom")
+    new_apellido = cg2.text_input("Apellido", value=cl.get('apellido') or "", key="in_ape")
+    
+    # --- LÓGICA DEL BOTÓN RE-SYNC ---
     with cg3: 
-        st.write("")
-        st.write("")
-        if st.button("🔄 Re-Sync"):
-             # Aquí podrías llamar a tu función de sync individual si la tienes
-             st.info("Sincronización manual pendiente de implementar")
+        st.write("") # Espaciador
+        if st.button("🔄 Re-Sync Google"):
+            with st.spinner("Buscando en Google..."):
+                norm = normalizar_telefono_maestro(telefono)
+                # Buscamos usando el número corto (986...)
+                datos_google = buscar_contacto_google(norm['corto'])
+                
+                if datos_google and datos_google['encontrado']:
+                    with engine.connect() as conn:
+                        conn.execute(text("""
+                            UPDATE Clientes 
+                            SET nombre=:n, apellido=:a, google_id=:gid, nombre_corto=:nc
+                            WHERE telefono=:t
+                        """), {
+                            "n": datos_google['nombre'],
+                            "a": datos_google['apellido'],
+                            "gid": datos_google['google_id'],
+                            "nc": datos_google['nombre_completo'], # Actualizamos también el corto
+                            "t": telefono
+                        })
+                        conn.commit()
+                    st.success("¡Sincronizado!")
+                    st.rerun()
+                else:
+                    st.error("No encontrado en Google Contacts.")
+
+    # --- BOTÓN DE GUARDADO GENERAL ---
+    # Lo ponemos abajo para que guarde TODO (lo de arriba y lo de abajo)
+    if st.button("💾 GUARDAR TODOS LOS CAMBIOS", type="primary", use_container_width=True):
+        with engine.connect() as conn:
+            conn.execute(text("""
+                UPDATE Clientes 
+                SET nombre_corto=:nc, estado=:est, nombre=:nom, apellido=:ape
+                WHERE telefono=:tel
+            """), {
+                "nc": new_corto, 
+                "est": new_estado, 
+                "nom": new_nombre,     # Guarda lo que escribiste en Nombre
+                "ape": new_apellido,   # Guarda lo que escribiste en Apellido
+                "tel": telefono
+            })
+            conn.commit()
+        st.success("¡Datos guardados!")
+        st.rerun()
 
     # --- DIRECCIONES ---
+    st.markdown("---")
     st.markdown("#### 📍 Direcciones Registradas")
     if dirs.empty:
         st.info("No hay direcciones registradas.")
     else:
         for _, row in dirs.iterrows():
             tipo = row.get('tipo_envio', 'GENERAL')
-            # Prioridad: direccion_texto > direccion
             txt_dir = row.get('direccion_texto') or row.get('direccion') or "Sin detalle"
-            
             badge = "🏢" if tipo == 'AGENCIA' else "🏍️" if tipo == 'MOTO' else "📍"
             st.markdown(f"**{badge} {tipo}:** {txt_dir}")
 
