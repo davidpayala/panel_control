@@ -123,49 +123,66 @@ def get_google_service():
     return None
 
 # --- LA FUNCIÓN QUE CORREGÍ PARA QUE FUNCIONE EL WEBHOOK ---
-def buscar_contacto_google(query):
+def buscar_contacto_google(telefono_input):
     """
-    Busca un contacto en Google y devuelve un DICCIONARIO LIMPIO
-    compatible con el Webhook.
+    Busca un contacto en Google probando TODOS los formatos posibles:
+    1. 51999...
+    2. +51999...
+    3. 999...
+    4. 999 999 999 (Formato con espacios)
     """
     srv = get_google_service()
     if not srv: return None
     
-    try:
-        # Buscamos usando la API
-        res = srv.people().searchContacts(
-            query=query, 
-            readMask='names,phoneNumbers,metadata'
-        ).execute()
-        
-        if 'results' in res and len(res['results']) > 0:
-            person = res['results'][0]['person'] # Objeto crudo de Google
+    norm = normalizar_telefono_maestro(telefono_input)
+    if not norm: return None
+    
+    # Generamos el formato con espacios (Ej: 908 593 211)
+    local = norm['corto']
+    formato_espacios = f"{local[:3]} {local[3:6]} {local[6:]}" if len(local) == 9 else local
+    
+    intentos = [
+        norm['db'],        # 51908593211
+        f"+{norm['db']}",  # +51908593211
+        norm['corto'],     # 908593211
+        formato_espacios   # 908 593 211 <--- NUEVO INTENTO CLAVE
+    ]
+    
+    # Eliminar duplicados manteniendo orden
+    intentos = list(dict.fromkeys(intentos))
+    print(f"🔎 Buscando en Google variantes: {intentos}")
+
+    for query in intentos:
+        try:
+            res = srv.people().searchContacts(
+                query=query, 
+                readMask='names,phoneNumbers,metadata'
+            ).execute()
             
-            # --- PARSEO DE DATOS (ESTO FALTABA) ---
-            google_id = person.get('resourceName', '').replace('people/', '')
+            if 'results' in res and len(res['results']) > 0:
+                person = res['results'][0]['person']
+                google_id = person.get('resourceName', '').replace('people/', '')
+                names = person.get('names', [])
+                
+                if names:
+                    nombre = names[0].get('givenName', '')
+                    apellido = names[0].get('familyName', '')
+                    nombre_completo = names[0].get('displayName', '')
+                else:
+                    nombre = "Google Contact"
+                    apellido = ""
+                    nombre_completo = "Google Contact"
+                
+                return {
+                    "encontrado": True,
+                    "nombre": nombre,
+                    "apellido": apellido,
+                    "nombre_completo": nombre_completo,
+                    "google_id": google_id
+                }
+        except Exception as e:
+            continue 
             
-            names = person.get('names', [])
-            if names:
-                nombre = names[0].get('givenName', '')
-                apellido = names[0].get('familyName', '')
-                nombre_completo = names[0].get('displayName', '')
-            else:
-                nombre = "Google Contact"
-                apellido = ""
-                nombre_completo = "Google Contact"
-            
-            # Retornamos formato limpio para el Webhook
-            return {
-                "encontrado": True,
-                "nombre": nombre,
-                "apellido": apellido,
-                "nombre_completo": nombre_completo,
-                "google_id": google_id
-            }
-            
-    except Exception as e:
-        print(f"Error buscando en Google: {e}")
-        
     return None
 
 def crear_en_google(nombre, apellido, telefono):
