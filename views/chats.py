@@ -6,7 +6,6 @@ import os
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh 
 from database import engine 
-# Importamos todas las funciones necesarias de utils
 from utils import (
     subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp, 
     normalizar_telefono_maestro, buscar_contacto_google, 
@@ -78,6 +77,7 @@ def render_chat():
                 mostrar_info_avanzada(telefono_activo)
                 st.divider()
 
+            # Historial de Mensajes
             contenedor = st.container(height=450)
             with engine.connect() as conn:
                 conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_activo})
@@ -108,7 +108,7 @@ def render_chat():
 
 def mostrar_info_avanzada(telefono):
     """
-    Ficha de cliente con lógica bidireccional de Google Contacts
+    Ficha de cliente corregida con KEYS DINÁMICAS para evitar que se peguen los datos
     """
     with engine.connect() as conn:
         res_cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono}).fetchone()
@@ -133,35 +133,37 @@ def mostrar_info_avanzada(telefono):
     # --- 1. DATOS INTERNOS (Estado y Alias) ---
     with st.container():
         c1, c2 = st.columns(2)
-        new_corto = c1.text_input("📝 Alias (Nombre Corto)", value=cl.get('nombre_corto') or "", key="in_corto")
+        # 🔑 CORRECCIÓN: Agregamos _{telefono} al key
+        new_corto = c1.text_input("📝 Alias (Nombre Corto)", value=cl.get('nombre_corto') or "", key=f"in_corto_{telefono}")
         
         estados = ["Sin empezar", "Interesado", "En proceso", "Venta cerrada", "Post-venta"]
         estado_act = cl.get('estado')
         idx = estados.index(estado_act) if estado_act in estados else 0
-        new_estado = c2.selectbox("Estado", estados, index=idx, key="in_estado")
+        # 🔑 CORRECCIÓN: Agregamos _{telefono} al key
+        new_estado = c2.selectbox("Estado", estados, index=idx, key=f"in_estado_{telefono}")
 
     # --- 2. DATOS PERSONALES Y GOOGLE ---
     st.markdown("#### 👤 Sincronización con Google")
     
     col_nom, col_ape, col_btns = st.columns([1.5, 1.5, 1.5])
     
-    # Inputs editables
     val_nombre = cl.get('nombre') or ""
     val_apellido = cl.get('apellido') or ""
     
-    new_nombre = col_nom.text_input("Nombre", value=val_nombre, key="in_nom")
-    new_apellido = col_ape.text_input("Apellido", value=val_apellido, key="in_ape")
+    # 🔑 CORRECCIÓN: Agregamos _{telefono} al key
+    new_nombre = col_nom.text_input("Nombre", value=val_nombre, key=f"in_nom_{telefono}")
+    new_apellido = col_ape.text_input("Apellido", value=val_apellido, key=f"in_ape_{telefono}")
 
-    # --- BOTONES INTELIGENTES ---
+    # --- BOTONES DE SINCRONIZACIÓN ---
     with col_btns:
-        st.write("") # Espaciador vertical
+        st.write("") 
         
-        # BOTÓN A: BUSCAR EN GOOGLE (PULL)
-        # "Si el número ya existe en Google, trae sus datos"
-        if st.button("📥 Buscar en Google", use_container_width=True):
+        # BUSCAR EN GOOGLE (PULL)
+        # IMPORTANTE: Ahora pasamos norm['db'] para que coincida con el prefijo 51
+        if st.button("📥 Buscar en Google", key=f"btn_search_{telefono}", use_container_width=True):
             with st.spinner("Buscando..."):
                 norm = normalizar_telefono_maestro(telefono)
-                datos = buscar_contacto_google(norm['corto'])
+                datos = buscar_contacto_google(norm['db']) # <--- OJO: Usamos DB (51...)
                 
                 if datos and datos['encontrado']:
                     with engine.connect() as conn:
@@ -178,39 +180,33 @@ def mostrar_info_avanzada(telefono):
                 else:
                     st.warning("No encontrado en Google.")
 
-        # BOTÓN B: GUARDAR EN GOOGLE (PUSH)
-        # "Registra o Actualiza estos datos en la nube"
+        # GUARDAR EN GOOGLE (PUSH)
         label_google = "🔄 Actualizar Google" if google_id_actual else "☁️ Crear en Google"
         tipo_btn_google = "primary" if not google_id_actual else "secondary"
         
-        if st.button(label_google, type=tipo_btn_google, use_container_width=True):
-            # Validar que haya nombre
+        if st.button(label_google, key=f"btn_push_{telefono}", type=tipo_btn_google, use_container_width=True):
             if not new_nombre:
                 st.error("Escribe un nombre primero.")
             else:
                 with st.spinner("Conectando con Google..."):
                     nuevo_gid = None
                     if google_id_actual:
-                        # ACTUALIZAR EXISTENTE
                         ok = actualizar_en_google(google_id_actual, new_nombre, new_apellido, telefono)
-                        if ok: st.success("✅ Contacto actualizado en Google")
-                        else: st.error("Error al actualizar en Google")
+                        if ok: st.success("✅ Actualizado en Google")
+                        else: st.error("Error al actualizar")
                     else:
-                        # CREAR NUEVO
                         nuevo_gid = crear_en_google(new_nombre, new_apellido, telefono)
                         if nuevo_gid: 
                             st.success("✅ ¡Creado en Google Contacts!")
-                            # Guardamos el nuevo ID en la DB local
                             with engine.connect() as conn:
                                 conn.execute(text("UPDATE Clientes SET google_id=:g WHERE telefono=:t"), 
                                             {"g": nuevo_gid, "t": telefono})
                                 conn.commit()
                             st.rerun()
-                        else: st.error("No se pudo crear en Google")
+                        else: st.error("No se pudo crear")
 
     # --- 3. GUARDAR CAMBIOS LOCALES ---
-    # Este botón guarda todo lo que hayas escrito en los inputs en tu Base de Datos Local
-    if st.button("💾 GUARDAR CAMBIOS (Solo Local)", use_container_width=True):
+    if st.button("💾 GUARDAR CAMBIOS (Solo Local)", key=f"btn_save_loc_{telefono}", use_container_width=True):
         with engine.connect() as conn:
             conn.execute(text("""
                 UPDATE Clientes 
