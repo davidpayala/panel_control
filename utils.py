@@ -8,6 +8,7 @@ from sqlalchemy import text
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from database import engine
+import re
 
 # ==============================================================================
 # CONFIGURACIÓN WAHA (WhatsApp)
@@ -29,6 +30,7 @@ def normalizar_telefono_maestro(entrada):
     # 1. Limpieza brutal: Solo dejar números
     sucio = str(entrada)
     if isinstance(entrada, dict):
+        # Intenta sacar el numero si viene dentro de un objeto de Waha
         sucio = str(entrada.get('user') or entrada.get('_serialized') or "")
     
     # Quitar todo lo que no sea número
@@ -49,10 +51,10 @@ def normalizar_telefono_maestro(entrada):
     
     # 3. Retornar paquete con formatos listos
     return {
-        "db": full,                  # 51986203398
-        "waha": f"{full}@c.us",      # 51986203398@c.us
-        "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}", # +51 986 203 398
-        "corto": local               # 986203398
+        "db": full,                  # 51986203398 (Para ID SQL)
+        "waha": f"{full}@c.us",      # 51986203398@c.us (Para enviar mensajes)
+        "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}", # +51 986 203 398 (Display)
+        "corto": local               # 986203398 (Nombre corto)
     }
 
 # ==============================================================================
