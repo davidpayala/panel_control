@@ -27,21 +27,30 @@ def descargar_media(media_url):
         return None
 
 def obtener_numero_crudo(payload):
-    # Intentamos sacar el número de todas las formas posibles que usa WAHA
+    """
+    Busca el número real, ignorando los IDs técnicos (@lid)
+    """
+    # 1. Intentamos sacar data del objeto key
     alt = payload.get('_data', {}).get('key', {}).get('remoteJidAlt')
-    if alt: return alt
-    
     from_val = payload.get('from')
     author = payload.get('author')
     participant = payload.get('participant')
     
-    # Prioridad al 'from' si no es grupo, sino al author/participant
-    candidatos = [from_val, author, participant]
+    candidatos = [alt, from_val, author, participant]
     
     for cand in candidatos:
-        if cand and '51' in str(cand) and ('@c.us' in str(cand) or len(str(cand)) > 9):
+        cand_str = str(cand)
+        # FILTRO: Si es un LID (ID técnico), lo ignoramos
+        if '@lid' in cand_str:
+            continue
+            
+        # ACEPTAR: Si tiene formato de usuario normal
+        if '51' in cand_str and ('@c.us' in cand_str or len(cand_str) > 9):
             return cand
-    return from_val
+            
+    # Si todo falla, devolvemos el 'from' original aunque sea raro, 
+    # pero limpiamos el @lid si viene pegado
+    return from_val.replace('@lid', '') if from_val else None
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
