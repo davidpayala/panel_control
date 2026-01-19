@@ -153,7 +153,7 @@ def mostrar_info_avanzada(telefono):
                 for _, row in dirs.iterrows():
                     tipo = row.get('tipo_envio', 'GENERAL')
                     badge = "🏢" if tipo == 'AGENCIA' else "🏍️"
-                    st.markdown(f"**{badge} {tipo}**: {row['direccion']} ({row.get('distrito') or '-'})")
+                    st.markdown(f"**{badge} {tipo}**: {row['direccion_texto']} ({row.get('distrito') or '-'})")
 
         # 2. Agregar Nueva Dirección
         with st.expander("➕ Agregar Nueva Dirección"):
