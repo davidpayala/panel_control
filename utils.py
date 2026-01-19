@@ -122,18 +122,50 @@ def get_google_service():
         except: return None
     return None
 
-# --- LA FUNCIÓN QUE FALTABA ---
+# --- LA FUNCIÓN QUE CORREGÍ PARA QUE FUNCIONE EL WEBHOOK ---
 def buscar_contacto_google(query):
-    """Busca un contacto en Google por nombre o teléfono"""
+    """
+    Busca un contacto en Google y devuelve un DICCIONARIO LIMPIO
+    compatible con el Webhook.
+    """
     srv = get_google_service()
     if not srv: return None
+    
     try:
-        # Intenta buscar usando la API searchContacts
-        res = srv.people().searchContacts(query=query, readMask='names,phoneNumbers').execute()
+        # Buscamos usando la API
+        res = srv.people().searchContacts(
+            query=query, 
+            readMask='names,phoneNumbers,metadata'
+        ).execute()
+        
         if 'results' in res and len(res['results']) > 0:
-            return res['results'][0]['person']
-    except:
-        pass # Si falla la búsqueda, retornamos None
+            person = res['results'][0]['person'] # Objeto crudo de Google
+            
+            # --- PARSEO DE DATOS (ESTO FALTABA) ---
+            google_id = person.get('resourceName', '').replace('people/', '')
+            
+            names = person.get('names', [])
+            if names:
+                nombre = names[0].get('givenName', '')
+                apellido = names[0].get('familyName', '')
+                nombre_completo = names[0].get('displayName', '')
+            else:
+                nombre = "Google Contact"
+                apellido = ""
+                nombre_completo = "Google Contact"
+            
+            # Retornamos formato limpio para el Webhook
+            return {
+                "encontrado": True,
+                "nombre": nombre,
+                "apellido": apellido,
+                "nombre_completo": nombre_completo,
+                "google_id": google_id
+            }
+            
+    except Exception as e:
+        print(f"Error buscando en Google: {e}")
+        
     return None
 
 def crear_en_google(nombre, apellido, telefono):

@@ -6,7 +6,8 @@ import requests
 import json
 from datetime import datetime
 import pytz 
-from utils import normalizar_telefono_maestro
+from utils import normalizar_telefono_maestro, buscar_contacto_google # <--- IMPORTANTE AGREGAR
+
 
 app = Flask(__name__)
 
@@ -91,54 +92,75 @@ def recibir_mensaje():
     # 4. Preparar Datos
     nombre_wsp = payload.get('_data', {}).get('notifyName') or payload.get('pushName') or "Cliente WhatsApp"
     
+    # --- LÓGICA GOOGLE ---
+    print(f"🔎 Buscando en Google Contacts: {telefono_corto}...")
+    datos_google = buscar_contacto_google(telefono_corto)
+    
+    if datos_google and datos_google['encontrado']:
+        print(f"✅ Encontrado en Google: {datos_google['nombre_completo']}")
+        # Usamos datos de Google
+        nombre_final = datos_google['nombre']
+        apellido_final = datos_google['apellido']
+        nombre_corto_final = datos_google['nombre_completo'] # Ej: David Perez
+        google_id_final = datos_google['google_id']
+    else:
+        print("Build: No encontrado en Google. Usando datos de WhatsApp.")
+        # Usamos datos de WhatsApp como fallback
+        nombre_final = nombre_wsp
+        apellido_final = "" # WhatsApp no separa apellidos
+        nombre_corto_final = nombre_wsp
+        google_id_final = None
+
+    # Fechas
     try:
         tz = pytz.timezone('America/Lima')
         fecha_hoy = datetime.now(tz).strftime('%Y-%m-%d')
     except:
         fecha_hoy = datetime.now().strftime('%Y-%m-%d')
 
+    # Media (igual que antes)
     body = payload.get('body', '')
     has_media = payload.get('hasMedia', False)
     archivo_bytes = None
-    
     if has_media:
-        print("📷 Mensaje tiene multimedia, descargando...")
         media_info = payload.get('media', {})
         media_url = media_info.get('url')
-        if media_url: 
-            archivo_bytes = descargar_media(media_url)
-            body = "📷 Archivo Multimedia" if archivo_bytes else "⚠️ Error descargando media"
-        else:
-            body = "📷 Multimedia (URL no disponible)"
+        if media_url: archivo_bytes = descargar_media(media_url)
+        body = "📷 Archivo" if archivo_bytes else "⚠️ Error media"
 
-    # 5. GUARDAR EN BASE DE DATOS (ORDEN CORREGIDO)
+    # 5. GUARDAR EN BASE DE DATOS
     try:
         with engine.connect() as conn:
-            print("💾 Conectando a DB...")
             
-            # PASO A: PRIMERO aseguramos el Cliente (Para evitar error de Foreign Key)
-            print(f"👤 Intentando crear/verificar cliente: {telefono_db}")
+            # PASO A: Crear/Actualizar Cliente con datos RICOS
+            # Usamos ON CONFLICT DO UPDATE para que, si ya existe pero sin Google ID, se actualice.
+            print(f"👤 Procesando cliente: {telefono_db}")
+            
             conn.execute(text("""
                 INSERT INTO Clientes (
-                    telefono, codigo_contacto, nombre_corto, nombre, 
-                    medio_contacto, estado, fecha_seguimiento, activo,
-                    fecha_registro 
+                    telefono, codigo_contacto, nombre_corto, 
+                    nombre, apellido, google_id,
+                    medio_contacto, estado, fecha_seguimiento, activo, fecha_registro
                 )
                 VALUES (
-                    :tel, :tel, :corto, :nom_wsp, 
-                    'WhatsApp', 'Sin empezar', :fec, TRUE,
-                    (NOW() - INTERVAL '5 hours')
+                    :tel, :tel, :corto, 
+                    :nom, :ape, :gid,
+                    'WhatsApp', 'Sin empezar', :fec, TRUE, (NOW() - INTERVAL '5 hours')
                 )
-                ON CONFLICT (telefono) DO NOTHING
+                ON CONFLICT (telefono) DO UPDATE SET
+                    google_id = COALESCE(Clientes.google_id, EXCLUDED.google_id),
+                    nombre = COALESCE(NULLIF(Clientes.nombre, 'Cliente WhatsApp'), EXCLUDED.nombre),
+                    nombre_corto = COALESCE(NULLIF(Clientes.nombre_corto, 'Cliente WhatsApp'), EXCLUDED.nombre_corto)
             """), {
                 "tel": telefono_db,
-                "corto": telefono_corto,
-                "nom_wsp": nombre_wsp,
+                "corto": nombre_corto_final,
+                "nom": nombre_final,
+                "ape": apellido_final,
+                "gid": google_id_final,
                 "fec": fecha_hoy
             })
             
-            # PASO B: LUEGO guardamos el Mensaje
-            print(f"✉️ Guardando mensaje de: {telefono_db}")
+            # PASO B: Guardar Mensaje (Igual que antes)
             conn.execute(text("""
                 INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
                 VALUES (:tel, 'ENTRANTE', :txt, (NOW() - INTERVAL '5 hours'), FALSE, :data)
@@ -149,16 +171,11 @@ def recibir_mensaje():
             })
             
             conn.commit()
-            print(f"✅ ¡ÉXITO TOTAL! Mensaje guardado para {telefono_db}")
+            print(f"✅ Guardado exitoso. Cliente: {nombre_corto_final}")
             
     except Exception as e:
-        print(f"❌❌ ERROR GRAVE EN DB: {e}")
-        # Importante: No devolvemos error 500 a WAHA para evitar bucles infinitos, 
-        # pero registramos el error en los logs de Railway.
-        return jsonify({"status": "db_error", "detail": str(e)}), 200
+        print(f"❌ Error DB: {e}")
+        # Retornamos éxito a WAHA para no trabar la cola, pero logueamos el error
+        return jsonify({"status": "error_db", "detail": str(e)}), 200
 
     return jsonify({"status": "success"}), 200
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
