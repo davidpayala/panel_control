@@ -3,19 +3,20 @@ import pandas as pd
 from sqlalchemy import text
 import io
 import os
+from datetime import datetime
 from streamlit_autorefresh import st_autorefresh 
 from database import engine 
 from utils import subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp, normalizar_telefono_maestro
 
 def render_chat():
-    # Refresco automático cada 5 segundos para ver mensajes nuevos
+    # Refresco automático cada 5 segundos
     st_autorefresh(interval=5000, key="chat_autorefresh")
     st.title("💬 Chat Center")
 
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # Estilos CSS para las tarjetas
+    # Estilos CSS
     st.markdown("""
     <style>
     div.stButton > button:first-child { text-align: left; width: 100%; padding: 15px; border-radius: 10px; margin-bottom: 5px; }
@@ -26,11 +27,11 @@ def render_chat():
 
     col_lista, col_chat = st.columns([1, 2.5])
 
-    # --- COLUMNA IZQUIERDA: LISTA DE CHATS ---
+    # --- BANDEJA DE ENTRADA ---
     with col_lista:
         st.subheader("📩 Bandeja")
         
-        # Consulta optimizada: Prioriza Nombre Corto > Nombre Google > Teléfono
+        # Consulta inteligente: Muestra Nombre Corto > Nombre Google > Teléfono
         query_lista = """
             SELECT 
                 m.telefono, 
@@ -45,12 +46,10 @@ def render_chat():
         with engine.connect() as conn:
             lista_chats = conn.execute(text(query_lista)).fetchall()
 
-        if not lista_chats: 
-            st.info("Sin mensajes.")
+        if not lista_chats: st.info("Sin mensajes.")
 
         for chat in lista_chats:
             tel = chat.telefono
-            # Normalizamos para mostrar bonito en el botón (986...)
             norm = normalizar_telefono_maestro(tel)
             tel_visual = norm['corto'] if norm else tel
             
@@ -58,38 +57,36 @@ def render_chat():
             tipo_btn = "primary" if st.session_state['chat_actual_telefono'] == tel else "secondary"
             hora = chat.ultima_fecha.strftime('%H:%M') if chat.ultima_fecha else ""
             
-            # Botón de selección de chat
-            label_btn = f"{notif} {chat.display_name}\n📱 {tel_visual} | 🕑 {hora}"
-            if st.button(label_btn, key=f"btn_{tel}", type=tipo_btn):
+            if st.button(f"{notif} {chat.display_name}\n📱 {tel_visual} | 🕑 {hora}", key=f"btn_{tel}", type=tipo_btn):
                 st.session_state['chat_actual_telefono'] = tel
                 st.rerun()
 
-    # --- COLUMNA DERECHA: CONVERSACIÓN ---
+    # --- ÁREA DE CHAT ---
     with col_chat:
         telefono_activo = st.session_state['chat_actual_telefono']
 
         if telefono_activo:
-            # Encabezado del chat
-            c1, c2 = st.columns([3, 1])
             norm_activo = normalizar_telefono_maestro(telefono_activo)
             titulo_tel = norm_activo['corto'] if norm_activo else telefono_activo
             
+            # Header
+            c1, c2 = st.columns([3, 1])
             with c1: st.markdown(f"### 💬 Chat con {titulo_tel}")
-            with c2: ver_info = st.toggle("Ver Info Cliente", value=True)
+            with c2: ver_info = st.toggle("Ver Ficha Cliente", value=True)
             st.divider()
 
-            # Panel de Información (toggleable)
+            # FICHA DE CLIENTE (Editable)
             if ver_info:
                 mostrar_info_avanzada(telefono_activo)
                 st.divider()
 
-            # Área de Mensajes (Scrollable)
+            # Mensajes
             contenedor = st.container(height=450)
-            
-            # Marcar como leídos y cargar historial
             with engine.connect() as conn:
+                # Marcar leídos
                 conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_activo})
                 conn.commit()
+                # Cargar historial
                 historial = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha ASC"), conn, params={"t": telefono_activo})
 
             with contenedor:
@@ -99,39 +96,34 @@ def render_chat():
                     role, avatar = ("user", "👤") if es_cliente else ("assistant", "🛍️")
                     
                     with st.chat_message(role, avatar=avatar):
-                        # Mostrar imagen si existe
                         if row['archivo_data']:
                             try: st.image(io.BytesIO(row['archivo_data']), width=250)
-                            except: st.error("Error visualizando imagen")
+                            except: st.error("Error imagen")
                         
-                        # Mostrar texto
                         txt = row['contenido'] or ""
                         if txt: st.markdown(txt)
-                            
-                        # Hora pequeña
                         st.caption(row['fecha'].strftime('%d/%m %H:%M'))
 
-            # Área de Envío
+            # Input Texto
             prompt = st.chat_input("Escribe un mensaje...")
             
-            with st.expander("📎 Adjuntar Imagen/Archivo", expanded=False):
-                archivo = st.file_uploader("Subir archivo", key="up_file")
+            # Input Archivo
+            with st.expander("📎 Adjuntar Archivo", expanded=False):
+                archivo = st.file_uploader("Subir", key="up_file")
                 if archivo and st.button("Enviar Archivo"):
                     enviar_archivo_chat(telefono_activo, archivo)
             
-            if prompt: 
-                enviar_texto_chat(telefono_activo, prompt)
+            if prompt: enviar_texto_chat(telefono_activo, prompt)
 
 
 def mostrar_info_avanzada(telefono):
-    """Muestra la ficha del cliente y sus direcciones de forma segura"""
+    """Muestra y permite EDITAR la ficha del cliente"""
     with engine.connect() as conn:
-        # 1. Obtener datos del Cliente
         res_cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono}).fetchone()
         
         if not res_cliente:
-            st.warning("⚠️ Cliente no registrado en tabla maestra (pero tiene mensajes).")
-            if st.button("🛠️ Crear Ficha Básica"):
+            st.warning("⚠️ Cliente no registrado.")
+            if st.button("Crear Ficha"):
                  with engine.connect() as conn:
                     conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro) VALUES (:t, TRUE, NOW())"), {"t": telefono})
                     conn.commit()
@@ -140,43 +132,68 @@ def mostrar_info_avanzada(telefono):
 
         cl = res_cliente._mapping
         id_cliente = cl.get('id_cliente')
-
-        # 2. Obtener Direcciones (CORRECCIÓN: id_cliente)
+        
+        # Direcciones
         dirs = pd.DataFrame()
         if id_cliente:
-            # Aquí estaba el error antes. Ahora buscamos por ID.
             dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE id_cliente=:id"), conn, params={"id": id_cliente})
 
-    # --- RENDERIZADO DE LA FICHA ---
-    
-    # Fila 1: Datos Principales
-    c1, c2, c3 = st.columns(3)
-    with c1: st.text_input("Nombre", value=f"{cl.get('nombre') or ''} {cl.get('apellido') or ''}", disabled=True)
-    with c2: st.text_input("Estado", value=cl.get('estado') or "Sin empezar", disabled=True)
-    with c3: st.text_input("Fecha Registro", value=str(cl.get('fecha_registro') or "-"), disabled=True)
+    # --- FORMULARIO DE EDICIÓN ---
+    with st.container():
+        c1, c2, c3 = st.columns(3)
+        
+        # 1. Nombre Corto (Lo que se ve en la lista)
+        # Usamos key única para evitar conflictos
+        new_corto = c1.text_input("📝 Nombre Corto (Interno)", value=cl.get('nombre_corto') or "", key="in_corto")
+        
+        # 2. Estado (Selectbox)
+        estados_posibles = ["Sin empezar", "Interesado", "En proceso", "Venta cerrada", "Post-venta"]
+        estado_actual = cl.get('estado')
+        idx_estado = 0
+        if estado_actual in estados_posibles:
+            idx_estado = estados_posibles.index(estado_actual)
+        new_estado = c2.selectbox("Estado", estados_posibles, index=idx_estado, key="in_estado")
 
-    # Fila 2: Google ID (Para verificar sync)
-    col_g, _ = st.columns([2, 2])
-    with col_g:
-        val_google = cl.get('google_id')
-        st.caption(f"🔗 Google ID: {val_google if val_google else '❌ No sincronizado'}")
+        # 3. Botón de Guardar (Grande y visible)
+        c3.write("") # Espaciador
+        c3.write("") # Espaciador
+        if c3.button("💾 GUARDAR CAMBIOS", type="primary"):
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    UPDATE Clientes 
+                    SET nombre_corto=:nc, estado=:est 
+                    WHERE telefono=:tel
+                """), {"nc": new_corto, "est": new_estado, "tel": telefono})
+                conn.commit()
+            st.success("¡Guardado!")
+            st.rerun()
 
-    # Fila 3: Direcciones (CORRECCIÓN: direccion_texto)
-    st.markdown("#### 📍 Direcciones")
+    # --- DATOS DE GOOGLE (Desglosados) ---
+    st.caption("Datos sincronizados con Google / WhatsApp")
+    cg1, cg2, cg3 = st.columns([2, 2, 1])
     
+    # Mostramos Nombre y Apellido por separado para ver si falta alguno
+    with cg1: st.text_input("Nombre", value=cl.get('nombre') or "", disabled=True) # Solo lectura (viene de Google)
+    with cg2: st.text_input("Apellido", value=cl.get('apellido') or "", disabled=True)
+    with cg3: 
+        st.write("")
+        st.write("")
+        if st.button("🔄 Re-Sync"):
+             # Aquí podrías llamar a tu función de sync individual si la tienes
+             st.info("Sincronización manual pendiente de implementar")
+
+    # --- DIRECCIONES ---
+    st.markdown("#### 📍 Direcciones Registradas")
     if dirs.empty:
         st.info("No hay direcciones registradas.")
     else:
         for _, row in dirs.iterrows():
             tipo = row.get('tipo_envio', 'GENERAL')
-            # AQUÍ ESTÁ LA CORRECCIÓN CLAVE: 'direccion_texto' en vez de 'direccion'
-            dir_txt = row.get('direccion_texto') or row.get('direccion') or "Sin detalle"
+            # Prioridad: direccion_texto > direccion
+            txt_dir = row.get('direccion_texto') or row.get('direccion') or "Sin detalle"
             
-            badge = ""
-            if tipo == 'AGENCIA': badge = '<span class="badge-agencia">🏢 AGENCIA</span>'
-            elif tipo == 'MOTO': badge = '<span class="badge-moto">🏍️ MOTO</span>'
-            
-            st.markdown(f"{badge} {dir_txt}", unsafe_allow_html=True)
+            badge = "🏢" if tipo == 'AGENCIA' else "🏍️" if tipo == 'MOTO' else "📍"
+            st.markdown(f"**{badge} {tipo}:** {txt_dir}")
 
 
 def enviar_texto_chat(telefono, texto):
@@ -184,7 +201,7 @@ def enviar_texto_chat(telefono, texto):
     if exito:
         guardar_mensaje_saliente(telefono, texto, None)
         st.rerun()
-    else: st.error(f"Error enviando: {resp}")
+    else: st.error(f"Error: {resp}")
 
 def enviar_archivo_chat(telefono, archivo):
     with st.spinner("Enviando..."):
@@ -194,10 +211,9 @@ def enviar_archivo_chat(telefono, archivo):
         if exito:
             guardar_mensaje_saliente(telefono, f"📎 {archivo.name}", archivo.getvalue())
             st.rerun()
-        else: st.error(f"Fallo al enviar: {resp}")
+        else: st.error(f"Error: {resp}")
 
 def guardar_mensaje_saliente(telefono, texto, data):
-    # Asegurar formato DB (51...)
     norm = normalizar_telefono_maestro(telefono)
     tel_db = norm['db'] if norm else telefono
     
