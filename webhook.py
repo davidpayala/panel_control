@@ -34,10 +34,9 @@ def obtener_numero_crudo(payload):
     participant = payload.get('participant')
     
     candidatos = [alt, from_val, author, participant]
-    
     for cand in candidatos:
         cand_str = str(cand)
-        if '@lid' in cand_str: continue
+        if '@lid' in cand_str: continue 
         if '51' in cand_str and ('@c.us' in cand_str or len(cand_str) > 9):
             return cand
     return from_val.replace('@lid', '') if from_val else None
@@ -50,13 +49,17 @@ def recibir_mensaje():
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.json
-    if not data:
-        return jsonify({"status": "empty"}), 200
-
-    if data.get('event') != 'message':
+    if not data or data.get('event') != 'message':
         return jsonify({"status": "ignored_event"}), 200
 
     payload = data.get('payload', {})
+    origen = payload.get('from', '')
+
+    # --- 🛡️ FILTRO 0: ESTADOS (STORIES) ---
+    # ESTE ES EL CAMBIO CLAVE: Bloqueamos todo lo que venga de status@broadcast
+    if 'status@broadcast' in origen:
+        print("🙈 Estado/Historia ignorado.")
+        return jsonify({"status": "ignored_status"}), 200
 
     # --- 🛡️ FILTRO 1: SISTEMA ---
     tipo_interno = payload.get('_data', {}).get('type')
@@ -103,24 +106,18 @@ def recibir_mensaje():
             if media_url: 
                 archivo_bytes = descargar_media(media_url)
                 if archivo_bytes:
-                    # Solo ponemos texto si descargó bien Y no había texto previo
                     if not body: body = "📷 Archivo Multimedia"
-                # OJO: Si falla la descarga, NO ponemos "Error...", dejamos body vacío o con lo que venga
+                # Si falla descarga, no ponemos texto de error
             else:
-                # Si no hay URL pero dice que tiene media (ubicación, sticker raro)
-                # Solo lo guardamos si tiene algún valor visual, si no, lo ignoramos.
                 pass 
-        except Exception as e:
-             print(f"⚠️ Fallo media: {e}")
+        except Exception:
+             pass 
 
-    # --- 🛡️ FILTRO 2: SPAM / SPOTIFY (NUEVO) ---
-    # Si el mensaje contiene un enlace de spotify, lo ignoramos
+    # --- 🛡️ FILTRO 2: SPAM / SPOTIFY ---
     if body and "spotify.com" in body.lower():
-        print(f"🎵 Enlace de Spotify bloqueado de {telefono_db}")
         return jsonify({"status": "ignored_spotify"}), 200
 
     # --- 🛡️ FILTRO 3: VACÍO ---
-    # Si después de todo, no hay texto ni archivo, adiós.
     if not body and not archivo_bytes:
         return jsonify({"status": "ignored_empty"}), 200
 
