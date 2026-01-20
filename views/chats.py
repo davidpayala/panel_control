@@ -3,7 +3,7 @@ import pandas as pd
 from sqlalchemy import text
 import io
 import os
-import streamlit.components.v1 as components # Necesario para el auto-scroll
+import streamlit.components.v1 as components 
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh 
 from database import engine 
@@ -20,44 +20,56 @@ def render_chat():
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # Estilos CSS
+    # Estilos CSS para botones compactos
     st.markdown("""
     <style>
-    div.stButton > button:first-child { text-align: left; width: 100%; padding: 15px; border-radius: 10px; margin-bottom: 5px; }
-    .badge-moto { background-color: #ffebd3; color: #ff8c00; padding: 2px 8px; border-radius: 5px; font-size: 0.8em; font-weight: bold; }
-    .badge-agencia { background-color: #e3f2fd; color: #1976d2; padding: 2px 8px; border-radius: 5px; font-size: 0.8em; font-weight: bold; }
+    div.stButton > button:first-child { 
+        text-align: left; 
+        width: 100%; 
+        padding: 10px 15px; /* Menos padding */
+        border-radius: 8px; 
+        margin-bottom: 2px; /* Menos margen entre botones */
+        white-space: nowrap; /* Evita saltos de línea */
+        overflow: hidden; 
+        text-overflow: ellipsis; /* Pone '...' si es muy largo */
+    }
     .date-separator { 
-        text-align: center; 
-        margin: 15px 0; 
-        position: relative; 
+        text-align: center; margin: 15px 0; position: relative; 
     }
     .date-separator span { 
-        background-color: #f0f2f6; 
-        padding: 4px 12px; 
-        border-radius: 12px; 
-        font-size: 0.75em; 
-        color: #555; 
-        font-weight: bold;
+        background-color: #f0f2f6; padding: 4px 12px; border-radius: 12px; 
+        font-size: 0.75em; color: #555; font-weight: bold;
     }
     </style>
     """, unsafe_allow_html=True)
 
     col_lista, col_chat = st.columns([1, 2.5])
 
-    # --- BANDEJA (Izquierda) ---
+    # --- COLUMNA IZQUIERDA: LISTA Y BUSCADOR ---
     with col_lista:
-        st.subheader("📩 Bandeja")
+        st.subheader("📩 Chats")
         
-        # 1. CAMBIO AQUÍ: Lógica estricta para el nombre
-        # Solo Nombre Corto O Teléfono. Nada más.
+        # 1. FUNCIÓN: INICIAR NUEVO CHAT
+        with st.expander("➕ Iniciar Nuevo Chat", expanded=False):
+            nuevo_num = st.text_input("Escribe el número:", placeholder="Ej: 999888777")
+            if st.button("Ir al Chat", use_container_width=True):
+                norm = normalizar_telefono_maestro(nuevo_num)
+                if norm:
+                    st.session_state['chat_actual_telefono'] = norm['db']
+                    st.rerun()
+                else:
+                    st.error("Número inválido")
+
+        # 2. LISTA DE CHATS EXISTENTES
+        # Consulta optimizada para mostrar SOLO nombre
         query_lista = """
             SELECT 
                 m.telefono, 
                 MAX(m.fecha) as ultima_fecha,
                 COALESCE(
-                    NULLIF(MAX(c.nombre_corto), ''),              -- 1. Nombre Corto (Si existe y no es vacío)
-                    NULLIF(MAX(c.nombre_corto), 'Cliente WhatsApp'), -- (Ignorar default viejo)
-                    MAX(m.telefono)                               -- 2. Si no, Teléfono
+                    NULLIF(MAX(c.nombre_corto), ''),
+                    NULLIF(MAX(c.nombre_corto), 'Cliente WhatsApp'),
+                    MAX(m.telefono) 
                 ) as display_name,
                 SUM(CASE WHEN m.leido = FALSE AND m.tipo = 'ENTRANTE' THEN 1 ELSE 0 END) as no_leidos
             FROM mensajes m
@@ -68,24 +80,26 @@ def render_chat():
         with engine.connect() as conn:
             lista_chats = conn.execute(text(query_lista)).fetchall()
 
-        if not lista_chats: st.info("Sin mensajes.")
+        if not lista_chats: 
+            st.info("Sin historial.")
+
+        st.divider() # Separador visual
 
         for chat in lista_chats:
             tel = chat.telefono
-            # Para el subtítulo del botón usamos formato limpio (986...)
-            norm = normalizar_telefono_maestro(tel)
-            tel_visual = norm['corto'] if norm else tel
+            # Logica de visualización COMPACTA
+            notif = "🔴" if chat.no_leidos > 0 else "👤"
+            nombre_mostrar = chat.display_name
             
-            notif = f"🔴 {chat.no_leidos}" if chat.no_leidos > 0 else ""
+            # Si es el chat activo, lo resaltamos con primary
             tipo_btn = "primary" if st.session_state['chat_actual_telefono'] == tel else "secondary"
-            hora = chat.ultima_fecha.strftime('%H:%M') if chat.ultima_fecha else ""
             
-            # Botón del Chat
-            if st.button(f"{notif} {chat.display_name}\n📱 {tel_visual} | 🕑 {hora}", key=f"btn_{tel}", type=tipo_btn):
+            # Botón Simple: "🔴 Juan Perez"
+            if st.button(f"{notif} {nombre_mostrar}", key=f"btn_{tel}", type=tipo_btn, use_container_width=True):
                 st.session_state['chat_actual_telefono'] = tel
                 st.rerun()
 
-    # --- CHAT (Derecha) ---
+    # --- COLUMNA DERECHA: CONVERSACIÓN ---
     with col_chat:
         telefono_activo = st.session_state['chat_actual_telefono']
 
@@ -93,11 +107,9 @@ def render_chat():
             norm_activo = normalizar_telefono_maestro(telefono_activo)
             titulo_tel = norm_activo['corto'] if norm_activo else telefono_activo
             
-            # Header
+            # Header del Chat
             c1, c2 = st.columns([3, 1])
-            with c1: st.markdown(f"### 💬 Chat con {titulo_tel}")
-            
-            # 2. CAMBIO AQUÍ: value=False para que inicie cerrado
+            with c1: st.markdown(f"### 💬 {titulo_tel}")
             with c2: ver_info = st.toggle("Ver Ficha", value=False)
             st.divider()
 
@@ -109,30 +121,25 @@ def render_chat():
             contenedor = st.container(height=450)
             
             with engine.connect() as conn:
+                # Marcar leido
                 conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_activo})
                 conn.commit()
+                # Traer historial
                 historial = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha ASC"), conn, params={"t": telefono_activo})
 
             with contenedor:
-                if historial.empty: st.write("Conversación nueva.")
+                if historial.empty: 
+                    st.info("👋 Conversación nueva. Escribe el primer mensaje.")
                 
-                # 3. CAMBIO AQUÍ: Separadores de Fecha
                 last_date = None
-                
                 for _, row in historial.iterrows():
-                    # Calcular fecha actual del mensaje
+                    # Separador de Fechas
                     msg_date = row['fecha'].date()
-                    
-                    # Si la fecha cambió respecto al mensaje anterior, poner separador
                     if last_date != msg_date:
-                        st.markdown(f"""
-                            <div class="date-separator">
-                                <span>📅 {msg_date.strftime('%d/%m/%Y')}</span>
-                            </div>
-                        """, unsafe_allow_html=True)
+                        st.markdown(f"""<div class="date-separator"><span>📅 {msg_date.strftime('%d/%m/%Y')}</span></div>""", unsafe_allow_html=True)
                         last_date = msg_date
 
-                    # Renderizar mensaje normal
+                    # Mensaje
                     es_cliente = (row['tipo'] == 'ENTRANTE')
                     role, avatar = ("user", "👤") if es_cliente else ("assistant", "🛍️")
                     
@@ -144,8 +151,7 @@ def render_chat():
                         if txt: st.markdown(txt)
                         st.caption(row['fecha'].strftime('%H:%M'))
             
-            # 4. CAMBIO AQUÍ: Auto-Scroll Javascript
-            # Este script busca el último mensaje y hace scroll hacia él
+            # Auto-Scroll
             components.html("""
             <script>
                 const elements = window.parent.document.querySelectorAll('.stChatMessage');
@@ -155,28 +161,34 @@ def render_chat():
             </script>
             """, height=0, width=0)
 
-            # Inputs
-            prompt = st.chat_input("Escribe...")
-            with st.expander("📎 Adjuntar", expanded=False):
+            # Input Texto
+            prompt = st.chat_input("Escribe un mensaje...")
+            
+            # Input Archivo
+            with st.expander("📎 Adjuntar Archivo", expanded=False):
                 archivo = st.file_uploader("Subir", key="up_file")
                 if archivo and st.button("Enviar Archivo"):
                     enviar_archivo_chat(telefono_activo, archivo)
             
             if prompt: enviar_texto_chat(telefono_activo, prompt)
+        else:
+            st.markdown("### 👈 Selecciona un chat o inicia uno nuevo")
+            st.image("https://cdn-icons-png.flaticon.com/512/1041/1041916.png", width=150)
 
 
 def mostrar_info_avanzada(telefono):
     """
-    Ficha de cliente con KEYS DINÁMICAS
+    Ficha de cliente (Igual que antes pero encapsulada)
     """
     with engine.connect() as conn:
         res_cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono}).fetchone()
         
+        # Si no existe, damos opción de crear ficha rápida para que no falle la vista
         if not res_cliente:
-            st.warning("⚠️ Cliente no registrado.")
-            if st.button("Crear Ficha Inicial"):
+            st.warning("⚠️ Este número no está registrado como cliente.")
+            if st.button("Crear Ficha Rápida"):
                  with engine.connect() as conn:
-                    conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro) VALUES (:t, TRUE, NOW())"), {"t": telefono})
+                    conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro, nombre_corto) VALUES (:t, TRUE, NOW(), 'Nuevo Cliente')"), {"t": telefono})
                     conn.commit()
                     st.rerun()
             return
@@ -189,18 +201,17 @@ def mostrar_info_avanzada(telefono):
         if id_cliente:
             dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE id_cliente=:id"), conn, params={"id": id_cliente})
 
-    # --- 1. DATOS INTERNOS ---
+    # --- EDITAR DATOS ---
     with st.container():
         c1, c2 = st.columns(2)
-        new_corto = c1.text_input("📝 Alias (Nombre Corto)", value=cl.get('nombre_corto') or "", key=f"in_corto_{telefono}")
+        new_corto = c1.text_input("Alias", value=cl.get('nombre_corto') or "", key=f"in_corto_{telefono}")
         
         estados = ["Sin empezar", "Interesado", "En proceso", "Venta cerrada", "Post-venta"]
         estado_act = cl.get('estado')
         idx = estados.index(estado_act) if estado_act in estados else 0
         new_estado = c2.selectbox("Estado", estados, index=idx, key=f"in_estado_{telefono}")
 
-    # --- 2. DATOS PERSONALES ---
-    st.markdown("#### 👤 Sincronización con Google")
+    st.markdown("#### 👤 Google Contacts")
     col_nom, col_ape, col_btns = st.columns([1.5, 1.5, 1.5])
     
     val_nombre = cl.get('nombre') or ""
@@ -212,8 +223,9 @@ def mostrar_info_avanzada(telefono):
     with col_btns:
         st.write("") 
         
-        if st.button("📥 Buscar en Google", key=f"btn_search_{telefono}", use_container_width=True):
-            with st.spinner("Buscando..."):
+        # BOTÓN BUSCAR
+        if st.button("📥 Buscar", key=f"btn_search_{telefono}", use_container_width=True):
+            with st.spinner("..."):
                 norm = normalizar_telefono_maestro(telefono)
                 datos = buscar_contacto_google(norm['db']) 
                 if datos and datos['encontrado']:
@@ -226,58 +238,45 @@ def mostrar_info_avanzada(telefono):
                             "gid": datos['google_id'], "nc": datos['nombre_completo'], "t": telefono
                         })
                         conn.commit()
-                    st.success("✅ Datos de Google")
+                    st.success("Encontrado")
                     st.rerun()
                 else:
-                    st.warning("No encontrado.")
+                    st.warning("No encontrado")
 
-        label_google = "🔄 Actualizar Google" if google_id_actual else "☁️ Crear en Google"
-        tipo_btn_google = "primary" if not google_id_actual else "secondary"
-        
-        if st.button(label_google, key=f"btn_push_{telefono}", type=tipo_btn_google, use_container_width=True):
-            if not new_nombre:
-                st.error("Falta nombre")
-            else:
-                with st.spinner("Conectando..."):
-                    nuevo_gid = None
-                    if google_id_actual:
-                        ok = actualizar_en_google(google_id_actual, new_nombre, new_apellido, telefono)
-                        if ok: st.success("✅ Actualizado")
-                    else:
-                        nuevo_gid = crear_en_google(new_nombre, new_apellido, telefono)
-                        if nuevo_gid: 
-                            st.success("✅ Creado")
-                            with engine.connect() as conn:
-                                conn.execute(text("UPDATE Clientes SET google_id=:g WHERE telefono=:t"), {"g": nuevo_gid, "t": telefono})
-                                conn.commit()
-                            st.rerun()
+        # BOTÓN GUARDAR GOOGLE
+        label_google = "🔄 Actualizar" if google_id_actual else "☁️ Crear"
+        if st.button(label_google, key=f"btn_push_{telefono}", use_container_width=True):
+            with st.spinner("..."):
+                nuevo_gid = None
+                if google_id_actual:
+                    ok = actualizar_en_google(google_id_actual, new_nombre, new_apellido, telefono)
+                    if ok: st.success("OK")
+                else:
+                    nuevo_gid = crear_en_google(new_nombre, new_apellido, telefono)
+                    if nuevo_gid: 
+                        with engine.connect() as conn:
+                            conn.execute(text("UPDATE Clientes SET google_id=:g WHERE telefono=:t"), {"g": nuevo_gid, "t": telefono})
+                            conn.commit()
+                        st.success("Creado")
+                        st.rerun()
 
-    # --- 3. GUARDAR LOCAL ---
-    if st.button("💾 GUARDAR CAMBIOS (Solo Local)", key=f"btn_save_loc_{telefono}", use_container_width=True):
+    if st.button("💾 GUARDAR LOCAL", key=f"btn_save_loc_{telefono}", type="primary", use_container_width=True):
         with engine.connect() as conn:
             conn.execute(text("""
-                UPDATE Clientes 
-                SET nombre_corto=:nc, estado=:est, nombre=:n, apellido=:a
-                WHERE telefono=:t
-            """), {
-                "nc": new_corto, "est": new_estado, 
-                "n": new_nombre, "a": new_apellido, "t": telefono
-            })
+                UPDATE Clientes SET nombre_corto=:nc, estado=:est, nombre=:n, apellido=:a WHERE telefono=:t
+            """), {"nc": new_corto, "est": new_estado, "n": new_nombre, "a": new_apellido, "t": telefono})
             conn.commit()
-        st.toast("Datos guardados")
+        st.toast("Guardado")
         st.rerun()
 
-    # --- 4. DIRECCIONES ---
     st.markdown("---")
-    st.markdown("#### 📍 Direcciones")
     if dirs.empty:
-        st.info("No hay direcciones registradas.")
+        st.caption("Sin direcciones registradas.")
     else:
         for _, row in dirs.iterrows():
             tipo = row.get('tipo_envio', 'GENERAL')
-            txt = row.get('direccion_texto') or row.get('direccion') or ""
-            badge = "🏢" if tipo == 'AGENCIA' else "🏍️" if tipo == 'MOTO' else "📍"
-            st.markdown(f"**{badge} {tipo}:** {txt}")
+            txt = row.get('direccion_texto') or ""
+            st.markdown(f"📍 **{tipo}:** {txt}")
 
 def enviar_texto_chat(telefono, texto):
     exito, resp = enviar_mensaje_whatsapp(telefono, texto)
@@ -300,5 +299,12 @@ def guardar_mensaje_saliente(telefono, texto, data):
     norm = normalizar_telefono_maestro(telefono)
     tel_db = norm['db'] if norm else telefono
     with engine.connect() as conn:
+        # Aseguramos que el cliente exista antes de guardar el mensaje
+        conn.execute(text("""
+            INSERT INTO Clientes (telefono, activo, fecha_registro, nombre_corto) 
+            VALUES (:t, TRUE, NOW(), 'Nuevo Chat') 
+            ON CONFLICT (telefono) DO NOTHING
+        """), {"t": tel_db})
+        
         conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data) VALUES (:t, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE, :d)"), {"t": tel_db, "txt": texto, "d": data})
         conn.commit()
