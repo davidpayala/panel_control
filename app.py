@@ -26,20 +26,37 @@ st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
 def ejecutar_migraciones():
     try:
         with engine.connect() as conn:
-            # 1. Limpieza de números
-            conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '+', '') WHERE telefono LIKE '+%'"))
-            conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, '+', '') WHERE telefono LIKE '+%'"))
+            # --- FASE 1: LIMPIEZA AGRESIVA (Todo a formato limpio) ---
+            # 1. Quitamos espacios vacíos, guiones y el signo más
+            print("🧹 Iniciando limpieza de teléfonos...")
+            
+            # Limpiar Clientes
+            conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, ' ', '')"))
+            conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '-', '')"))
+            conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '+', '')"))
+            
+            # Limpiar Mensajes
+            conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, ' ', '')"))
+            conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, '-', '')"))
+            conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, '+', '')"))
+
+            # --- FASE 2: ESTANDARIZACIÓN PERÚ (Agregar 51) ---
+            # Ahora que no hay espacios, si la longitud es 9, es un número local limpio.
+            
+            # Corregir Clientes (Si tiene 9 dígitos, agregar 51)
             conn.execute(text("UPDATE Clientes SET telefono = '51' || telefono WHERE LENGTH(telefono) = 9"))
+            
+            # Corregir Mensajes
             conn.execute(text("UPDATE mensajes SET telefono = '51' || telefono WHERE LENGTH(telefono) = 9"))
             
-            # 2. Nuevas Columnas Clientes
+            # --- FASE 3: ESTRUCTURA (Columnas nuevas) ---
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_corto TEXT;"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS medio_contacto TEXT DEFAULT 'WhatsApp';"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS codigo_contacto TEXT;"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS fecha_seguimiento DATE;"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id TEXT;"))
             
-            # 3. Tabla Direcciones
+            # Tabla Direcciones
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS Direcciones (
                     id_direccion SERIAL PRIMARY KEY,
@@ -60,7 +77,8 @@ def ejecutar_migraciones():
                 );
             """))
             conn.commit()
-        # print("✅ DB Actualizada")
+            print("✅ Base de datos LIMPIA y ACTUALIZADA.")
+            
     except Exception as e:
         print(f"⚠️ Nota DB: {e}")
 
@@ -89,8 +107,7 @@ def main():
         st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
         st.title("Menú K&M")
         
-        # 1. Lista ESTÁTICA de opciones (LLAVES INTERNAS)
-        # AQUÍ FALTABA AGREGAR "CAMPANAS"
+        # 1. Lista ESTÁTICA de opciones
         OPCIONES_MENU = [
             "VENTA", 
             "COMPRAS", 
@@ -100,7 +117,7 @@ def main():
             "CATALOGO",
             "FACTURACION",
             "CHAT",
-            "CAMPANAS" # <--- ¡NUEVO!
+            "CAMPANAS"
         ]
 
         if "indice_menu" not in st.session_state:
@@ -108,7 +125,10 @@ def main():
 
         def actualizar_indice():
             opcion_elegida = st.session_state.radio_navegacion
-            st.session_state.indice_menu = OPCIONES_MENU.index(opcion_elegida)
+            try:
+                st.session_state.indice_menu = OPCIONES_MENU.index(opcion_elegida)
+            except:
+                st.session_state.indice_menu = 0
 
         def formatear_menu(opcion):
             mapeo = {
@@ -120,7 +140,7 @@ def main():
                 "CATALOGO": "🔧 Catálogo",
                 "FACTURACION": "💰 Facturación",
                 "CHAT": texto_dinamico_chat,
-                "CAMPANAS": "📢 Campañas" # <--- ¡NUEVO!
+                "CAMPANAS": "📢 Campañas"
             }
             return mapeo.get(opcion, opcion)
 
@@ -134,10 +154,9 @@ def main():
         )
         
         st.divider()
-        st.caption("Sistema v2.1 - WAHA")
+        st.caption("Sistema v2.2 - WAHA")
 
     # --- RENDERIZADO ---
-    # Usamos el formateador para mostrar un título bonito pero sin el icono a veces
     st.title(f" {formatear_menu(seleccion_interna)}") 
     st.markdown("---")
 
@@ -165,7 +184,7 @@ def main():
     elif seleccion_interna == "CHAT":
         chats.render_chat()
 
-    elif seleccion_interna == "CAMPANAS": # <--- Corrección de llave
+    elif seleccion_interna == "CAMPANAS":
         campanas.render_campanas()
 
 # EJECUTAR APP
