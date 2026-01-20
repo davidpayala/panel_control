@@ -21,61 +21,93 @@ load_dotenv()
 st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
 
 # ==========================================
-# LIMPIEZA Y MIGRACIÓN BLINDADA
+# LIMPIEZA Y MIGRACIÓN (CORREGIDA FK)
 # ==========================================
 def ejecutar_migraciones():
     try:
         with engine.connect() as conn:
-            # --- PASO 0: ELIMINAR DUPLICADOS PREVIOS (LA CURA AL ERROR) ---
-            # Esta consulta mágica borra los duplicados "sucios" antes de que causen error.
-            # Mantiene el registro más antiguo (ORDER BY id_cliente ASC)
-            print("🧹 Paso 0: Eliminando duplicados conflictivos...")
+            print("🧹 Iniciando Mantenimiento Inteligente de DB...")
+
+            # --- PASO 0: UNIFICACIÓN DE DATOS (SOLUCIÓN AL ERROR FK) ---
+            # Creamos una tabla temporal para saber quién es el duplicado y quién el original
+            conn.execute(text("""
+                CREATE TEMP TABLE IF NOT EXISTS Temp_Unificacion AS
+                SELECT 
+                    id_cliente as id_eliminar,
+                    FIRST_VALUE(id_cliente) OVER (
+                        PARTITION BY REPLACE(REPLACE(REPLACE(telefono, ' ', ''), '-', ''), '+', '')
+                        ORDER BY id_cliente ASC
+                    ) as id_conservar
+                FROM Clientes;
+            """))
+
+            # 1. MOVER DIRECCIONES (Esto arregla tu error actual)
+            # Pasamos las direcciones del cliente que se va a borrar al que se queda
+            conn.execute(text("""
+                UPDATE Direcciones 
+                SET id_cliente = t.id_conservar
+                FROM Temp_Unificacion t
+                WHERE Direcciones.id_cliente = t.id_eliminar 
+                AND t.id_eliminar != t.id_conservar;
+            """))
+
+            # 2. MOVER MENSAJES (Para no perder historial)
+            conn.execute(text("""
+                UPDATE mensajes 
+                SET id_cliente = t.id_conservar
+                FROM Temp_Unificacion t
+                WHERE mensajes.id_cliente = t.id_eliminar 
+                AND t.id_eliminar != t.id_conservar;
+            """))
+            
+            # 3. MOVER VENTAS (Si existen)
+            # Nota: Usamos un bloque try/catch en SQL por si la tabla Ventas no existe aun
+            try:
+                conn.execute(text("""
+                    UPDATE Ventas 
+                    SET id_cliente = t.id_conservar
+                    FROM Temp_Unificacion t
+                    WHERE Ventas.id_cliente = t.id_eliminar 
+                    AND t.id_eliminar != t.id_conservar;
+                """))
+            except:
+                pass 
+
+            # 4. AHORA SÍ: BORRAR DUPLICADOS
+            # Como ya no tienen hijos (direcciones/mensajes), se pueden borrar sin error
+            print("🗑️ Eliminando duplicados vacíos...")
             conn.execute(text("""
                 DELETE FROM Clientes
                 WHERE id_cliente IN (
-                    SELECT id_cliente
-                    FROM (
-                        SELECT id_cliente,
-                               ROW_NUMBER() OVER (
-                                   -- Agrupamos por cómo se vería el número limpio
-                                   PARTITION BY REPLACE(REPLACE(REPLACE(telefono, ' ', ''), '-', ''), '+', '')
-                                   ORDER BY id_cliente ASC
-                               ) as rn
-                        FROM Clientes
-                    ) t
-                    WHERE t.rn > 1
+                    SELECT id_eliminar FROM Temp_Unificacion WHERE id_eliminar != id_conservar
                 );
             """))
+            
+            # Limpiamos la tabla temporal
+            conn.execute(text("DROP TABLE IF EXISTS Temp_Unificacion;"))
 
-            # --- FASE 1: LIMPIEZA DE CARACTERES ---
-            print("🧹 Paso 1: Limpiando espacios y símbolos...")
+            # --- PASO 1: LIMPIEZA DE CARACTERES ---
+            print("✨ Limpiando formatos...")
             conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, ' ', '')"))
             conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '-', '')"))
             conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '+', '')"))
             
-            # Limpiar también mensajes
             conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, ' ', '')"))
             conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, '-', '')"))
             conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, '+', '')"))
 
-            # --- FASE 2: FORMATO PERÚ (51) ---
-            # Si después de limpiar quedan 9 dígitos, le pegamos el 51
-            print("🇵🇪 Paso 2: Estandarizando formato Perú...")
-            
-            # Primero borramos posibles duplicados que se generarían al agregar 51
-            # (Ej: Si tienes '999...' y '51999...', borramos el '999...' antes de actualizarlo)
+            # --- PASO 2: FORMATO PERÚ (51) ---
+            # Prevenir duplicados que se generen al agregar 51
             conn.execute(text("""
-                DELETE FROM Clientes
+                DELETE FROM Clientes 
                 WHERE LENGTH(telefono) = 9 
                 AND ('51' || telefono) IN (SELECT telefono FROM Clientes);
             """))
             
-            # Ahora sí actualizamos seguros
             conn.execute(text("UPDATE Clientes SET telefono = '51' || telefono WHERE LENGTH(telefono) = 9"))
             conn.execute(text("UPDATE mensajes SET telefono = '51' || telefono WHERE LENGTH(telefono) = 9"))
             
-            # --- FASE 3: ESTRUCTURA ---
-            print("🏗️ Paso 3: Verificando columnas...")
+            # --- PASO 3: ESTRUCTURA ---
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_corto TEXT;"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS medio_contacto TEXT DEFAULT 'WhatsApp';"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS codigo_contacto TEXT;"))
@@ -85,7 +117,7 @@ def ejecutar_migraciones():
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS Direcciones (
                     id_direccion SERIAL PRIMARY KEY,
-                    id_cliente INTEGER,
+                    id_cliente INTEGER REFERENCES Clientes(id_cliente) ON DELETE CASCADE,
                     telefono TEXT, 
                     direccion_texto TEXT,
                     tipo_envio TEXT,
@@ -102,10 +134,10 @@ def ejecutar_migraciones():
                 );
             """))
             conn.commit()
-            print("✅ ¡BASE DE DATOS OPTIMIZADA AL 100%!")
+            print("✅ BASE DE DATOS OPTIMIZADA Y LISTA.")
             
     except Exception as e:
-        print(f"⚠️ Nota de Migración: {e}")
+        print(f"⚠️ Nota DB (No crítico si la app inicia): {e}")
 
 # Ejecutamos limpieza al inicio
 ejecutar_migraciones()
@@ -141,7 +173,8 @@ def main():
 
         def actualizar_indice():
             try:
-                st.session_state.indice_menu = OPCIONES_MENU.index(st.session_state.radio_navegacion)
+                opcion = st.session_state.radio_navegacion
+                st.session_state.indice_menu = OPCIONES_MENU.index(opcion)
             except:
                 st.session_state.indice_menu = 0
 
@@ -163,7 +196,7 @@ def main():
             on_change=actualizar_indice
         )
         st.divider()
-        st.caption("Sistema v2.3 - Clean DB")
+        st.caption("Sistema v2.4 - FK Fix")
 
     # --- RENDERIZADO ---
     st.title(f" {formatear_menu(seleccion_interna)}") 
