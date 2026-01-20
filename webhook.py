@@ -6,19 +6,12 @@ import requests
 import json
 from datetime import datetime
 import pytz 
-# Verifica que utils.py exista y no tenga errores de sintaxis
 from utils import normalizar_telefono_maestro, buscar_contacto_google, crear_en_google, actualizar_en_google
 
 app = Flask(__name__)
 
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
-
-# --- RUTA DE SALUD (NUEVO) ---
-@app.get("/")
-def home():
-    """Entra aquí con tu navegador para ver si el servidor vive"""
-    return "✅ El Webhook está ACTIVO y escuchando.", 200
 
 def descargar_media(media_url):
     try:
@@ -30,60 +23,58 @@ def descargar_media(media_url):
         r = requests.get(url_final, headers=headers, timeout=5)
         return r.content if r.status_code == 200 else None
     except Exception as e:
-        print(f"⚠️ Falló descarga media: {e}")
+        print(f"⚠️ Error leve descargando media: {e}")
         return None
 
 def obtener_numero_crudo(payload):
+    """Busca el número real, ignorando los IDs técnicos (@lid)"""
     alt = payload.get('_data', {}).get('key', {}).get('remoteJidAlt')
     from_val = payload.get('from')
     author = payload.get('author')
     participant = payload.get('participant')
     
     candidatos = [alt, from_val, author, participant]
+    
     for cand in candidatos:
         cand_str = str(cand)
-        if '@lid' in cand_str: continue 
+        if '@lid' in cand_str: continue
         if '51' in cand_str and ('@c.us' in cand_str or len(cand_str) > 9):
             return cand
     return from_val.replace('@lid', '') if from_val else None
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
-    print("🔵 [INICIO] Webhook impactado") # LOG 1
-
     # 1. Seguridad
     api_key = request.headers.get('X-Api-Key')
     if WAHA_KEY and api_key != WAHA_KEY:
-        print("⛔ API KEY Incorrecta")
         return jsonify({"error": "Unauthorized"}), 401
 
     data = request.json
-    if not data or data.get('event') != 'message':
-        return jsonify({"status": "ignored"}), 200
+    if not data:
+        return jsonify({"status": "empty"}), 200
+
+    if data.get('event') != 'message':
+        return jsonify({"status": "ignored_event"}), 200
 
     payload = data.get('payload', {})
 
-    # --- 🛡️ FILTRO ANTI-FANTASMA ---
+    # --- 🛡️ FILTRO 1: SISTEMA ---
     tipo_interno = payload.get('_data', {}).get('type')
     lista_negra = ['e2e_notification', 'notification_template', 'call_log', 'ciphertext', 'revoked', 'gp2', 'protocol', 'unknown']
-
     if tipo_interno in lista_negra:
-        print(f"🙈 Ignorando mensaje de sistema: {tipo_interno}")
-        return jsonify({"status": "ignored_system"}), 200
+        return jsonify({"status": "ignored_system_msg"}), 200
     
-    # 2. Normalizar
+    # 2. Obtener Número
     numero_crudo = obtener_numero_crudo(payload)
     formatos = normalizar_telefono_maestro(numero_crudo)
     
     if not formatos:
-        print(f"❌ Número inválido: {numero_crudo}")
         return jsonify({"status": "ignored_bad_number"}), 200
 
     telefono_db = formatos['db']
     telefono_corto = formatos['corto']
-    print(f"📨 Procesando mensaje de: {telefono_db} (Tipo: {tipo_interno})")
 
-    # 3. Google Search (Con protección de fallos)
+    # 3. Google Search (Silent)
     nombre_wsp = payload.get('_data', {}).get('notifyName') or payload.get('pushName') or "Cliente WhatsApp"
     nombre_final = nombre_wsp
     apellido_final = ""
@@ -91,17 +82,16 @@ def recibir_mensaje():
     google_id_final = None
 
     try:
-        # print(f"🔎 Buscando en Google...") # Descomentar si quieres ver el log
         datos_google = buscar_contacto_google(telefono_db) 
         if datos_google and datos_google['encontrado']:
             nombre_final = datos_google['nombre']
             apellido_final = datos_google['apellido']
             nombre_corto_final = datos_google['nombre_completo']
             google_id_final = datos_google['google_id']
-    except Exception as e:
-        print(f"⚠️ Error Google (Ignorado): {e}")
+    except Exception:
+        pass 
 
-    # 4. Media y Cuerpo
+    # 4. PROCESAR CONTENIDO (MEDIA + TEXTO)
     body = payload.get('body', '')
     has_media = payload.get('hasMedia', False)
     archivo_bytes = None
@@ -113,15 +103,25 @@ def recibir_mensaje():
             if media_url: 
                 archivo_bytes = descargar_media(media_url)
                 if archivo_bytes:
+                    # Solo ponemos texto si descargó bien Y no había texto previo
                     if not body: body = "📷 Archivo Multimedia"
-                else:
-                    print("⚠️ Falló descarga de archivo")
-        except Exception:
-             pass 
+                # OJO: Si falla la descarga, NO ponemos "Error...", dejamos body vacío o con lo que venga
+            else:
+                # Si no hay URL pero dice que tiene media (ubicación, sticker raro)
+                # Solo lo guardamos si tiene algún valor visual, si no, lo ignoramos.
+                pass 
+        except Exception as e:
+             print(f"⚠️ Fallo media: {e}")
 
-    # --- FILTRO FINAL: SI ESTÁ VACÍO, NO GUARDAR ---
+    # --- 🛡️ FILTRO 2: SPAM / SPOTIFY (NUEVO) ---
+    # Si el mensaje contiene un enlace de spotify, lo ignoramos
+    if body and "spotify.com" in body.lower():
+        print(f"🎵 Enlace de Spotify bloqueado de {telefono_db}")
+        return jsonify({"status": "ignored_spotify"}), 200
+
+    # --- 🛡️ FILTRO 3: VACÍO ---
+    # Si después de todo, no hay texto ni archivo, adiós.
     if not body and not archivo_bytes:
-        print("🗑️ Mensaje vacío ignorado (Anti-Fantasma)")
         return jsonify({"status": "ignored_empty"}), 200
 
     # 5. GUARDAR EN DB
@@ -163,10 +163,10 @@ def recibir_mensaje():
             })
             
             conn.commit()
-            print(f"✅ ¡GUARDADO EXITOSO!: {telefono_db}")
+            print(f"✅ Guardado: {nombre_corto_final}")
             
     except Exception as e:
-        print(f"❌❌ ERROR CRÍTICO DB: {e}")
+        print(f"❌ Error DB: {e}")
         return jsonify({"status": "error_db", "detail": str(e)}), 200
 
     return jsonify({"status": "success"}), 200
