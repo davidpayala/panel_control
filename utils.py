@@ -88,32 +88,24 @@ def subir_archivo_meta(archivo_bytes, mime_type):
     except Exception as e: return None, str(e)
 
 def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
-    """
-    Envía una imagen/archivo usando WAHA Plus (Método Base64 directo).
-    No requiere subir el archivo a un servidor intermedio.
-    """
     try:
-        # 1. Convertir el archivo a Base64
+        # 1. Convertimos tus bytes a Base64 (Esto crea el "Data URI")
         media_b64 = base64.b64encode(archivo_bytes).decode('utf-8')
-        
-        # 2. Construir la Data URI (Ej: data:image/jpeg;base64,.....)
         data_uri = f"data:{mime_type};base64,{media_b64}"
 
-        url = f"{WAHA_URL}/api/sendImage" # O /api/sendFile si es PDF
+        # 2. Preparamos la URL
+        url = f"{WAHA_URL}/api/sendImage"
         
-        # Si no es imagen, usamos el endpoint genérico de archivos
-        if "image" not in mime_type:
-            url = f"{WAHA_URL}/api/sendFile"
-
+        # 3. Armamos el JSON EXACTAMENTE como pide tu ejemplo
         payload = {
+            "session": "default",
             "chatId": f"{telefono}@c.us",
             "file": {
-                "mimetype": "image/jpeg",
+                "mimetype": mime_type,
                 "filename": filename,
-                "url": data_uri # <--- AQUÍ ESTÁ EL TRUCO
+                "url": data_uri  # <--- Esto cumple con el campo "url"
             },
-            "caption": caption,
-            "session": "default" # Cambia esto si usas múltiples sesiones
+            "caption": caption
         }
 
         headers = {
@@ -121,11 +113,13 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
             "X-Api-Key": WAHA_KEY
         }
 
+        # 4. Enviamos
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         
         if response.status_code == 201:
             return True, response.json()
         else:
+            # Si aquí sale 422, es 100% culpa del motor de la sesión (Pasos 1-3 arriba)
             return False, f"Error {response.status_code}: {response.text}"
 
     except Exception as e:
