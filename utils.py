@@ -108,7 +108,7 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
         payload = {
             "chatId": f"{telefono}@c.us",
             "file": {
-                "mimetype": mime_type,
+                "mimetype": "image/jpeg",
                 "filename": filename,
                 "url": data_uri # <--- AQUÍ ESTÁ EL TRUCO
             },
