@@ -8,38 +8,45 @@ from utils import (
     normalizar_telefono_maestro
 )
 
+# --- CONFIGURACIÓN DE ETIQUETAS ---
+OPCIONES_TAGS = [
+    "🚫 SPAM",
+    "⚠️ Problemático",
+    "💎 VIP / Recurrente",
+    "✅ Compró",
+    "👀 Prospecto",
+    "❓ Preguntón",
+    "📉 Pide Rebaja",
+    "📦 Mayorista"
+]
+
 # ==============================================================================
-# SUB-COMPONENTE: GESTIÓN DE DIRECCIONES
+# SUB-COMPONENTE: GESTIÓN DE DIRECCIONES (Se mantiene igual)
 # ==============================================================================
 def render_gestion_direcciones(id_cliente, nombre_cliente):
-    """
-    Muestra un panel para agregar, editar y desactivar direcciones de un cliente específico.
-    """
     st.markdown(f"### 📍 Direcciones de: {nombre_cliente}")
     
-    # 1. FORMULARIO PARA AGREGAR NUEVA
+    # 1. AGREGAR NUEVA
     with st.expander("➕ Agregar Nueva Dirección"):
         with st.form(f"form_add_dir_{id_cliente}"):
             c1, c2, c3 = st.columns(3)
             tipo = c1.selectbox("Tipo de Envío", ["DOMICILIO", "MOTO", "AGENCIA SHALOM", "AGENCIA OLVA", "OTRA AGENCIA"])
             distrito = c2.text_input("Distrito / Ciudad")
             referencia = c3.text_input("Referencia")
-            
-            dir_texto = st.text_input("Dirección Exacta (Calle/Av + Num) o Nombre de Agencia")
+            dir_texto = st.text_input("Dirección Exacta o Nombre de Agencia")
             
             c4, c5, c6 = st.columns(3)
-            receptor = c4.text_input("Nombre Receptor (Si es otro)")
+            receptor = c4.text_input("Receptor (Opcional)")
             dni_rec = c5.text_input("DNI Receptor")
             tel_rec = c6.text_input("Telf. Receptor")
             
-            # Campos específicos de agencia
             agencia_detalles = ""
             if "AGENCIA" in tipo:
                 agencia_detalles = st.text_input("Sede / Observación Agencia")
 
             if st.form_submit_button("Guardar Dirección"):
                 if not dir_texto or not distrito:
-                    st.error("La dirección y el distrito son obligatorios.")
+                    st.error("Dirección y distrito obligatorios.")
                 else:
                     with engine.connect() as conn:
                         try:
@@ -66,22 +73,11 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
                         except Exception as e:
                             st.error(f"Error: {e}")
 
-    # 2. EDITOR DE DIRECCIONES EXISTENTES
+    # 2. EDITAR EXISTENTES
     with engine.connect() as conn:
-        # Traemos solo las columnas útiles para editar
-        query_dirs = text("""
-            SELECT 
-                id_direccion, activo, tipo_envio, direccion_texto, distrito, referencia, 
-                nombre_receptor, dni_receptor, telefono_receptor, sede_entrega
-            FROM Direcciones 
-            WHERE id_cliente = :id
-            ORDER BY id_direccion DESC
-        """)
-        df_dirs = pd.read_sql(query_dirs, conn, params={"id": id_cliente})
+        df_dirs = pd.read_sql(text("SELECT id_direccion, activo, tipo_envio, direccion_texto, distrito, referencia, nombre_receptor, dni_receptor, telefono_receptor, sede_entrega FROM Direcciones WHERE id_cliente = :id ORDER BY id_direccion DESC"), conn, params={"id": id_cliente})
 
     if not df_dirs.empty:
-        st.info("💡 Desmarca la casilla 'activo' para eliminar una dirección.")
-        
         cambios_dir = st.data_editor(
             df_dirs,
             key=f"editor_dirs_{id_cliente}",
@@ -90,40 +86,29 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
                 "activo": st.column_config.CheckboxColumn("Activo?", help="Desmarca para borrar"),
                 "tipo_envio": st.column_config.SelectboxColumn("Tipo", options=["DOMICILIO", "MOTO", "AGENCIA SHALOM", "AGENCIA OLVA", "OTRA AGENCIA"], required=True),
                 "direccion_texto": st.column_config.TextColumn("Dirección", required=True, width="large"),
-                "distrito": st.column_config.TextColumn("Distrito", required=True),
-                "sede_entrega": st.column_config.TextColumn("Sede/Obs Agencia"),
             },
-            hide_index=True,
-            use_container_width=True
+            hide_index=True, use_container_width=True
         )
 
         if st.button("💾 Actualizar Direcciones", key=f"btn_upd_dir_{id_cliente}"):
             with engine.connect() as conn:
-                trans = conn.begin()
                 try:
                     for idx, row in cambios_dir.iterrows():
                         conn.execute(text("""
-                            UPDATE Direcciones 
-                            SET activo=:act, tipo_envio=:tipo, direccion_texto=:dir, distrito=:dist, 
-                                referencia=:ref, nombre_receptor=:nom, dni_receptor=:dni, 
-                                telefono_receptor=:tel, sede_entrega=:sede
-                            WHERE id_direccion=:id
+                            UPDATE Direcciones SET activo=:act, tipo_envio=:tipo, direccion_texto=:dir, distrito=:dist, referencia=:ref, nombre_receptor=:nom, dni_receptor=:dni, telefono_receptor=:tel, sede_entrega=:sede WHERE id_direccion=:id
                         """), {
                             "act": row['activo'], "tipo": row['tipo_envio'], "dir": row['direccion_texto'],
                             "dist": row['distrito'], "ref": row['referencia'], "nom": row['nombre_receptor'],
-                            "dni": row['dni_receptor'], "tel": row['telefono_receptor'], 
-                            "sede": row['sede_entrega'], "id": row['id_direccion']
+                            "dni": row['dni_receptor'], "tel": row['telefono_receptor'], "sede": row['sede_entrega'], "id": row['id_direccion']
                         })
-                    trans.commit()
-                    st.success("✅ Direcciones actualizadas.")
-                    time.sleep(1)
+                    conn.commit()
+                    st.success("Actualizado.")
+                    time.sleep(0.5)
                     st.rerun()
                 except Exception as e:
-                    trans.rollback()
-                    st.error(f"Error al actualizar direcciones: {e}")
+                    st.error(f"Error: {e}")
     else:
-        st.caption("Este cliente no tiene direcciones registradas aún.")
-
+        st.caption("Sin direcciones.")
 
 # ==============================================================================
 # VISTA PRINCIPAL
@@ -132,8 +117,7 @@ def render_clientes():
     st.subheader("👥 Gestión de Clientes")
 
     # --- 1. CREAR NUEVO CLIENTE ---
-    with st.expander("➕ Nuevo Cliente (Sincronizado)", expanded=False):
-        st.info("💡 Si ingresas solo el teléfono, el sistema buscará los datos en Google Contacts.")
+    with st.expander("➕ Nuevo Cliente", expanded=False):
         with st.form("form_nuevo_cliente"):
             c1, c2 = st.columns(2)
             with c1:
@@ -142,9 +126,9 @@ def render_clientes():
                 apellido_real = st.text_input("Apellido (Google)")
             with c2:
                 nombre_corto = st.text_input("📝 Alias / Nombre Corto")
-                medio = st.selectbox("Medio", ["WhatsApp", "Instagram", "Facebook", "TikTok", "Recomendado", "Web"])
+                # NUEVO: Selector de Etiquetas
+                tags_nuevos = st.multiselect("🏷️ Etiquetas", OPCIONES_TAGS)
                 estado_ini = st.selectbox("Estado", ["Interesado en venta", "Responder duda", "Proveedor nacional"])
-                codigo = st.text_input("Código (DNI/RUC)")
 
             if st.form_submit_button("💾 Guardar y Sincronizar", type="primary"):
                 norm = normalizar_telefono_maestro(telefono_input)
@@ -157,7 +141,7 @@ def render_clientes():
                         exists = conn.execute(text("SELECT COUNT(*) FROM Clientes WHERE telefono=:t"), {"t": tel_db}).scalar()
                     
                     if exists:
-                        st.error("El cliente ya existe.")
+                        st.error("Cliente ya existe.")
                     else:
                         # Lógica Google
                         gid = None
@@ -169,15 +153,16 @@ def render_clientes():
                         elif nombre_real:
                             gid = crear_en_google(nombre_real, apellido_real, tel_db)
 
-                        if not nombre_corto: 
-                            nombre_corto = f"{nombre_real} {apellido_real}".strip() or "Cliente Nuevo"
+                        if not nombre_corto: nombre_corto = f"{nombre_real} {apellido_real}".strip() or "Cliente Nuevo"
 
-                        # Insertar
+                        # Guardar Etiquetas como Texto
+                        tags_str = ",".join(tags_nuevos)
+
                         with engine.connect() as conn:
                             conn.execute(text("""
-                                INSERT INTO Clientes (nombre_corto, nombre, apellido, telefono, medio_contacto, codigo_contacto, estado, google_id, activo, fecha_registro)
-                                VALUES (:nc, :n, :a, :t, :m, :c, :e, :g, TRUE, NOW())
-                            """), {"nc": nombre_corto, "n": nombre_real, "a": apellido_real, "t": tel_db, "m": medio, "c": codigo, "e": estado_ini, "g": gid})
+                                INSERT INTO Clientes (nombre_corto, nombre, apellido, telefono, etiquetas, estado, google_id, activo, fecha_registro)
+                                VALUES (:nc, :n, :a, :t, :tag, :e, :g, TRUE, NOW())
+                            """), {"nc": nombre_corto, "n": nombre_real, "a": apellido_real, "t": tel_db, "tag": tags_str, "e": estado_ini, "g": gid})
                             conn.commit()
                         st.success(f"Cliente {nombre_corto} creado.")
                         time.sleep(1)
@@ -187,32 +172,38 @@ def render_clientes():
 
     # --- 2. BUSCADOR Y EDICIÓN ---
     st.subheader("🔍 Buscar y Editar")
-    
     col_search, _ = st.columns([3, 1])
-    busqueda = col_search.text_input("Buscar cliente:", placeholder="Nombre, alias o teléfono...")
+    busqueda = col_search.text_input("Buscar:", placeholder="Nombre, teléfono o ETIQUETA (ej: spam)...")
     
-    # Variable para saber qué cliente expandir direcciones
     selected_client_id = None 
     selected_client_name = None
 
     if busqueda:
         with engine.connect() as conn:
+            # Ahora buscamos también en la columna etiquetas
             df = pd.read_sql(text("""
-                SELECT id_cliente, nombre_corto, estado, nombre, apellido, telefono, google_id 
+                SELECT id_cliente, nombre_corto, estado, nombre, apellido, telefono, etiquetas, google_id 
                 FROM Clientes 
-                WHERE (nombre_corto ILIKE :b OR telefono ILIKE :b OR nombre ILIKE :b) AND activo = TRUE 
+                WHERE (nombre_corto ILIKE :b OR telefono ILIKE :b OR nombre ILIKE :b OR etiquetas ILIKE :b) 
+                AND activo = TRUE 
                 ORDER BY nombre_corto ASC LIMIT 10
             """), conn, params={"b": f"%{busqueda}%"})
 
         if not df.empty:
             # A. EDITOR DE CLIENTES (LOTE)
-            st.caption("Edita los datos del cliente aquí:")
+            st.caption("Edita etiquetas y datos aquí:")
+            
+            # Convertimos el string "Tag1,Tag2" a lista ["Tag1", "Tag2"] para que el editor lo entienda
+            df['etiquetas_list'] = df['etiquetas'].apply(lambda x: x.split(',') if x else [])
+
             edited_df = st.data_editor(
                 df, key="editor_clientes_main",
                 column_config={
                     "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                    "google_id": None,
+                    "google_id": None, "etiquetas": None, # Ocultamos la columna de texto crudo
                     "nombre_corto": st.column_config.TextColumn("Alias", required=True),
+                    # NUEVO: Columna de Etiquetas
+                    "etiquetas_list": st.column_config.ListColumn("🏷️ Etiquetas", width="medium"), 
                     "estado": st.column_config.SelectboxColumn("Estado", options=["Sin empezar", "Interesado en venta", "Venta cerrada", "Post-venta", "Proveedor nacional"], required=True),
                     "telefono": st.column_config.TextColumn("Teléfono", required=True)
                 },
@@ -220,37 +211,43 @@ def render_clientes():
             )
 
             if st.button("💾 Guardar Cambios Clientes", type="primary"):
-                # ... (Lógica de guardado igual que antes) ...
                 with engine.connect() as conn:
                     trans = conn.begin()
                     try:
                         for _, row in edited_df.iterrows():
                             norm = normalizar_telefono_maestro(row['telefono'])
                             if norm:
-                                conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, telefono=:t, nombre_corto=:nc, estado=:e WHERE id_cliente=:id"),
-                                    {"n": row['nombre'], "a": row['apellido'], "t": norm['db'], "nc": row['nombre_corto'], "e": row['estado'], "id": row['id_cliente']})
+                                # Convertimos la lista de vuelta a texto para guardar en DB
+                                tags_final = ",".join(row['etiquetas_list']) if isinstance(row['etiquetas_list'], list) else ""
+                                
+                                conn.execute(text("""
+                                    UPDATE Clientes SET nombre=:n, apellido=:a, telefono=:t, nombre_corto=:nc, estado=:e, etiquetas=:tag 
+                                    WHERE id_cliente=:id
+                                """), {"n": row['nombre'], "a": row['apellido'], "t": norm['db'], "nc": row['nombre_corto'], 
+                                       "e": row['estado'], "tag": tags_final, "id": row['id_cliente']})
+                                
                                 if row['google_id']:
                                     actualizar_en_google(row['google_id'], row['nombre'], row['apellido'], norm['db'])
                         trans.commit()
                         st.success("Datos guardados.")
                         time.sleep(1)
                         st.rerun()
-                    except: trans.rollback()
+                    except Exception as e:
+                        trans.rollback()
+                        st.error(f"Error: {e}")
 
             st.divider()
             
             # B. SELECCIONAR CLIENTE PARA DIRECCIONES
             st.markdown("#### 🚚 Gestionar Direcciones")
-            # Creamos un selectbox para elegir a quién editarle las direcciones
-            opciones_clientes = df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']}) - ID:{x['id_cliente']}", axis=1).tolist()
-            cliente_seleccionado = st.selectbox("Selecciona un cliente para ver sus direcciones:", opciones_clientes)
+            opciones_clientes = df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
+            cliente_seleccionado = st.selectbox("Selecciona cliente:", opciones_clientes)
             
             if cliente_seleccionado:
-                selected_client_id = int(cliente_seleccionado.split("ID:")[1])
-                selected_client_name = cliente_seleccionado.split(" (")[0]
-                
-                # C. RENDERIZAR GESTOR DE DIRECCIONES
-                render_gestion_direcciones(selected_client_id, selected_client_name)
+                # Buscar ID en el dataframe original usando el teléfono como llave única temporal o índice
+                # Método seguro: buscar en el DF filtrado
+                row_sel = df[df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1) == cliente_seleccionado].iloc[0]
+                render_gestion_direcciones(int(row_sel['id_cliente']), row_sel['nombre_corto'])
 
         else:
             st.info("No se encontraron clientes.")
