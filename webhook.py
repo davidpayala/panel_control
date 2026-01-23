@@ -65,7 +65,19 @@ def home():
     return "Webhook Activo. Estado: OK", 200
 
 @app.route('/webhook', methods=['POST'])
+# ... (imports y resto del código igual) ...
+
+@app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
+    # 1. LOG DE DIAGNÓSTICO
+    print("🔵 [WEBHOOK] Solicitud recibida")
+    
+    # 2. Seguridad
+    api_key = request.headers.get('X-Api-Key')
+    if WAHA_KEY and api_key and api_key != WAHA_KEY:
+        print("⛔ API Key incorrecta")
+        return jsonify({"error": "Unauthorized"}), 401
+
     try:
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
@@ -82,71 +94,64 @@ def recibir_mensaje():
             remitente = payload.get('from', '')
             if 'status@broadcast' in remitente: continue
 
-            try:
-                num = remitente.replace('@c.us', '').replace('@s.whatsapp.net', '')
-            except: num = "Desconocido"
+            # Obtener número
+            numero_crudo = obtener_numero_crudo(payload)
+            formatos = normalizar_telefono_maestro(numero_crudo)
+            if not formatos: continue
+            
+            telefono_db = formatos['db']
+            telefono_corto = formatos['corto']
+            
+            print(f"📩 Mensaje de: {telefono_corto}")
 
-            print(f"📩 Recibido de: {num}")
-
-            # --- LÓGICA DE MEDIA ---
+            # --- CORRECCIÓN DEL ERROR DE MEDIA ---
             media_url = payload.get('mediaUrl')
             
-            # Buscar URL en estructura anidada si no está en raíz
+            # PROTECCIÓN CONTRA NULOS AQUÍ:
             if not media_url:
-                media_obj = payload.get('media') or {}
+                # Usamos ( ... or {} ) para asegurar que sea un diccionario antes del .get()
+                media_obj = payload.get('media') or {} 
                 media_url = media_obj.get('url')
 
             body = payload.get('body', '')
             archivo_bytes = None
             
-            # Intentar descargar
+            # Descargar si hay URL
             if media_url:
-                archivo_bytes = descargar_media_plus(media_url)
-                
-                # --- AQUÍ ESTÁ EL CAMBIO CLAVE PARA QUE NO SALGA VACÍO ---
-                if archivo_bytes:
-                    # Si descargó bien y no hay texto, ponemos etiqueta
-                    if not body: body = "📷 Foto"
-                else:
-                    # SI FALLÓ LA DESCARGA, GUARDAMOS EL ERROR COMO TEXTO
-                    # Así verás en el chat qué pasó
-                    error_msg = f"⚠️ Error cargando imagen: {media_url}"
-                    if body:
-                        body += f"\n({error_msg})"
-                    else:
-                        body = error_msg
+                archivo_bytes = descargar_media(media_url)
+                if archivo_bytes and not body: 
+                    body = "📷 Archivo Multimedia"
 
-            # Guardar en DB
+            # Guardar en DB (Tu lógica habitual)
             try:
-                norm = normalizar_telefono_maestro(num)
-                if not norm: continue
-                tel_db = norm['db']
-
-                nombre = payload.get('_data', {}).get('notifyName') or "Cliente"
-                # (Opcional: aquí iría tu lógica de Google Contact)
+                nombre_final = payload.get('_data', {}).get('notifyName') or "Cliente"
+                # (Aquí iría tu lógica de Google Contact si la usas)
 
                 with engine.connect() as conn:
+                    # Upsert Cliente
                     conn.execute(text("""
-                        INSERT INTO Clientes (telefono, nombre_corto, activo, fecha_registro)
-                        VALUES (:t, :n, TRUE, NOW())
-                        ON CONFLICT (telefono) DO NOTHING
-                    """), {"t": tel_db, "n": nombre})
+                        INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+                        VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
+                        ON CONFLICT (telefono) DO UPDATE SET activo = TRUE
+                    """), {"t": telefono_db, "n": nombre_final})
                     
+                    # Insertar Mensaje
                     conn.execute(text("""
                         INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
-                        VALUES (:t, 'ENTRANTE', :c, (NOW() - INTERVAL '5 hours'), FALSE, :d)
-                    """), {"t": tel_db, "c": body, "d": archivo_bytes})
+                        VALUES (:t, 'ENTRANTE', :txt, (NOW() - INTERVAL '5 hours'), FALSE, :d)
+                    """), {"t": telefono_db, "txt": body, "d": archivo_bytes})
+                    
                     conn.commit()
-                    print(f"✅ Guardado mensaje de {tel_db}")
+                    print(f"✅ Guardado mensaje de {telefono_corto}")
 
             except Exception as e:
                 print(f"❌ Error DB: {e}")
 
         return jsonify({"status": "success"}), 200
-
+        
     except Exception as e:
-        print(f"🔥 Error Webhook: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"🔥 Error Crítico Webhook: {e}")
+        return jsonify({"status": "error", "msg": str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
