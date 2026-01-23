@@ -87,25 +87,49 @@ def subir_archivo_meta(archivo_bytes, mime_type):
         return f"data:{mime_type};base64,{b64_data}", None
     except Exception as e: return None, str(e)
 
-def enviar_mensaje_media(telefono, media_uri, tipo_archivo, caption="", filename="archivo"):
-    if not WAHA_URL: return False, "Falta URL WAHA"
-    number_clean = formatear_numero_waha(telefono)
-    chat_id = f"{number_clean}@c.us"
-    
-    url = f"{WAHA_URL}/api/sendFile"
-    headers = {"Content-Type": "application/json"}
-    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-    
-    payload = {
-        "session": WAHA_SESSION, "chatId": chat_id,
-        "file": {"mimetype": tipo_archivo, "filename": filename, "data": media_uri},
-        "caption": caption
-    }
+def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
+    """
+    Envía una imagen/archivo usando WAHA Plus (Método Base64 directo).
+    No requiere subir el archivo a un servidor intermedio.
+    """
     try:
-        r = requests.post(url, headers=headers, json=payload)
-        if r.status_code in [200, 201]: return True, r.json()
-        return False, f"Error WAHA: {r.text}"
-    except Exception as e: return False, str(e)
+        # 1. Convertir el archivo a Base64
+        media_b64 = base64.b64encode(archivo_bytes).decode('utf-8')
+        
+        # 2. Construir la Data URI (Ej: data:image/jpeg;base64,.....)
+        data_uri = f"data:{mime_type};base64,{media_b64}"
+
+        url = f"{WAHA_URL}/api/sendImage" # O /api/sendFile si es PDF
+        
+        # Si no es imagen, usamos el endpoint genérico de archivos
+        if "image" not in mime_type:
+            url = f"{WAHA_URL}/api/sendFile"
+
+        payload = {
+            "chatId": f"{telefono}@c.us",
+            "file": {
+                "mimetype": mime_type,
+                "filename": filename,
+                "url": data_uri # <--- AQUÍ ESTÁ EL TRUCO
+            },
+            "caption": caption,
+            "session": "default" # Cambia esto si usas múltiples sesiones
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Api-Key": WAHA_KEY
+        }
+
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 201:
+            return True, response.json()
+        else:
+            return False, f"Error {response.status_code}: {response.text}"
+
+    except Exception as e:
+        return False, str(e)
 
 # ==============================================================================
 # LÓGICA GOOGLE (Contactos)
