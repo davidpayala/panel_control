@@ -139,8 +139,15 @@ def ejecutar_migraciones():
     except Exception as e:
         print(f"⚠️ Nota DB (No crítico si la app inicia): {e}")
 
-# Ejecutamos limpieza al inicio
-ejecutar_migraciones()
+# ENVOLVER LA FUNCIÓN EN CACHÉ
+@st.cache_resource
+def iniciar_sistema_db():
+    print("🚀 Iniciando sistema y validando base de datos...")
+    ejecutar_migraciones() # Tu función original
+    return True
+
+# LLAMAR A LA FUNCIÓN CON CACHÉ
+iniciar_sistema_db()
 
 # --- FUNCIÓN PRINCIPAL ---
 def main():
