@@ -4,7 +4,6 @@ from database import engine
 import os
 import requests
 import json
-import base64
 from datetime import datetime
 import pytz 
 from utils import normalizar_telefono_maestro, buscar_contacto_google
@@ -15,81 +14,107 @@ app = Flask(__name__)
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
-# --- DESCARGA DE MEDIA BLINDADA PARA WAHA PLUS ---
 def descargar_media_plus(media_url):
+    """
+    Intenta descargar la imagen corrigiendo la URL si es necesario.
+    """
     try:
         if not media_url: return None
         
-        # Corrección de URL relativa (si viene como /api/files/...)
         url_final = media_url
-        if not media_url.startswith("http"):
-             base = WAHA_URL.rstrip('/') if WAHA_URL else ""
-             path = media_url.lstrip('/')
-             url_final = f"{base}/{path}"
         
-        print(f"📥 Descargando media: {url_final}")
+        # 1. Corrección de URL:
+        # Si WAHA nos da una URL interna (localhost o waha:3000), 
+        # la forzamos a usar la URL PÚBLICA que definiste en las variables.
+        if WAHA_URL:
+            # Si es ruta relativa (/api/files...)
+            if not media_url.startswith("http"):
+                base = WAHA_URL.rstrip('/')
+                path = media_url.lstrip('/')
+                url_final = f"{base}/{path}"
+            
+            # OJO: Si viene como http://waha... o http://localhost...
+            # Reemplazamos el dominio por tu WAHA_URL público para asegurar conexión
+            elif "localhost" in media_url or "waha:" in media_url:
+                # Esto es un hack para Railway: Reemplazar el inicio por el dominio público
+                # Ej: http://localhost:3000/api/files/x -> https://mi-waha.railway/api/files/x
+                path_real = media_url.split('/api/')[-1] # Extraer lo que sigue a /api/
+                base = WAHA_URL.rstrip('/')
+                url_final = f"{base}/api/{path_real}"
+
+        print(f"📥 Intentando descargar desde: {url_final}")
         
         headers = {}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY   
         
-        r = requests.get(url_final, headers=headers, timeout=10)
-        return r.content if r.status_code == 200 else None
+        r = requests.get(url_final, headers=headers, timeout=15)
+        
+        if r.status_code == 200:
+            print(f"✅ Descarga OK: {len(r.content)} bytes")
+            return r.content
+        else:
+            print(f"❌ Falló descarga ({r.status_code}): {r.text[:100]}")
+            return None
+            
     except Exception as e:
-        print(f"⚠️ Error descarga: {e}")
+        print(f"⚠️ Excepción en descarga: {e}")
         return None
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook Activo 🚀. Usa /webhook en WAHA.", 200
+    return "Webhook Activo. Estado: OK", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
-    print("🔵 [WEBHOOK] Solicitud recibida")
-    
     try:
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
 
-        # Normalizar lista de eventos
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
-            # Solo procesamos mensajes (ignoramos estados, acks, etc.)
             if evento.get('event') != 'message': continue
 
-            # Extracción segura del payload
             payload = evento.get('payload')
-            if not payload: continue # Si payload es None, saltamos
+            if not payload: continue
 
+            # Validar remitente
             remitente = payload.get('from', '')
-            
-            # Filtros básicos
             if 'status@broadcast' in remitente: continue
 
-            # Extraer número
             try:
                 num = remitente.replace('@c.us', '').replace('@s.whatsapp.net', '')
             except: num = "Desconocido"
 
-            print(f"📩 Procesando mensaje de: {num}")
+            print(f"📩 Recibido de: {num}")
 
-            # --- CORRECCIÓN 1: EXTRAER MEDIA DE FORMA SEGURA ---
-            # El error anterior ocurría aquí. Ahora usamos una lógica a prueba de fallos.
+            # --- LÓGICA DE MEDIA ---
             media_url = payload.get('mediaUrl')
             
-            # Si mediaUrl está vacío, buscamos en el objeto 'media'
+            # Buscar URL en estructura anidada si no está en raíz
             if not media_url:
-                # El truco: (payload.get('media') or {}) asegura que si es None, usamos {}
                 media_obj = payload.get('media') or {}
                 media_url = media_obj.get('url')
 
             body = payload.get('body', '')
-            archivo = None
+            archivo_bytes = None
             
-            # --- CORRECCIÓN 2: LLAMADA CORRECTA A LA FUNCIÓN ---
+            # Intentar descargar
             if media_url:
-                archivo = descargar_media_plus(media_url) # Nombre corregido
-                if archivo and not body: body = "📷 Foto"
+                archivo_bytes = descargar_media_plus(media_url)
+                
+                # --- AQUÍ ESTÁ EL CAMBIO CLAVE PARA QUE NO SALGA VACÍO ---
+                if archivo_bytes:
+                    # Si descargó bien y no hay texto, ponemos etiqueta
+                    if not body: body = "📷 Foto"
+                else:
+                    # SI FALLÓ LA DESCARGA, GUARDAMOS EL ERROR COMO TEXTO
+                    # Así verás en el chat qué pasó
+                    error_msg = f"⚠️ Error cargando imagen: {media_url}"
+                    if body:
+                        body += f"\n({error_msg})"
+                    else:
+                        body = error_msg
 
             # Guardar en DB
             try:
@@ -97,38 +122,31 @@ def recibir_mensaje():
                 if not norm: continue
                 tel_db = norm['db']
 
-                # Google Contact (Intento simple)
                 nombre = payload.get('_data', {}).get('notifyName') or "Cliente"
-                try:
-                    gdata = buscar_contacto_google(tel_db)
-                    if gdata and gdata['encontrado']: nombre = gdata['nombre_completo']
-                except: pass
+                # (Opcional: aquí iría tu lógica de Google Contact)
 
                 with engine.connect() as conn:
-                    # Guardar Cliente
                     conn.execute(text("""
                         INSERT INTO Clientes (telefono, nombre_corto, activo, fecha_registro)
                         VALUES (:t, :n, TRUE, NOW())
                         ON CONFLICT (telefono) DO NOTHING
                     """), {"t": tel_db, "n": nombre})
                     
-                    # Guardar Mensaje
                     conn.execute(text("""
                         INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data)
                         VALUES (:t, 'ENTRANTE', :c, (NOW() - INTERVAL '5 hours'), FALSE, :d)
-                    """), {"t": tel_db, "c": body, "d": archivo})
+                    """), {"t": tel_db, "c": body, "d": archivo_bytes})
                     conn.commit()
-                    print(f"✅ Mensaje de {tel_db} guardado.")
+                    print(f"✅ Guardado mensaje de {tel_db}")
 
             except Exception as e:
-                print(f"❌ Error DB para {num}: {e}")
+                print(f"❌ Error DB: {e}")
 
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        # Esto atrapará cualquier otro error futuro sin tumbar el servidor
-        print(f"🔥 Error Crítico en Webhook: {e}")
-        return jsonify({"status": "error", "msg": str(e)}), 500
+        print(f"🔥 Error Webhook: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
