@@ -268,13 +268,22 @@ def enviar_texto_chat(telefono, texto):
 
 def enviar_archivo_chat(telefono, archivo):
     with st.spinner("Enviando..."):
-        uri, err = subir_archivo_meta(archivo.getvalue(), archivo.type)
-        if err: return st.error(err)
-        exito, resp = enviar_mensaje_media(telefono, uri, archivo.type, "", archivo.name)
+        # YA NO LLAMAMOS A subir_archivo_meta
+        # Pasamos los bytes directos (archivo.getvalue()) a la función de envío
+        
+        exito, resp = enviar_mensaje_media(
+            telefono, 
+            archivo.getvalue(), # <--- AQUÍ ESTÁ EL CAMBIO: Pasamos el archivo crudo
+            archivo.type, 
+            "", 
+            archivo.name
+        )
+        
         if exito:
             guardar_mensaje_saliente(telefono, f"📎 {archivo.name}", archivo.getvalue())
             st.rerun()
-        else: st.error(f"Error: {resp}")
+        else: 
+            st.error(f"Error: {resp}")
 
 def guardar_mensaje_saliente(telefono, texto, data):
     norm = normalizar_telefono_maestro(telefono)
