@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import time
-import os
 from sqlalchemy import text
 from database import engine
 
@@ -32,12 +31,11 @@ def render_catalogo():
     tab_gestion, tab_marketing = st.tabs(["🛠️ Gestión de Inventario", "📢 Marketing & Feed Meta"])
 
     # ==============================================================================
-    # TAB 1: GESTIÓN (TU CÓDIGO ORIGINAL)
+    # TAB 1: GESTIÓN DE INVENTARIO
     # ==============================================================================
     with tab_gestion:
         modo_catalogo = st.radio("Acción:", ["🌱 Crear Nuevo", "✏️ Editar / Renombrar"], horizontal=True)
 
-        # LISTA OFICIAL DE COLORES
         COLORES_OFICIALES = ["", "Amarillo", "Azul", "Blanco", "Chocolate", "Dorado", "Gris", "Marrón", "Miel", "Morado", "Multicolor", "Naranja", "Negro", "Rojo", "Rosado", "Turquesa", "Verde"]
 
         # --- MODO 1: CREAR NUEVO ---
@@ -65,7 +63,6 @@ def render_catalogo():
                         c3, c4 = st.columns(2)
                         stock_ini = c3.number_input("Stock Inicial:", min_value=0)
                         precio_new = c4.number_input("Precio Venta:", min_value=0.0)
-                        
                         ubi_new = st.text_input("Ubicación:")
 
                         if st.form_submit_button("Guardar Medida"):
@@ -106,7 +103,6 @@ def render_catalogo():
                     sku_1 = c4.text_input("SKU Variante:")
                     medida_1 = c5.text_input("Medida:", value="0.00")
                     prec_1 = c6.number_input("Precio Venta", 0.0)
-                    
                     ubi_1 = st.text_input("Ubicación")
 
                     if st.form_submit_button("Crear Producto Completo"):
@@ -161,7 +157,6 @@ def render_catalogo():
                         st.info(f"Editando: **{curr['marca']} {curr['modelo']}** - Color: **{curr['nombre_prod']}**")
                         
                         with st.form("form_edit_sku"):
-                            # 1. PRODUCTO
                             st.markdown("📦 **Datos Generales (Producto)**")
                             c_p1, c_p2, c_p3 = st.columns(3)
                             new_marca = c_p1.text_input("Marca:", value=curr['marca'])
@@ -179,7 +174,6 @@ def render_catalogo():
 
                             st.divider()
 
-                            # 2. VARIANTE (SKU)
                             st.markdown(f"🏷️ **Datos de Variante ({curr['sku']})**")
                             col_a, col_b = st.columns(2)
                             new_sku_val = col_a.text_input("SKU:", value=curr['sku'])
@@ -187,7 +181,6 @@ def render_catalogo():
                             
                             col_e, col_f = st.columns(2)
                             new_precio = col_e.number_input("Precio Normal:", value=float(curr['precio']))
-                            
                             val_reb_str = str(curr['precio_rebajado']) if (curr['precio_rebajado'] and float(curr['precio_rebajado']) > 0) else ""
                             new_precio_reb_txt = col_f.text_input("Precio Rebajado:", value=val_reb_str)
 
@@ -200,7 +193,6 @@ def render_catalogo():
                                 try:
                                     with engine.connect() as conn:
                                         trans = conn.begin()
-                                        # A) Actualizar Variante
                                         conn.execute(text("""
                                             UPDATE Variantes 
                                             SET sku=:n_sku, medida=:n_med, precio=:n_pre, precio_rebajado=:n_prer
@@ -208,7 +200,6 @@ def render_catalogo():
                                         """), {
                                             "n_sku": new_sku_val, "n_med": new_medida, "n_pre": new_precio, "n_prer": final_rebajado, "old_sku": curr['sku']
                                         })
-                                        # B) Actualizar Producto
                                         conn.execute(text("""
                                             UPDATE Productos 
                                             SET marca=:mar, modelo=:mod, nombre=:nom, color_principal=:col, diametro=:dia, url_imagen=:uimg, url_compra=:ubuy
@@ -233,9 +224,9 @@ def render_catalogo():
             
             if sku_to_split:
                 with engine.connect() as conn:
-                    # 1. Buscamos info actual
                     q_split = text("""
-                        SELECT v.sku, v.id_producto, p.marca, p.modelo, p.nombre, p.categoria, p.color_principal, p.diametro, p.url_imagen, p.url_compra
+                        SELECT v.sku, v.id_producto, p.marca, p.modelo, p.nombre, 
+                               p.categoria, p.color_principal, p.diametro, p.url_imagen, p.url_compra
                         FROM Variantes v
                         JOIN Productos p ON v.id_producto = p.id_producto
                         WHERE v.sku = :s
@@ -244,21 +235,51 @@ def render_catalogo():
                 
                 if not res_split.empty:
                     curr = res_split.iloc[0]
-                    st.markdown(f"Variante **{curr['sku']}** pertenece a: **{curr['marca']} {curr['modelo']}**")
+                    st.info(f"El SKU **{curr['sku']}** actualmente pertenece a: **{curr['marca']} {curr['modelo']} - {curr['nombre']}**")
                     
                     with st.form("form_split_product"):
+                        st.write("Define los datos del **NUEVO** producto contenedor:")
                         c1, c2, c3 = st.columns(3)
                         n_marca = c1.text_input("Nueva Marca", value=curr['marca'])
                         n_modelo = c2.text_input("Nuevo Modelo", value=curr['modelo'])
-                        n_nombre = c3.text_input("Nuevo Nombre", value=curr['nombre']) 
+                        n_nombre = c3.text_input("Nuevo Nombre (Color)", value=curr['nombre']) 
                         
-                        # ... (Resto de campos de split simplificados) ...
-                        if st.form_submit_button("🚀 Separar"):
-                            # ... (Lógica de split igual que antes) ...
-                            st.info("Función de separación pendiente de implementación completa en este bloque.")
+                        st.caption("Nota: Se copiarán automáticamente la Categoría, Imagen y URL de Compra del producto original.")
+
+                        if st.form_submit_button("🚀 Separar y Crear Producto"):
+                            if not n_marca or not n_modelo or not n_nombre:
+                                st.error("Debes llenar Marca, Modelo y Nombre.")
+                            else:
+                                try:
+                                    with engine.connect() as conn:
+                                        trans = conn.begin()
+                                        # 1. Crear nuevo producto
+                                        res_insert = conn.execute(text("""
+                                            INSERT INTO Productos (marca, modelo, nombre, categoria, color_principal, diametro, url_imagen, url_compra)
+                                            VALUES (:m, :mod, :nom, :cat, :col, :dia, :uimg, :ubuy)
+                                            RETURNING id_producto
+                                        """), {
+                                            "m": n_marca, "mod": n_modelo, "nom": n_nombre,
+                                            "cat": curr['categoria'], "col": curr['color_principal'], "dia": curr['diametro'],
+                                            "uimg": curr['url_imagen'], "ubuy": curr['url_compra']
+                                        })
+                                        new_id_producto = res_insert.fetchone()[0]
+                                        
+                                        # 2. Mover la variante
+                                        conn.execute(text("UPDATE Variantes SET id_producto = :new_id WHERE sku = :sku"), 
+                                                     {"new_id": new_id_producto, "sku": curr['sku']})
+                                        
+                                        trans.commit()
+                                    st.success(f"✅ Éxito: {curr['sku']} movido a {n_marca} {n_modelo} {n_nombre}")
+                                    time.sleep(2)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al separar: {e}")
+                else:
+                    st.warning("SKU no encontrado.")
 
     # ==============================================================================
-    # TAB 2: MARKETING & FEED (TU NUEVA SOLICITUD)
+    # TAB 2: MARKETING & FEED
     # ==============================================================================
     with tab_marketing:
         st.header("📢 Configuración para Meta Ads")
@@ -273,17 +294,10 @@ def render_catalogo():
             with st.spinner("Generando catálogo..."):
                 try:
                     with engine.connect() as conn:
-                        # 1. Consulta Maestra
                         query = text("""
                             SELECT 
-                                v.sku, 
-                                p.marca, 
-                                p.modelo, 
-                                p.nombre, 
-                                p.categoria, 
-                                p.url_imagen, 
-                                v.precio, 
-                                (v.stock_interno + v.stock_externo) as stock_total
+                                v.sku, p.marca, p.modelo, p.nombre, p.categoria, p.url_imagen, 
+                                v.precio, (v.stock_interno + v.stock_externo) as stock_total
                             FROM Variantes v
                             JOIN Productos p ON v.id_producto = p.id_producto
                             WHERE p.url_imagen IS NOT NULL AND p.url_imagen != ''
@@ -293,11 +307,10 @@ def render_catalogo():
                     if df_raw.empty:
                         st.error("⚠️ No hay productos con imagen. El catálogo requiere fotos.")
                     else:
-                        # 2. Construcción del Feed
                         df_feed = pd.DataFrame()
                         df_feed['id'] = df_raw['sku']
                         
-                        # TÍTULO: Marca + Modelo + Nombre + (SKU)
+                        # TÍTULO OPTIMIZADO: Marca + Modelo + Nombre + (SKU)
                         df_feed['title'] = (
                             df_raw['marca'].fillna('') + " " + 
                             df_raw['modelo'].fillna('') + " - " + 
@@ -314,17 +327,14 @@ def render_catalogo():
                         df_feed['brand'] = df_raw['marca'].fillna('K&M')
 
                         # SEGMENTACIÓN PARA TUS ANUNCIOS
-                        # Esto permite filtrar en Facebook: "Etiqueta 0 contiene 'Natural'"
                         df_feed['custom_label_0'] = df_raw['categoria'].fillna('General')
                         df_feed['product_type'] = df_raw['categoria'].fillna('Lentes')
 
-                        # 3. Descarga
                         st.success(f"✅ Feed generado con {len(df_feed)} variantes.")
                         st.dataframe(df_feed.head(3), use_container_width=True)
                         
                         csv = df_feed.to_csv(index=False).encode('utf-8')
                         st.download_button("📥 DESCARGAR FEED.CSV", data=csv, file_name="feed_meta_km.csv", mime="text/csv")
-                        
                         st.info("💡 Sube este archivo a: Commerce Manager -> Orígenes de datos -> Lista de datos.")
 
                 except Exception as e:
