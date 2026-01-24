@@ -11,207 +11,163 @@ from utils import (
 
 def render_campanas():
     st.title("📢 Campañas Masivas Segmentadas")
-    st.info("⚠️ **Estrategia Antibloqueo:** El sistema dividirá automáticamente a los clientes sin etiqueta en grupos de 200.")
+    st.info("⚠️ **Estrategia Antibloqueo:** El sistema dividirá automáticamente a los clientes 'generales' en grupos seguros de 200 personas.")
 
-    # --- 1. CARGA Y SEGMENTACIÓN DE AUDIENCIA ---
+    # --- 1. CARGA Y SEGMENTACIÓN ---
     st.subheader("1. Seleccionar Grupo Objetivo")
     
-    # Botón de recarga
-    if st.button("🔄 Calcular Grupos y Audiencia"):
+    if st.button("🔄 Recargar y Calcular Grupos"):
         with engine.connect() as conn:
-            # Traemos etiquetas también
+            # Traemos etiquetas para clasificar
+            # Asegúrate de que la columna 'etiquetas' exista en tu DB. 
+            # Si no, el código asumirá cadena vacía y los mandará a General.
             query = """
-                SELECT id_cliente, nombre_corto, telefono, estado, etiquetas 
+                SELECT id_cliente, nombre_corto, telefono, estado, COALESCE(etiquetas, '') as etiquetas 
                 FROM Clientes 
                 WHERE activo = TRUE
             """
-            df_raw = pd.read_sql(text(query), conn)
+            try:
+                df_raw = pd.read_sql(text(query), conn)
+            except:
+                # Fallback si no existe columna etiquetas aún
+                query_simple = "SELECT id_cliente, nombre_corto, telefono, estado, '' as etiquetas FROM Clientes WHERE activo = TRUE"
+                df_raw = pd.read_sql(text(query_simple), conn)
         
         if df_raw.empty:
             st.warning("No hay clientes activos.")
             return
 
-        # --- ALGORITMO DE AGRUPACIÓN ---
-        def clasificar_cliente(row):
-            tags = str(row['etiquetas'] or "")
+        # ALGORITMO DE CLASIFICACIÓN
+        def clasificar(row):
+            tags = str(row['etiquetas']).upper()
             if "SPAM" in tags: return "🚫 SPAM (Pruebas)"
             if "VIP" in tags: return "💎 VIP (Prioridad)"
-            if "Compró" in tags or "Compro" in tags: return "✅ Compradores"
-            return "GENERAL" # Estos irán a grupos numerados
+            if "COMPRÓ" in tags or "COMPRO" in tags or "VENTA CERRADA" in str(row['estado']).upper(): 
+                return "✅ Compradores"
+            return "GENERAL"
 
-        df_raw['segmento_base'] = df_raw.apply(clasificar_cliente, axis=1)
+        df_raw['segmento'] = df_raw.apply(clasificar, axis=1)
 
-        # Diccionario de DataFrames para el selector
+        # Crear Diccionario de Grupos
         opciones_segmentos = {}
 
         # 1. Grupos Especiales
         for seg in ["🚫 SPAM (Pruebas)", "💎 VIP (Prioridad)", "✅ Compradores"]:
-            sub_df = df_raw[df_raw['segmento_base'] == seg]
-            if not sub_df.empty:
-                opciones_segmentos[f"{seg} ({len(sub_df)})"] = sub_df
+            sub = df_raw[df_raw['segmento'] == seg]
+            if not sub.empty:
+                opciones_segmentos[f"{seg} ({len(sub)})"] = sub
 
-        # 2. Grupos Numerados (Resto del mundo)
-        df_general = df_raw[df_raw['segmento_base'] == "GENERAL"]
-        if not df_general.empty:
-            tamano_grupo = 200
-            total_general = len(df_general)
-            # Crear chunks
-            for i in range(0, total_general, tamano_grupo):
-                grupo_num = (i // tamano_grupo) + 1
-                subset = df_general.iloc[i : i + tamano_grupo]
-                titulo = f"📦 Grupo {grupo_num} (General) - {len(subset)} personas"
-                opciones_segmentos[titulo] = subset
+        # 2. Grupos Generales (Chunks de 200)
+        df_gen = df_raw[df_raw['segmento'] == "GENERAL"]
+        if not df_gen.empty:
+            tamano = 200
+            total_gen = len(df_gen)
+            for i in range(0, total_gen, tamano):
+                grupo_num = (i // tamano) + 1
+                subset = df_gen.iloc[i : i + tamano]
+                nombre_grupo = f"📦 Grupo {grupo_num} (General) - {len(subset)} personas"
+                opciones_segmentos[nombre_grupo] = subset
 
         st.session_state['mapa_segmentos'] = opciones_segmentos
-        st.success("✅ Segmentación recalculada.")
+        st.success("✅ Grupos calculados.")
 
-    # --- SELECTOR DE GRUPO ---
+    # SELECTOR
     if 'mapa_segmentos' in st.session_state and st.session_state['mapa_segmentos']:
         opciones = list(st.session_state['mapa_segmentos'].keys())
-        seleccion = st.selectbox("🎯 ¿A quién enviamos hoy?", opciones)
+        seleccion = st.selectbox("🎯 ¿A quién enviamos?", opciones)
         
-        # Guardar el DF seleccionado en session
         df_target = st.session_state['mapa_segmentos'][seleccion]
         st.session_state['audiencia_final'] = df_target
         
-        # Previsualización
-        with st.expander(f"Ver lista de: {seleccion}"):
-            st.dataframe(df_target[['nombre_corto', 'telefono', 'etiquetas']], use_container_width=True)
+        with st.expander(f"Ver lista: {seleccion}"):
+            st.dataframe(df_target[['nombre_corto', 'telefono', 'etiquetas']], hide_index=True)
     else:
-        st.info("👆 Dale al botón 'Calcular' para empezar.")
+        st.info("👆 Presiona 'Recargar' para empezar.")
 
     st.divider()
 
-    # --- 2. CONFIGURAR MENSAJE ---
+    # --- 2. MENSAJE ---
     st.subheader("2. Configurar Mensaje")
-    
     c1, c2 = st.columns([2, 1])
     with c1:
-        mensaje_texto = st.text_area("Mensaje:", height=150, placeholder="Hola! Tenemos nuevas ofertas en lentes...")
-        st.caption("Tip: Usa *negritas* y emojis 🚀. El mensaje es igual para todos.")
-    
+        mensaje_texto = st.text_area("Mensaje:", height=150)
     with c2:
-        archivo_adjunto = st.file_uploader("Imagen (Opcional)", type=["png", "jpg", "jpeg", "pdf"])
-        st.caption("Se enviará con WAHA Plus (Base64).")
+        archivo_adjunto = st.file_uploader("Imagen (Opcional)", type=["png", "jpg", "jpeg"])
 
-    # --- 3. CONFIGURACIÓN DE ENVÍO (SEGURIDAD) ---
-    with st.expander("⚙️ Configuración de Intervalos (Anti-Ban)", expanded=True):
+    # --- 3. CONFIGURACIÓN ENVÍO ---
+    with st.expander("⚙️ Intervalos (Seguridad)", expanded=True):
         col_t1, col_t2 = st.columns(2)
-        min_delay = col_t1.number_input("Espera Mínima (segundos)", value=10, min_value=2)
-        max_delay = col_t2.number_input("Espera Máxima (segundos)", value=20, min_value=5)
-        st.caption(f"Tiempo aleatorio entre **{min_delay} y {max_delay} segundos** por mensaje.")
+        min_delay = col_t1.number_input("Mínimo (seg)", value=10, min_value=2)
+        max_delay = col_t2.number_input("Máximo (seg)", value=20, min_value=5)
 
-    # --- 4. LANZAMIENTO ---
+    # --- 4. EJECUCIÓN ---
     st.divider()
     
-    # Validaciones
-    puede_lanzar = True
-    if 'audiencia_final' not in st.session_state or st.session_state['audiencia_final'].empty:
-        puede_lanzar = False
-    if not mensaje_texto and not archivo_adjunto:
-        st.warning("⚠️ Escribe texto o sube archivo.")
-        puede_lanzar = False
-
-    if puede_lanzar:
+    if 'audiencia_final' in st.session_state and not st.session_state['audiencia_final'].empty:
         df_lanzar = st.session_state['audiencia_final']
-        st.markdown(f"### 🚀 Listo para enviar a {len(df_lanzar)} contactos")
         
-        confirmacion = st.checkbox("✅ Confirmo que deseo iniciar el envío masivo.")
-        
-        if confirmacion and st.button("🔴 EJECUTAR CAMPAÑA", type="primary"):
-            bar = st.progress(0)
-            status_text = st.empty()
-            log_box = st.empty()
-            
-            logs = []
-            exitos = 0
-            errores = 0
-            total = len(df_lanzar)
-
-            # Preparar archivo UNA SOLA VEZ (Bytes para WAHA Plus)
-            media_bytes = None
-            mime_type = None
-            filename = None
-            
-            if archivo_adjunto:
-                media_bytes = archivo_adjunto.getvalue() # Bytes crudos
-                mime_type = archivo_adjunto.type
-                filename = archivo_adjunto.name
-
-            # BUCLE DE ENVÍO
-            for i, row in df_lanzar.reset_index().iterrows():
-                nombre = row['nombre_corto'] or "Cliente"
-                telefono = row['telefono']
+        if st.checkbox(f"✅ Confirmo envío a {len(df_lanzar)} personas"):
+            if st.button("🔴 EJECUTAR CAMPAÑA", type="primary"):
+                bar = st.progress(0)
+                status = st.empty()
+                log_box = st.empty()
+                logs = []
+                exitos = 0
                 
-                # Actualizar UI
-                progreso = (i + 1) / total
-                bar.progress(progreso)
-                status_text.text(f"Procesando {i+1}/{total}: {nombre}...")
+                # Preparar Archivo (Bytes para WAHA Plus)
+                media_bytes = None
+                mime_type = None
+                filename = None
+                if archivo_adjunto:
+                    media_bytes = archivo_adjunto.getvalue()
+                    mime_type = archivo_adjunto.type
+                    filename = archivo_adjunto.name
 
-                try:
-                    resultado = False
-                    resp = ""
+                total = len(df_lanzar)
+                
+                for i, row in df_lanzar.reset_index().iterrows():
+                    nombre = row['nombre_corto']
+                    tel = row['telefono']
                     
-                    # 1. Normalizar
-                    norm = normalizar_telefono_maestro(telefono)
-                    if not norm:
-                        logs.append(f"❌ {nombre}: Número inválido ({telefono})")
-                        errores += 1
-                        continue
-                    
-                    tel_final = norm['db']
+                    bar.progress((i+1)/total)
+                    status.text(f"Enviando {i+1}/{total}: {nombre}")
 
-                    # 2. Enviar (Imagen o Texto)
-                    if media_bytes:
-                        # WAHA Plus usa Base64 interno, pasamos los bytes directo a utils
-                        resultado, resp = enviar_mensaje_media(tel_final, media_bytes, mime_type, mensaje_texto, filename)
-                        contenido_log = f"📎 {filename} + {mensaje_texto}"
-                    else:
-                        resultado, resp = enviar_mensaje_whatsapp(tel_final, mensaje_texto)
-                        contenido_log = mensaje_texto
-
-                    # 3. Registrar Resultado
-                    if resultado:
-                        exitos += 1
-                        logs.append(f"✅ {nombre}: Enviado")
-                        
-                        # Guardar historial en DB
-                        with engine.connect() as conn:
-                            # Aseguramos existencia en tabla clientes por si acaso
-                            conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro, nombre_corto) VALUES (:t, TRUE, NOW(), :n) ON CONFLICT (telefono) DO NOTHING"), {"t": tel_final, "n": nombre})
+                    try:
+                        norm = normalizar_telefono_maestro(tel)
+                        if not norm:
+                            logs.append(f"❌ {nombre}: Teléfono inválido")
+                            continue
                             
-                            # Guardamos el mensaje como SALIENTE
-                            conn.execute(text("""
-                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data) 
-                                VALUES (:t, 'SALIENTE', :c, (NOW() - INTERVAL '5 hours'), TRUE, :d)
-                            """), {"t": tel_final, "c": contenido_log, "d": media_bytes if media_bytes else None})
-                            conn.commit()
-                    else:
-                        errores += 1
-                        logs.append(f"⚠️ {nombre}: Fallo API -> {resp}")
+                        tel_final = norm['db']
+                        res = False
+                        
+                        if media_bytes:
+                            res, _ = enviar_mensaje_media(tel_final, media_bytes, mime_type, mensaje_texto or "", filename)
+                        elif mensaje_texto:
+                            res, _ = enviar_mensaje_whatsapp(tel_final, mensaje_texto)
+                        
+                        if res:
+                            exitos += 1
+                            logs.append(f"✅ {nombre}: Enviado")
+                            # Guardar Log en BD
+                            with engine.connect() as conn:
+                                conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data) VALUES (:t, 'SALIENTE', :c, (NOW() - INTERVAL '5 hours'), TRUE, :d)"), 
+                                            {"t": tel_final, "c": mensaje_texto or "Archivo", "d": media_bytes})
+                                conn.commit()
+                        else:
+                            logs.append(f"⚠️ {nombre}: Falló envío")
 
-                except Exception as e:
-                    errores += 1
-                    logs.append(f"🔥 {nombre}: Error crítico {e}")
+                    except Exception as e:
+                        logs.append(f"🔥 Error {nombre}: {e}")
 
-                # Actualizar caja de logs
-                log_box.code("\n".join(logs[-6:])) # Mostrar últimos 6
+                    log_box.code("\n".join(logs[-5:]))
+                    
+                    # Espera (menos en el último)
+                    if i < total - 1:
+                        ts = random.randint(min_delay, max_delay)
+                        status.text(f"⏳ Esperando {ts}s...")
+                        time.sleep(ts)
 
-                # 4. Espera Aleatoria (Solo si no es el último)
-                if i < total - 1:
-                    tiempo_espera = random.randint(min_delay, max_delay)
-                    status_text.text(f"⏳ Esperando {tiempo_espera}s para despistar al algoritmo...")
-                    time.sleep(tiempo_espera)
-
-            # FIN
-            bar.progress(100)
-            status_text.success("🎉 ¡Campaña Finalizada!")
-            st.balloons()
-            
-            # Resumen Final
-            c_res1, c_res2 = st.columns(2)
-            c_res1.metric("Enviados con Éxito", exitos)
-            c_res2.metric("Fallidos", errores)
-            
-            with st.expander("📄 Ver Log Completo"):
-                st.text("\n".join(logs))
+                bar.progress(100)
+                status.success("¡Terminado!")
+                st.success(f"Enviados: {exitos}/{total}")

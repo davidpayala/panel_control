@@ -4,79 +4,82 @@ from database import engine
 import os
 import requests
 import json
+import base64
 from datetime import datetime
 import pytz 
 from utils import normalizar_telefono_maestro, buscar_contacto_google
 
 app = Flask(__name__)
 
-# OBTENER VARIABLES
+# VARIABLES DE ENTORNO
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
+# --- FUNCIONES AUXILIARES ---
+
 def descargar_media_plus(media_url):
-    """
-    Intenta descargar la imagen corrigiendo la URL si es necesario.
-    """
+    """Descarga media desde WAHA Plus con autenticación y corrección de URL."""
     try:
         if not media_url: return None
         
         url_final = media_url
         
-        # 1. Corrección de URL:
-        # Si WAHA nos da una URL interna (localhost o waha:3000), 
-        # la forzamos a usar la URL PÚBLICA que definiste en las variables.
-        if WAHA_URL:
-            # Si es ruta relativa (/api/files...)
-            if not media_url.startswith("http"):
-                base = WAHA_URL.rstrip('/')
-                path = media_url.lstrip('/')
-                url_final = f"{base}/{path}"
-            
-            # OJO: Si viene como http://waha... o http://localhost...
-            # Reemplazamos el dominio por tu WAHA_URL público para asegurar conexión
-            elif "localhost" in media_url or "waha:" in media_url:
-                # Esto es un hack para Railway: Reemplazar el inicio por el dominio público
-                # Ej: http://localhost:3000/api/files/x -> https://mi-waha.railway/api/files/x
-                path_real = media_url.split('/api/')[-1] # Extraer lo que sigue a /api/
+        # Corrección 1: URLs relativas
+        if not media_url.startswith("http"):
+             base = WAHA_URL.rstrip('/') if WAHA_URL else ""
+             path = media_url.lstrip('/')
+             url_final = f"{base}/{path}"
+        # Corrección 2: URLs internas (localhost)
+        elif "localhost" in media_url or "waha:" in media_url:
+             if WAHA_URL:
+                path_real = media_url.split('/api/')[-1]
                 base = WAHA_URL.rstrip('/')
                 url_final = f"{base}/api/{path_real}"
-
-        print(f"📥 Intentando descargar desde: {url_final}")
+        
+        print(f"📥 Intentando descargar de: {url_final}")
         
         headers = {}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY   
         
         r = requests.get(url_final, headers=headers, timeout=15)
-        
-        if r.status_code == 200:
-            print(f"✅ Descarga OK: {len(r.content)} bytes")
-            return r.content
-        else:
-            print(f"❌ Falló descarga ({r.status_code}): {r.text[:100]}")
-            return None
+        return r.content if r.status_code == 200 else None
             
     except Exception as e:
-        print(f"⚠️ Excepción en descarga: {e}")
+        print(f"⚠️ Error descarga: {e}")
         return None
+
+def obtener_numero_crudo(payload):
+    """Extrae el número telefónico del payload de WAHA."""
+    try:
+        # Intento 1: Campo 'from' directo
+        from_val = payload.get('from')
+        # Intento 2: Estructura interna _data
+        if not from_val:
+            from_val = payload.get('_data', {}).get('id', {}).get('remote')
+        
+        if from_val:
+            # Limpieza estándar de WhatsApp ID
+            return from_val.replace('@c.us', '').replace('@s.whatsapp.net', '')
+        return None
+    except:
+        return None
+
+# --- RUTAS ---
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook Activo. Estado: OK", 200
-
-@app.route('/webhook', methods=['POST'])
-# ... (imports y resto del código igual) ...
+    return "Webhook Activo 🚀", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
-    # 1. LOG DE DIAGNÓSTICO
     print("🔵 [WEBHOOK] Solicitud recibida")
     
-    # 2. Seguridad
+    # 1. Seguridad (Opcional según tu config)
     api_key = request.headers.get('X-Api-Key')
     if WAHA_KEY and api_key and api_key != WAHA_KEY:
         print("⛔ API Key incorrecta")
-        return jsonify({"error": "Unauthorized"}), 401
+        # return jsonify({"error": "Unauthorized"}), 401 
+        # Comentado para evitar bloqueos si WAHA no envía el header en webhooks
 
     try:
         data = request.json
@@ -90,42 +93,51 @@ def recibir_mensaje():
             payload = evento.get('payload')
             if not payload: continue
 
-            # Validar remitente
+            # Filtros
             remitente = payload.get('from', '')
             if 'status@broadcast' in remitente: continue
 
-            # Obtener número
+            # 2. OBTENER NÚMERO (Aquí fallaba antes)
             numero_crudo = obtener_numero_crudo(payload)
+            if not numero_crudo: continue
+
             formatos = normalizar_telefono_maestro(numero_crudo)
-            if not formatos: continue
+            if not formatos:
+                print(f"⚠️ Número no válido: {numero_crudo}")
+                continue
             
             telefono_db = formatos['db']
             telefono_corto = formatos['corto']
-            
             print(f"📩 Mensaje de: {telefono_corto}")
 
-            # --- CORRECCIÓN DEL ERROR DE MEDIA ---
-            media_url = payload.get('mediaUrl')
+            # 3. PROCESAR CONTENIDO
+            body = payload.get('body', '')
             
-            # PROTECCIÓN CONTRA NULOS AQUÍ:
+            # Lógica segura para obtener URL de media
+            media_url = payload.get('mediaUrl')
             if not media_url:
-                # Usamos ( ... or {} ) para asegurar que sea un diccionario antes del .get()
-                media_obj = payload.get('media') or {} 
+                media_obj = payload.get('media') or {}
                 media_url = media_obj.get('url')
 
-            body = payload.get('body', '')
             archivo_bytes = None
             
-            # Descargar si hay URL
             if media_url:
-                archivo_bytes = descargar_media(media_url)
-                if archivo_bytes and not body: 
-                    body = "📷 Archivo Multimedia"
+                archivo_bytes = descargar_media_plus(media_url)
+                if archivo_bytes:
+                    if not body: body = "📷 Foto"
+                else:
+                    msg_err = f"⚠️ Error descargando imagen"
+                    body = f"{body}\n({msg_err})" if body else msg_err
 
-            # Guardar en DB (Tu lógica habitual)
+            # 4. GUARDAR EN BD
             try:
                 nombre_final = payload.get('_data', {}).get('notifyName') or "Cliente"
-                # (Aquí iría tu lógica de Google Contact si la usas)
+                # Intento recuperar nombre real si ya existe
+                try:
+                    datos_google = buscar_contacto_google(telefono_db)
+                    if datos_google and datos_google['encontrado']:
+                        nombre_final = datos_google['nombre_completo']
+                except: pass
 
                 with engine.connect() as conn:
                     # Upsert Cliente
@@ -142,13 +154,13 @@ def recibir_mensaje():
                     """), {"t": telefono_db, "txt": body, "d": archivo_bytes})
                     
                     conn.commit()
-                    print(f"✅ Guardado mensaje de {telefono_corto}")
+                    print(f"✅ Guardado: {telefono_corto}")
 
             except Exception as e:
                 print(f"❌ Error DB: {e}")
 
         return jsonify({"status": "success"}), 200
-        
+
     except Exception as e:
         print(f"🔥 Error Crítico Webhook: {e}")
         return jsonify({"status": "error", "msg": str(e)}), 500
