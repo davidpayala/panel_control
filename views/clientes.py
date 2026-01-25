@@ -251,70 +251,102 @@ def render_clientes():
 
         else:
             st.info("No se encontraron clientes.")
-
-    # ==============================================================================
-    # 3. FUSIÓN DE DUPLICADOS (Sin cambios, tu lógica era buena)
+# ==============================================================================
+    # 3. FUSIÓN DE DUPLICADOS (MEJORADA: UNIFICA CHATS)
     # ==============================================================================
     st.divider()
     st.subheader("🧬 Fusión de Clientes Duplicados")
     
     with st.expander("Abrir herramienta de fusión"):
+        st.info("⚠️ Esta acción moverá pedidos, direcciones y **CHATS** del duplicado al principal. El duplicado quedará inactivo.")
         col_dup, col_orig = st.columns(2)
         
-        # ... (Tu código de fusión se mantiene igual abajo, es funcional) ...
-        # Solo asegúrate de copiar la lógica de fusión que ya tenías
-        
-        # 1. CLIENTE A ELIMINAR
+        # 1. CLIENTE A ELIMINAR (DUPLICADO)
         with col_dup:
-            st.markdown("### ❌ A Eliminar")
+            st.markdown("### ❌ A Eliminar (Duplicado)")
             search_dup = st.text_input("Buscar duplicado:", key="search_dup")
             id_duplicado = None
-            info_duplicado = None
+            tel_duplicado = None
+            
             if search_dup:
                 with engine.connect() as conn:
+                    # Traemos también el teléfono
                     res = pd.read_sql(text("SELECT id_cliente, nombre_corto, telefono FROM Clientes WHERE (nombre_corto ILIKE :s OR telefono ILIKE :s) AND activo=TRUE LIMIT 5"), conn, params={"s":f"%{search_dup}%"})
                 if not res.empty:
                     opts_dup = res.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']}) - ID:{x['id_cliente']}", axis=1).tolist()
                     sel_dup = st.selectbox("Sel. Duplicado:", opts_dup)
-                    id_duplicado = int(sel_dup.split("ID:")[1])
-                    info_duplicado = sel_dup
+                    if sel_dup:
+                        id_duplicado = int(sel_dup.split("ID:")[1])
+                        # Extraemos el teléfono del string o hacemos query (más seguro query abajo)
 
-        # 2. CLIENTE PRINCIPAL
+        # 2. CLIENTE PRINCIPAL (DESTINO)
         with col_orig:
-            st.markdown("### ✅ Principal")
+            st.markdown("### ✅ Principal (Destino)")
             search_orig = st.text_input("Buscar principal:", key="search_orig")
             id_original = None
+            tel_original = None
+            
             if search_orig:
                 with engine.connect() as conn:
                     res2 = pd.read_sql(text("SELECT id_cliente, nombre_corto, telefono FROM Clientes WHERE (nombre_corto ILIKE :s OR telefono ILIKE :s) AND activo=TRUE LIMIT 5"), conn, params={"s":f"%{search_orig}%"})
                 if not res2.empty:
                     opts_orig = res2.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']}) - ID:{x['id_cliente']}", axis=1).tolist()
                     sel_orig = st.selectbox("Sel. Principal:", opts_orig)
-                    id_original = int(sel_orig.split("ID:")[1])
+                    if sel_orig:
+                        id_original = int(sel_orig.split("ID:")[1])
 
-        # 3. ACCIÓN
+        # 3. EJECUTAR FUSIÓN
         if id_duplicado and id_original:
             if id_duplicado == id_original:
-                st.error("Son el mismo cliente.")
-            elif st.button("🚀 FUSIONAR"):
+                st.error("Error: Has seleccionado el mismo cliente en ambos lados.")
+            
+            elif st.button("🚀 FUSIONAR Y UNIR CHATS", type="primary"):
                 with engine.connect() as conn:
                     trans = conn.begin()
                     try:
-                        # Recuperar teléfono viejo
-                        old_tel = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente=:id"), {"id": id_duplicado}).scalar()
-                        # Mover Ventas y Direcciones
+                        # A. OBTENER TELÉFONOS (CRUCIAL PARA EL CHAT)
+                        dup_data = conn.execute(text("SELECT telefono, nombre_corto FROM Clientes WHERE id_cliente=:id"), {"id": id_duplicado}).fetchone()
+                        orig_data = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente=:id"), {"id": id_original}).fetchone()
+                        
+                        if not dup_data or not orig_data:
+                            st.error("Error leyendo datos de clientes.")
+                            raise Exception("Datos incompletos")
+
+                        tel_old = dup_data.telefono
+                        tel_new = orig_data.telefono
+
+                        # B. MOVER CHATS (La magia está aquí)
+                        # Actualizamos la tabla mensajes para que todo lo que era del viejo, sea del nuevo
+                        conn.execute(text("""
+                            UPDATE mensajes 
+                            SET telefono = :new_t, id_cliente = :new_id 
+                            WHERE telefono = :old_t
+                        """), {"new_t": tel_new, "new_id": id_original, "old_t": tel_old})
+
+                        # C. MOVER REGISTROS RELACIONADOS
                         conn.execute(text("UPDATE Ventas SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
                         conn.execute(text("UPDATE Direcciones SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
-                        # Mover Mensajes (NUEVO: Importante no perder chats)
-                        conn.execute(text("UPDATE mensajes SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
-                        # Guardar teléfono viejo en secundario
-                        conn.execute(text("UPDATE Clientes SET telefono_secundario=:tel WHERE id_cliente=:id AND (telefono_secundario IS NULL OR telefono_secundario='')"), {"tel":old_tel, "id":id_original})
-                        # Desactivar
-                        conn.execute(text("UPDATE Clientes SET activo=FALSE, nombre_corto=nombre_corto||' (FUSIONADO)' WHERE id_cliente=:id"), {"id":id_duplicado})
+                        
+                        # D. GUARDAR TELÉFONO VIEJO COMO SECUNDARIO (Opcional, para no perder el dato)
+                        # Solo si el principal no tiene secundario
+                        conn.execute(text("""
+                            UPDATE Clientes 
+                            SET telefono_secundario = :old_t 
+                            WHERE id_cliente = :new_id AND (telefono_secundario IS NULL OR telefono_secundario = '')
+                        """), {"old_t": tel_old, "new_id": id_original})
+
+                        # E. DESACTIVAR DUPLICADO
+                        conn.execute(text("""
+                            UPDATE Clientes 
+                            SET activo=FALSE, nombre_corto = nombre_corto || ' (FUSIONADO)' 
+                            WHERE id_cliente=:old
+                        """), {"old": id_duplicado})
+
                         trans.commit()
-                        st.success("Fusión completada.")
-                        time.sleep(1.5)
+                        st.success(f"✅ ¡Fusión Éxitosa! Los chats de {tel_old} ahora aparecen en el chat de {tel_new}.")
+                        time.sleep(2)
                         st.rerun()
+                        
                     except Exception as e:
                         trans.rollback()
-                        st.error(f"Error: {e}")
+                        st.error(f"Error durante la fusión: {e}")
