@@ -29,6 +29,15 @@ def ejecutar_migraciones():
             print("🧹 Iniciando Mantenimiento Inteligente de DB...")
 
             # --- PASO 0: UNIFICACIÓN DE DATOS (SOLUCIÓN AL ERROR FK) ---
+            # ... dentro de ejecutar_migraciones() ...
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS etiquetas TEXT DEFAULT '';")) 
+            
+            # 👇 AGREGA ESTA LÍNEA 👇
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_ia TEXT DEFAULT '';"))
+            # 👆 ------------------ 👆
+
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS codigo_contacto TEXT;"))
+# ...
             # Creamos una tabla temporal para saber quién es el duplicado y quién el original
             conn.execute(text("""
                 CREATE TEMP TABLE IF NOT EXISTS Temp_Unificacion AS

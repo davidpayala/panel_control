@@ -338,3 +338,49 @@ def verificar_numero_waha(telefono):
     except Exception as e:
         print(f"⚠️ Error verificando número: {e}")
         return None
+    
+# ... (al final del archivo utils.py) ...
+
+def generar_nombre_ia(alias, nombre_real):
+    """
+    Analiza el alias y el nombre real para extraer un Primer Nombre limpio.
+    Retorna "" si parece ser un nombre de empresa o inválido.
+    """
+    # 1. Palabras que indican que NO es un nombre de pila válido
+    PALABRAS_PROHIBIDAS = [
+        'CLIENTE', 'LENTES', 'MAYOR', 'MAYORISTA', 'POR MAYOR', 'OPTICA', 'VENTA', 
+        'TIENDA', 'ALMACEN', 'CONTACTO', 'PROSPECTO', 'DR', 'DRA', 'SR', 'SRA', 
+        'MISS', 'MR', 'DON', 'DOÑA', 'AGENCIA', 'ENVIOS', 'PEDIDOS', 'INFO', 
+        'ADMIN', 'GENERAL', 'GRUPO', 'LISTA', 'SPAM', 'ESTAFA', 'NO CONTESTA', 
+        'DOBLE', 'TRIPLE', 'PACK', 'PROMO', 'OFERTA', 'CONSULTA', 'NULL', 'NONE',
+        'FACEBOOK', 'INSTAGRAM', 'TIKTOK', 'WEB', 'K&M'
+    ]
+
+    def es_nombre_valido(palabra):
+        if not palabra: return False
+        p = palabra.upper()
+        # Filtros
+        if len(p) <= 3: return False # Nombres muy cortos como "Al", "X", "Yo" suelen ser basura
+        if not p.isalpha(): return False # Tiene numeros o simbolos
+        if p in PALABRAS_PROHIBIDAS: return False
+        return True
+
+    # 2. Prioridad: Primero intentamos con el Nombre Real (Google), luego con el Alias
+    candidatos = [nombre_real, alias]
+    
+    for texto in candidatos:
+        if not texto: continue
+        
+        # Limpieza básica
+        limpio = str(texto).replace('-', ' ').replace('_', ' ').replace('.', ' ').strip()
+        palabras = limpio.split()
+        
+        if not palabras: continue
+        
+        primer_palabra = palabras[0]
+        
+        # Validación
+        if es_nombre_valido(primer_palabra):
+            return primer_palabra.capitalize() # ¡Encontramos un nombre!
+            
+    return "" # No se encontró nada que parezca un nombre humano

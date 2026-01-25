@@ -5,9 +5,8 @@ from sqlalchemy import text
 from database import engine
 from utils import (
     buscar_contacto_google, crear_en_google, actualizar_en_google, 
-    normalizar_telefono_maestro
+    normalizar_telefono_maestro, generar_nombre_ia # <--- IMPORTAMOS LA NUEVA FUNCIÓN
 )
-
 # --- CONFIGURACIÓN DE ETIQUETAS ---
 OPCIONES_TAGS = [
     "🚫 SPAM",
@@ -19,7 +18,6 @@ OPCIONES_TAGS = [
     "📉 Pide Rebaja",
     "📦 Mayorista"
 ]
-
 # ==============================================================================
 # SUB-COMPONENTE: GESTIÓN DE DIRECCIONES (Se mantiene igual)
 # ==============================================================================
@@ -110,6 +108,7 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
     else:
         st.caption("Sin direcciones.")
 
+
 # ==============================================================================
 # VISTA PRINCIPAL
 # ==============================================================================
@@ -126,7 +125,6 @@ def render_clientes():
                 apellido_real = st.text_input("Apellido (Google)")
             with c2:
                 nombre_corto = st.text_input("📝 Alias / Nombre Corto")
-                # NUEVO: Selector de Etiquetas
                 tags_nuevos = st.multiselect("🏷️ Etiquetas", OPCIONES_TAGS)
                 estado_ini = st.selectbox("Estado", ["Interesado en venta", "Responder duda", "Proveedor nacional"])
 
@@ -136,14 +134,12 @@ def render_clientes():
                     st.error("Número inválido.")
                 else:
                     tel_db = norm['db']
-                    # Validar duplicado
                     with engine.connect() as conn:
                         exists = conn.execute(text("SELECT COUNT(*) FROM Clientes WHERE telefono=:t"), {"t": tel_db}).scalar()
                     
                     if exists:
                         st.error("Cliente ya existe.")
                     else:
-                        # Lógica Google
                         gid = None
                         datos_google = buscar_contacto_google(tel_db)
                         if datos_google and datos_google['encontrado']:
@@ -154,17 +150,19 @@ def render_clientes():
                             gid = crear_en_google(nombre_real, apellido_real, tel_db)
 
                         if not nombre_corto: nombre_corto = f"{nombre_real} {apellido_real}".strip() or "Cliente Nuevo"
+                        
+                        # --- GENERACIÓN AUTOMÁTICA NOMBRE IA ---
+                        nombre_ia_calc = generar_nombre_ia(nombre_corto, nombre_real)
 
-                        # Guardar Etiquetas como Texto
                         tags_str = ",".join(tags_nuevos)
 
                         with engine.connect() as conn:
                             conn.execute(text("""
-                                INSERT INTO Clientes (nombre_corto, nombre, apellido, telefono, etiquetas, estado, google_id, activo, fecha_registro)
-                                VALUES (:nc, :n, :a, :t, :tag, :e, :g, TRUE, NOW())
-                            """), {"nc": nombre_corto, "n": nombre_real, "a": apellido_real, "t": tel_db, "tag": tags_str, "e": estado_ini, "g": gid})
+                                INSERT INTO Clientes (nombre_corto, nombre, apellido, telefono, etiquetas, estado, google_id, nombre_ia, activo, fecha_registro)
+                                VALUES (:nc, :n, :a, :t, :tag, :e, :g, :nia, TRUE, NOW())
+                            """), {"nc": nombre_corto, "n": nombre_real, "a": apellido_real, "t": tel_db, "tag": tags_str, "e": estado_ini, "g": gid, "nia": nombre_ia_calc})
                             conn.commit()
-                        st.success(f"Cliente {nombre_corto} creado.")
+                        st.success(f"Cliente {nombre_corto} creado (Nombre IA: {nombre_ia_calc}).")
                         time.sleep(1)
                         st.rerun()
 
@@ -172,62 +170,77 @@ def render_clientes():
 
     # --- 2. BUSCADOR Y EDICIÓN ---
     st.subheader("🔍 Buscar y Editar")
-    col_search, _ = st.columns([3, 1])
-    busqueda = col_search.text_input("Buscar:", placeholder="Nombre, teléfono o ETIQUETA (ej: spam)...")
     
-    selected_client_id = None 
-    selected_client_name = None
+    # --- BOTÓN MÁGICO PARA ACTUALIZAR NOMBRES IA ---
+    with st.expander("⚡ Herramientas Masivas"):
+        if st.button("🪄 Generar Nombres IA para TODOS (Backfill)"):
+            with st.spinner("Analizando nombres..."):
+                with engine.connect() as conn:
+                    # Traemos todos los clientes activos
+                    clientes = pd.read_sql(text("SELECT id_cliente, nombre_corto, nombre FROM Clientes WHERE activo=TRUE"), conn)
+                    
+                    count = 0
+                    trans = conn.begin()
+                    try:
+                        for _, row in clientes.iterrows():
+                            # Calculamos nombre
+                            nuevo_ia = generar_nombre_ia(row['nombre_corto'], row['nombre'])
+                            # Actualizamos solo si es diferente
+                            conn.execute(text("UPDATE Clientes SET nombre_ia = :nia WHERE id_cliente = :id"), 
+                                         {"nia": nuevo_ia, "id": row['id_cliente']})
+                            count += 1
+                        trans.commit()
+                        st.success(f"✅ Procesados {count} clientes. Nombres IA actualizados.")
+                    except Exception as e:
+                        trans.rollback()
+                        st.error(f"Error: {e}")
 
+    # --- 2. BUSCADOR Y EDICIÓN ---
+    col_search, _ = st.columns([3, 1])
+    busqueda = col_search.text_input("Buscar:", placeholder="Nombre, teléfono o ETIQUETA...")
+    
     if busqueda:
         with engine.connect() as conn:
-            # Ahora buscamos también en la columna etiquetas
             df = pd.read_sql(text("""
-                SELECT id_cliente, nombre_corto, estado, nombre, apellido, telefono, etiquetas, google_id 
+                SELECT id_cliente, nombre_corto, nombre_ia, estado, nombre, apellido, telefono, etiquetas, google_id 
                 FROM Clientes 
-                WHERE (nombre_corto ILIKE :b OR telefono ILIKE :b OR nombre ILIKE :b OR etiquetas ILIKE :b) 
+                WHERE (nombre_corto ILIKE :b OR telefono ILIKE :b OR nombre ILIKE :b OR etiquetas ILIKE :b OR nombre_ia ILIKE :b) 
                 AND activo = TRUE 
-                ORDER BY nombre_corto ASC LIMIT 10
+                ORDER BY nombre_corto ASC LIMIT 50
             """), conn, params={"b": f"%{busqueda}%"})
 
         if not df.empty:
-            # A. EDITOR DE CLIENTES (LOTE)
-            st.caption("Edita etiquetas y datos aquí:")
+            st.caption("Edita 'Nombre IA' si el algoritmo se equivocó:")
             
-            # Convertimos el string "Tag1,Tag2" a lista ["Tag1", "Tag2"] para que el editor lo entienda
             df['etiquetas_list'] = df['etiquetas'].apply(lambda x: x.split(',') if x else [])
 
             edited_df = st.data_editor(
                 df, key="editor_clientes_main",
                 column_config={
                     "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                    "google_id": None, "etiquetas": None, # Ocultamos la columna de texto crudo
-                    "nombre_corto": st.column_config.TextColumn("Alias", required=True),
-                    # NUEVO: Columna de Etiquetas
+                    "google_id": None, "etiquetas": None,
+                    "nombre_corto": st.column_config.TextColumn("Alias Original", disabled=True),
+                    "nombre_ia": st.column_config.TextColumn("🤖 Nombre IA (Para Mensajes)", required=False), # <--- NUEVA COLUMNA EDITABLE
                     "etiquetas_list": st.column_config.ListColumn("🏷️ Etiquetas", width="medium"), 
                     "estado": st.column_config.SelectboxColumn("Estado", options=["Sin empezar", "Interesado en venta", "Venta cerrada", "Post-venta", "Proveedor nacional"], required=True),
-                    "telefono": st.column_config.TextColumn("Teléfono", required=True)
+                    "telefono": st.column_config.TextColumn("Teléfono", disabled=True)
                 },
                 hide_index=True, use_container_width=True
             )
 
-            if st.button("💾 Guardar Cambios Clientes", type="primary"):
+            if st.button("💾 Guardar Cambios Masivos", type="primary"):
                 with engine.connect() as conn:
                     trans = conn.begin()
                     try:
                         for _, row in edited_df.iterrows():
-                            norm = normalizar_telefono_maestro(row['telefono'])
-                            if norm:
-                                # Convertimos la lista de vuelta a texto para guardar en DB
-                                tags_final = ",".join(row['etiquetas_list']) if isinstance(row['etiquetas_list'], list) else ""
-                                
-                                conn.execute(text("""
-                                    UPDATE Clientes SET nombre=:n, apellido=:a, telefono=:t, nombre_corto=:nc, estado=:e, etiquetas=:tag 
-                                    WHERE id_cliente=:id
-                                """), {"n": row['nombre'], "a": row['apellido'], "t": norm['db'], "nc": row['nombre_corto'], 
-                                       "e": row['estado'], "tag": tags_final, "id": row['id_cliente']})
-                                
-                                if row['google_id']:
-                                    actualizar_en_google(row['google_id'], row['nombre'], row['apellido'], norm['db'])
+                            tags_final = ",".join(row['etiquetas_list']) if isinstance(row['etiquetas_list'], list) else ""
+                            
+                            # Actualizamos también el nombre_ia
+                            conn.execute(text("""
+                                UPDATE Clientes SET nombre_ia=:nia, estado=:e, etiquetas=:tag 
+                                WHERE id_cliente=:id
+                            """), {"nia": row['nombre_ia'], "e": row['estado'], "tag": tags_final, "id": row['id_cliente']})
+                        
                         trans.commit()
                         st.success("Datos guardados.")
                         time.sleep(1)
