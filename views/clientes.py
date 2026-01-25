@@ -5,21 +5,17 @@ from sqlalchemy import text
 from database import engine
 from utils import (
     buscar_contacto_google, crear_en_google, actualizar_en_google, 
-    normalizar_telefono_maestro, generar_nombre_ia # <--- IMPORTAMOS LA NUEVA FUNCIÓN
+    normalizar_telefono_maestro, generar_nombre_ia
 )
-# --- CONFIGURACIÓN DE ETIQUETAS ---
+
 OPCIONES_TAGS = [
-    "🚫 SPAM",
-    "⚠️ Problemático",
-    "💎 VIP / Recurrente",
-    "✅ Compró",
-    "👀 Prospecto",
-    "❓ Preguntón",
-    "📉 Pide Rebaja",
-    "📦 Mayorista"
+    "🚫 SPAM", "⚠️ Problemático", "💎 VIP / Recurrente",
+    "✅ Compró", "👀 Prospecto", "❓ Preguntón",
+    "📉 Pide Rebaja", "📦 Mayorista"
 ]
+
 # ==============================================================================
-# SUB-COMPONENTE: GESTIÓN DE DIRECCIONES (Se mantiene igual)
+# SUB-COMPONENTE: GESTIÓN DE DIRECCIONES
 # ==============================================================================
 def render_gestion_direcciones(id_cliente, nombre_cliente):
     st.markdown(f"### 📍 Direcciones de: {nombre_cliente}")
@@ -46,8 +42,9 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
                 if not dir_texto or not distrito:
                     st.error("Dirección y distrito obligatorios.")
                 else:
-                    with engine.connect() as conn:
-                        try:
+                    try:
+                        # CORRECCIÓN: Usamos engine.begin() para evitar conflictos de transacción
+                        with engine.begin() as conn:
                             conn.execute(text("""
                                 INSERT INTO Direcciones (
                                     id_cliente, tipo_envio, direccion_texto, distrito, referencia,
@@ -64,14 +61,14 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
                                 "agencia": tipo if "AGENCIA" in tipo else None, 
                                 "sede": agencia_detalles
                             })
-                            conn.commit()
-                            st.success("✅ Dirección agregada.")
-                            time.sleep(1)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+                        st.success("✅ Dirección agregada.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
     # 2. EDITAR EXISTENTES
+    # Lectura simple (no necesita transacción)
     with engine.connect() as conn:
         df_dirs = pd.read_sql(text("SELECT id_direccion, activo, tipo_envio, direccion_texto, distrito, referencia, nombre_receptor, dni_receptor, telefono_receptor, sede_entrega FROM Direcciones WHERE id_cliente = :id ORDER BY id_direccion DESC"), conn, params={"id": id_cliente})
 
@@ -89,8 +86,9 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
         )
 
         if st.button("💾 Actualizar Direcciones", key=f"btn_upd_dir_{id_cliente}"):
-            with engine.connect() as conn:
-                try:
+            try:
+                # CORRECCIÓN: Transacción segura
+                with engine.begin() as conn:
                     for idx, row in cambios_dir.iterrows():
                         conn.execute(text("""
                             UPDATE Direcciones SET activo=:act, tipo_envio=:tipo, direccion_texto=:dir, distrito=:dist, referencia=:ref, nombre_receptor=:nom, dni_receptor=:dni, telefono_receptor=:tel, sede_entrega=:sede WHERE id_direccion=:id
@@ -99,15 +97,13 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
                             "dist": row['distrito'], "ref": row['referencia'], "nom": row['nombre_receptor'],
                             "dni": row['dni_receptor'], "tel": row['telefono_receptor'], "sede": row['sede_entrega'], "id": row['id_direccion']
                         })
-                    conn.commit()
-                    st.success("Actualizado.")
-                    time.sleep(0.5)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                st.success("Actualizado.")
+                time.sleep(0.5)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
     else:
         st.caption("Sin direcciones.")
-
 
 # ==============================================================================
 # VISTA PRINCIPAL
@@ -151,51 +147,49 @@ def render_clientes():
 
                         if not nombre_corto: nombre_corto = f"{nombre_real} {apellido_real}".strip() or "Cliente Nuevo"
                         
-                        # --- GENERACIÓN AUTOMÁTICA NOMBRE IA ---
+                        # CALCULO NOMBRE IA
                         nombre_ia_calc = generar_nombre_ia(nombre_corto, nombre_real)
-
                         tags_str = ",".join(tags_nuevos)
 
-                        with engine.connect() as conn:
-                            conn.execute(text("""
-                                INSERT INTO Clientes (nombre_corto, nombre, apellido, telefono, etiquetas, estado, google_id, nombre_ia, activo, fecha_registro)
-                                VALUES (:nc, :n, :a, :t, :tag, :e, :g, :nia, TRUE, NOW())
-                            """), {"nc": nombre_corto, "n": nombre_real, "a": apellido_real, "t": tel_db, "tag": tags_str, "e": estado_ini, "g": gid, "nia": nombre_ia_calc})
-                            conn.commit()
-                        st.success(f"Cliente {nombre_corto} creado (Nombre IA: {nombre_ia_calc}).")
-                        time.sleep(1)
-                        st.rerun()
+                        try:
+                            # CORRECCIÓN: Transacción segura
+                            with engine.begin() as conn:
+                                conn.execute(text("""
+                                    INSERT INTO Clientes (nombre_corto, nombre, apellido, telefono, etiquetas, estado, google_id, nombre_ia, activo, fecha_registro)
+                                    VALUES (:nc, :n, :a, :t, :tag, :e, :g, :nia, TRUE, NOW())
+                                """), {"nc": nombre_corto, "n": nombre_real, "a": apellido_real, "t": tel_db, "tag": tags_str, "e": estado_ini, "g": gid, "nia": nombre_ia_calc})
+                            st.success(f"Cliente {nombre_corto} creado.")
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al guardar: {e}")
 
     st.divider()
 
-    # --- 2. BUSCADOR Y EDICIÓN ---
+    # --- 2. HERRAMIENTAS Y BUSCADOR ---
     st.subheader("🔍 Buscar y Editar")
     
-    # --- BOTÓN MÁGICO PARA ACTUALIZAR NOMBRES IA ---
     with st.expander("⚡ Herramientas Masivas"):
         if st.button("🪄 Generar Nombres IA para TODOS (Backfill)"):
             with st.spinner("Analizando nombres..."):
+                # PASO 1: LEER (Solo lectura)
                 with engine.connect() as conn:
-                    # Traemos todos los clientes activos
                     clientes = pd.read_sql(text("SELECT id_cliente, nombre_corto, nombre FROM Clientes WHERE activo=TRUE"), conn)
-                    
-                    count = 0
-                    trans = conn.begin()
-                    try:
+                
+                # PASO 2: ESCRIBIR (Transacción segura)
+                count = 0
+                try:
+                    with engine.begin() as conn:
                         for _, row in clientes.iterrows():
-                            # Calculamos nombre
                             nuevo_ia = generar_nombre_ia(row['nombre_corto'], row['nombre'])
-                            # Actualizamos solo si es diferente
                             conn.execute(text("UPDATE Clientes SET nombre_ia = :nia WHERE id_cliente = :id"), 
                                          {"nia": nuevo_ia, "id": row['id_cliente']})
                             count += 1
-                        trans.commit()
-                        st.success(f"✅ Procesados {count} clientes. Nombres IA actualizados.")
-                    except Exception as e:
-                        trans.rollback()
-                        st.error(f"Error: {e}")
+                    st.success(f"✅ Procesados {count} clientes. Nombres IA actualizados.")
+                except Exception as e:
+                    st.error(f"Error masivo: {e}")
 
-    # --- 2. BUSCADOR Y EDICIÓN ---
+    # BUSCADOR
     col_search, _ = st.columns([3, 1])
     busqueda = col_search.text_input("Buscar:", placeholder="Nombre, teléfono o ETIQUETA...")
     
@@ -220,7 +214,7 @@ def render_clientes():
                     "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                     "google_id": None, "etiquetas": None,
                     "nombre_corto": st.column_config.TextColumn("Alias Original", disabled=True),
-                    "nombre_ia": st.column_config.TextColumn("🤖 Nombre IA (Para Mensajes)", required=False), # <--- NUEVA COLUMNA EDITABLE
+                    "nombre_ia": st.column_config.TextColumn("🤖 Nombre IA", required=False),
                     "etiquetas_list": st.column_config.ListColumn("🏷️ Etiquetas", width="medium"), 
                     "estado": st.column_config.SelectboxColumn("Estado", options=["Sin empezar", "Interesado en venta", "Venta cerrada", "Post-venta", "Proveedor nacional"], required=True),
                     "telefono": st.column_config.TextColumn("Teléfono", disabled=True)
@@ -229,137 +223,96 @@ def render_clientes():
             )
 
             if st.button("💾 Guardar Cambios Masivos", type="primary"):
-                with engine.connect() as conn:
-                    trans = conn.begin()
-                    try:
+                try:
+                    # CORRECCIÓN: Transacción segura
+                    with engine.begin() as conn:
                         for _, row in edited_df.iterrows():
                             tags_final = ",".join(row['etiquetas_list']) if isinstance(row['etiquetas_list'], list) else ""
                             
-                            # Actualizamos también el nombre_ia
                             conn.execute(text("""
                                 UPDATE Clientes SET nombre_ia=:nia, estado=:e, etiquetas=:tag 
                                 WHERE id_cliente=:id
                             """), {"nia": row['nombre_ia'], "e": row['estado'], "tag": tags_final, "id": row['id_cliente']})
-                        
-                        trans.commit()
-                        st.success("Datos guardados.")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        trans.rollback()
-                        st.error(f"Error: {e}")
+                    
+                    st.success("Datos guardados.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al guardar: {e}")
 
+            # SELECCIÓN PARA DIRECCIONES
             st.divider()
-            
-            # B. SELECCIONAR CLIENTE PARA DIRECCIONES
             st.markdown("#### 🚚 Gestionar Direcciones")
             opciones_clientes = df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
             cliente_seleccionado = st.selectbox("Selecciona cliente:", opciones_clientes)
             
             if cliente_seleccionado:
-                # Buscar ID en el dataframe original usando el teléfono como llave única temporal o índice
-                # Método seguro: buscar en el DF filtrado
                 row_sel = df[df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1) == cliente_seleccionado].iloc[0]
                 render_gestion_direcciones(int(row_sel['id_cliente']), row_sel['nombre_corto'])
 
         else:
             st.info("No se encontraron clientes.")
-# ==============================================================================
-    # 3. FUSIÓN DE DUPLICADOS (MEJORADA: UNIFICA CHATS)
-    # ==============================================================================
+    
+    # 3. FUSIÓN DE DUPLICADOS (FIXED CHATS)
     st.divider()
     st.subheader("🧬 Fusión de Clientes Duplicados")
     
     with st.expander("Abrir herramienta de fusión"):
-        st.info("⚠️ Esta acción moverá pedidos, direcciones y **CHATS** del duplicado al principal. El duplicado quedará inactivo.")
         col_dup, col_orig = st.columns(2)
         
-        # 1. CLIENTE A ELIMINAR (DUPLICADO)
         with col_dup:
-            st.markdown("### ❌ A Eliminar (Duplicado)")
+            st.markdown("### ❌ A Eliminar")
             search_dup = st.text_input("Buscar duplicado:", key="search_dup")
             id_duplicado = None
-            tel_duplicado = None
-            
             if search_dup:
                 with engine.connect() as conn:
-                    # Traemos también el teléfono
                     res = pd.read_sql(text("SELECT id_cliente, nombre_corto, telefono FROM Clientes WHERE (nombre_corto ILIKE :s OR telefono ILIKE :s) AND activo=TRUE LIMIT 5"), conn, params={"s":f"%{search_dup}%"})
                 if not res.empty:
-                    opts_dup = res.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']}) - ID:{x['id_cliente']}", axis=1).tolist()
+                    opts_dup = res.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
                     sel_dup = st.selectbox("Sel. Duplicado:", opts_dup)
                     if sel_dup:
-                        id_duplicado = int(sel_dup.split("ID:")[1])
-                        # Extraemos el teléfono del string o hacemos query (más seguro query abajo)
+                        id_duplicado = int(res[res.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1) == sel_dup].iloc[0]['id_cliente'])
 
-        # 2. CLIENTE PRINCIPAL (DESTINO)
         with col_orig:
-            st.markdown("### ✅ Principal (Destino)")
+            st.markdown("### ✅ Principal")
             search_orig = st.text_input("Buscar principal:", key="search_orig")
             id_original = None
-            tel_original = None
-            
             if search_orig:
                 with engine.connect() as conn:
                     res2 = pd.read_sql(text("SELECT id_cliente, nombre_corto, telefono FROM Clientes WHERE (nombre_corto ILIKE :s OR telefono ILIKE :s) AND activo=TRUE LIMIT 5"), conn, params={"s":f"%{search_orig}%"})
                 if not res2.empty:
-                    opts_orig = res2.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']}) - ID:{x['id_cliente']}", axis=1).tolist()
+                    opts_orig = res2.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
                     sel_orig = st.selectbox("Sel. Principal:", opts_orig)
                     if sel_orig:
-                        id_original = int(sel_orig.split("ID:")[1])
+                        id_original = int(res2[res2.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1) == sel_orig].iloc[0]['id_cliente'])
 
-        # 3. EJECUTAR FUSIÓN
-        if id_duplicado and id_original:
+        if id_duplicado and id_original and st.button("🚀 FUSIONAR"):
             if id_duplicado == id_original:
-                st.error("Error: Has seleccionado el mismo cliente en ambos lados.")
-            
-            elif st.button("🚀 FUSIONAR Y UNIR CHATS", type="primary"):
-                with engine.connect() as conn:
-                    trans = conn.begin()
-                    try:
-                        # A. OBTENER TELÉFONOS (CRUCIAL PARA EL CHAT)
-                        dup_data = conn.execute(text("SELECT telefono, nombre_corto FROM Clientes WHERE id_cliente=:id"), {"id": id_duplicado}).fetchone()
+                st.error("Son el mismo cliente.")
+            else:
+                try:
+                    # CORRECCIÓN: Transacción segura
+                    with engine.begin() as conn:
+                        # Obtener teléfonos
+                        dup_data = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente=:id"), {"id": id_duplicado}).fetchone()
                         orig_data = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente=:id"), {"id": id_original}).fetchone()
                         
-                        if not dup_data or not orig_data:
-                            st.error("Error leyendo datos de clientes.")
-                            raise Exception("Datos incompletos")
-
-                        tel_old = dup_data.telefono
-                        tel_new = orig_data.telefono
-
-                        # B. MOVER CHATS (La magia está aquí)
-                        # Actualizamos la tabla mensajes para que todo lo que era del viejo, sea del nuevo
-                        conn.execute(text("""
-                            UPDATE mensajes 
-                            SET telefono = :new_t, id_cliente = :new_id 
-                            WHERE telefono = :old_t
-                        """), {"new_t": tel_new, "new_id": id_original, "old_t": tel_old})
-
-                        # C. MOVER REGISTROS RELACIONADOS
-                        conn.execute(text("UPDATE Ventas SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
-                        conn.execute(text("UPDATE Direcciones SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
-                        
-                        # D. GUARDAR TELÉFONO VIEJO COMO SECUNDARIO (Opcional, para no perder el dato)
-                        # Solo si el principal no tiene secundario
-                        conn.execute(text("""
-                            UPDATE Clientes 
-                            SET telefono_secundario = :old_t 
-                            WHERE id_cliente = :new_id AND (telefono_secundario IS NULL OR telefono_secundario = '')
-                        """), {"old_t": tel_old, "new_id": id_original})
-
-                        # E. DESACTIVAR DUPLICADO
-                        conn.execute(text("""
-                            UPDATE Clientes 
-                            SET activo=FALSE, nombre_corto = nombre_corto || ' (FUSIONADO)' 
-                            WHERE id_cliente=:old
-                        """), {"old": id_duplicado})
-
-                        trans.commit()
-                        st.success(f"✅ ¡Fusión Éxitosa! Los chats de {tel_old} ahora aparecen en el chat de {tel_new}.")
-                        time.sleep(2)
-                        st.rerun()
-                        
-                    except Exception as e:
-                        trans.rollback()
-                        st.error(f"Error durante la fusión: {e}")
+                        if dup_data and orig_data:
+                            tel_old = dup_data.telefono
+                            tel_new = orig_data.telefono
+                            
+                            # 1. Mover CHATS (Clave)
+                            conn.execute(text("UPDATE mensajes SET telefono=:nt, id_cliente=:ni WHERE telefono=:ot"), {"nt": tel_new, "ni": id_original, "ot": tel_old})
+                            
+                            # 2. Mover Ventas y Direcciones
+                            conn.execute(text("UPDATE Ventas SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
+                            conn.execute(text("UPDATE Direcciones SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
+                            
+                            # 3. Desactivar duplicado
+                            conn.execute(text("UPDATE Clientes SET activo=FALSE, nombre_corto=nombre_corto||' (FUSIONADO)' WHERE id_cliente=:old"), {"old": id_duplicado})
+                    
+                    st.success("✅ Fusión completada.")
+                    time.sleep(1.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error en fusión: {e}")
