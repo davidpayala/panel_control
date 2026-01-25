@@ -11,7 +11,7 @@ from utils import (
 OPCIONES_TAGS = [
     "🚫 SPAM", "⚠️ Problemático", "💎 VIP / Recurrente",
     "✅ Compró", "👀 Prospecto", "❓ Preguntón",
-    "📉 Pide Rebaja", "📦 Mayorista"
+    "📉 Pide Rebaja", "📦 Mayorista", "📦 Proveedor" 
 ]
 
 # ==============================================================================

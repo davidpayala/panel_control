@@ -248,12 +248,13 @@ def render_campanas():
                     if "SPAM" in tags: return "🚫 SPAM (Pruebas)"
                     if "VIP" in tags: return "💎 VIP (Prioridad)"
                     if "COMPRÓ" in tags: return "✅ Compradores"
+                    if "PROVEEDOR" in tags: return "📦 Proveedor"
                     return "GENERAL"
                 
                 df_raw['segmento'] = df_raw.apply(clasificar, axis=1)
                 
                 grupos = {}
-                for seg in ["🚫 SPAM (Pruebas)", "💎 VIP (Prioridad)", "✅ Compradores"]:
+                for seg in ["🚫 SPAM (Pruebas)", "💎 VIP (Prioridad)", "✅ Compradores","📦 Proveedor"]:
                     sub = df_raw[df_raw['segmento'] == seg]
                     if not sub.empty: grupos[f"{seg} ({len(sub)})"] = sub
                 
