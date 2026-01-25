@@ -314,3 +314,27 @@ def actualizar_estados(df_modificado):
             time.sleep(0.5)
             st.rerun()
         except: trans.rollback()
+
+# ... (manten tus imports anteriores de requests, os, json, etc)
+
+def verificar_numero_waha(telefono):
+    """
+    Consulta a WAHA si el número tiene cuenta de WhatsApp.
+    Retorna: True (Existe), False (No existe), None (Error al consultar)
+    """
+    try:
+        url = f"{WAHA_URL}/api/contacts/check-exists"
+        payload = {"phone": f"{telefono}@c.us"}
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            # WAHA puede devolver {"exists": true} o similar
+            return data.get("exists", False)
+        return None # Error de API, mejor no asumir que no existe
+    except Exception as e:
+        print(f"⚠️ Error verificando número: {e}")
+        return None
