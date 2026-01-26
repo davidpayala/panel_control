@@ -13,6 +13,43 @@ from utils import (
 )
 
 # ==============================================================================
+# 🧠 SISTEMA DE MEMORIA (PERSISTENCIA EN DB)
+# ==============================================================================
+def init_ajustes_db():
+    """Crea la tabla de ajustes si no existe"""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS Ajustes (
+                    clave TEXT PRIMARY KEY,
+                    valor TEXT
+                );
+            """))
+    except Exception as e:
+        print(f"Error init ajustes: {e}")
+
+def get_ajuste(clave, default=""):
+    """Lee un valor de la base de datos"""
+    try:
+        with engine.connect() as conn:
+            res = conn.execute(text("SELECT valor FROM Ajustes WHERE clave = :k"), {"k": clave}).fetchone()
+            return res[0] if res else default
+    except:
+        return default
+
+def set_ajuste(clave, valor):
+    """Guarda un valor en la base de datos"""
+    try:
+        with engine.begin() as conn:
+            # Upsert para PostgreSQL
+            conn.execute(text("""
+                INSERT INTO Ajustes (clave, valor) VALUES (:k, :v)
+                ON CONFLICT (clave) DO UPDATE SET valor = :v
+            """), {"k": clave, "v": str(valor)})
+    except Exception as e:
+        print(f"Error guardando ajuste {clave}: {e}")
+
+# ==============================================================================
 # 🧠 CEREBRO DE LA CAMPAÑA (BACKGROUND RUNNER)
 # ==============================================================================
 class CampaignManager:
@@ -102,7 +139,6 @@ class CampaignManager:
         # UNIÓN FINAL (Con saltos de línea)
         mensaje_completo = f"{saludo_final}\n\n{cuerpo_final}\n\n{cta_final}".strip()
         
-        # Procesar Spintax por si usaron llaves {} dentro de los textos
         return procesar_spintax(mensaje_completo)
 
     def _proceso_envio(self):
@@ -203,7 +239,11 @@ def procesar_spintax(texto):
     return texto
 
 def render_campanas():
-    st.title("📢 Campañas Masivas 3.0 (Modular)")
+    st.title("📢 Campañas Masivas 3.5 (Persistente)")
+    
+    # Inicializar DB de ajustes la primera vez
+    init_ajustes_db()
+    
     manager = get_manager()
 
     # --- ZONA DE CONTROL (EN EJECUCIÓN) ---
@@ -229,7 +269,7 @@ def render_campanas():
         return
 
     # --- ZONA DE CONFIGURACIÓN ---
-    st.info("Configura tu mensaje en 3 partes para máxima seguridad anti-spam.")
+    st.info("Configura tu mensaje. Se guardará automáticamente.")
 
     # 1. CARGA DE AUDIENCIA
     if st.button("🔄 Cargar Grupos"):
@@ -271,43 +311,53 @@ def render_campanas():
 
     st.divider()
 
-    # 2. CONSTRUCCIÓN DEL MENSAJE (3 PARTES)
+    # 2. CONSTRUCCIÓN DEL MENSAJE (PERSISTENTE)
     st.subheader("📝 Diseña tu Mensaje Modular")
     
+    # Cargar valores guardados
+    val_body1 = get_ajuste("camp_body1", "Tenemos oferta en lentes...")
+    val_body2 = get_ajuste("camp_body2", "")
+    val_body3 = get_ajuste("camp_body3", "")
+    val_cta1 = get_ajuste("camp_cta1", "Responde SI para ver catálogo")
+    val_cta2 = get_ajuste("camp_cta2", "")
+    val_cta3 = get_ajuste("camp_cta3", "")
+    
     with st.expander("1️⃣ Parte 1: Saludo (Automático)", expanded=True):
-        st.markdown("""
-        El sistema alternará automáticamente entre: **Hola, Saludos, Buen día, Qué tal, Hola hola**.
-        * Si el cliente tiene `Nombre IA`: "Hola **Juan**"
-        * Si no tiene: "Hola"
-        """)
-        st.caption("✅ No necesitas escribir nada aquí, es automático.")
+        st.markdown("Automático: *Hola / Saludos / Buen día* + **Nombre IA** (si existe).")
 
     with st.expander("2️⃣ Parte 2: Contenido Principal (3 Alternativas)", expanded=True):
-        st.info("Escribe al menos 1 opción. Si llenas las 3, el sistema rotará entre ellas.")
-        c_body1 = st.text_area("Opción A (Principal):", height=100, placeholder="Tenemos oferta en lentes...")
-        c_body2 = st.text_area("Opción B (Variación):", height=100, placeholder="Llegaron nuevos modelos...")
-        c_body3 = st.text_area("Opción C (Variación):", height=100, placeholder="No te pierdas el descuento...")
+        st.info("Escribe al menos 1 opción. El sistema rotará entre las opciones llenas.")
+        c_body1 = st.text_area("Opción A (Principal):", height=100, value=val_body1, key="txt_b1")
+        c_body2 = st.text_area("Opción B (Variación):", height=100, value=val_body2, key="txt_b2")
+        c_body3 = st.text_area("Opción C (Variación):", height=100, value=val_body3, key="txt_b3")
 
-    with st.expander("3️⃣ Parte 3: Llamada a la Acción / Cierre (3 Alternativas)", expanded=True):
+    with st.expander("3️⃣ Parte 3: Llamada a la Acción (3 Alternativas)", expanded=True):
         st.info("Cómo quieres que respondan.")
-        c_cta1 = st.text_input("Cierre A:", placeholder="Responde SI para ver catálogo")
-        c_cta2 = st.text_input("Cierre B:", placeholder="Dale clic al enlace de abajo 👇")
-        c_cta3 = st.text_input("Cierre C:", placeholder="Escríbeme para separar el tuyo")
+        c_cta1 = st.text_input("Cierre A:", value=val_cta1, key="txt_c1")
+        c_cta2 = st.text_input("Cierre B:", value=val_cta2, key="txt_c2")
+        c_cta3 = st.text_input("Cierre C:", value=val_cta3, key="txt_c3")
 
+    # Botón explícito de guardar (por seguridad mental)
+    if st.button("💾 Guardar Borrador (Sin enviar)"):
+        set_ajuste("camp_body1", c_body1)
+        set_ajuste("camp_body2", c_body2)
+        set_ajuste("camp_body3", c_body3)
+        set_ajuste("camp_cta1", c_cta1)
+        set_ajuste("camp_cta2", c_cta2)
+        set_ajuste("camp_cta3", c_cta3)
+        st.toast("Borrador guardado en base de datos.")
+
+    st.divider()
     col_img, col_prev = st.columns([1, 1])
     file_img = col_img.file_uploader("Imagen (Opcional)", type=["jpg", "png", "jpeg"])
     
     # SIMULADOR
-    if col_prev.button("🎲 Simular un Mensaje (Prueba)"):
-        # Lógica de simulación rápida
+    if col_prev.button("🎲 Simular Mensaje"):
         saludo = random.choice(["Hola Juan", "Saludos Juan", "Buen día Juan", "Hola"])
-        
         bodies = [b for b in [c_body1, c_body2, c_body3] if b]
         body = random.choice(bodies) if bodies else "[FALTA CUERPO]"
-        
         ctas = [c for c in [c_cta1, c_cta2, c_cta3] if c]
         cta = random.choice(ctas) if ctas else "[FALTA CTA]"
-        
         st.success("--- VISTA PREVIA ---")
         st.markdown(f"**{saludo}**\n\n{body}\n\n**{cta}**")
 
@@ -319,14 +369,21 @@ def render_campanas():
         batch = c3.number_input("Pausa Larga cada N msjs", 5, 50, 10)
 
     # 4. LANZAR
-    if st.button("🚀 INICIAR CAMPAÑA MODULAR", type="primary"):
+    if st.button("🚀 INICIAR CAMPAÑA", type="primary"):
         cuerpos_list = [c_body1, c_body2, c_body3]
         ctas_list = [c_cta1, c_cta2, c_cta3]
         
-        # Validación mínima
         if not any(cuerpos_list):
-            st.error("Debes escribir al menos una opción en la Parte 2 (Contenido).")
+            st.error("Debes escribir al menos una opción en la Parte 2.")
             return
+
+        # GUARDAR AUTOMÁTICAMENTE ANTES DE LANZAR
+        set_ajuste("camp_body1", c_body1)
+        set_ajuste("camp_body2", c_body2)
+        set_ajuste("camp_body3", c_body3)
+        set_ajuste("camp_cta1", c_cta1)
+        set_ajuste("camp_cta2", c_cta2)
+        set_ajuste("camp_cta3", c_cta3)
 
         media = file_img.getvalue() if file_img else None
         mime = file_img.type if file_img else None
