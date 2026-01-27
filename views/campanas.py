@@ -187,7 +187,26 @@ class CampaignManager:
                         conn.commit()
                     continue
 
-                # CONSTRUIR MENSAJE MODULAR
+                # C. VERIFICAR SI YA SE ENVIÓ HOY (ANTI-DUPLICADOS BLINDADO 🛡️)
+                # Esto hace que el progreso quede guardado EN LA BASE DE DATOS.
+                # Si el servidor se apaga, solo lanzas de nuevo y retomará donde se quedó.
+                try:
+                    with engine.connect() as conn:
+                        ya_enviado = conn.execute(text("""
+                            SELECT COUNT(*) FROM mensajes 
+                            WHERE telefono = :t 
+                            AND tipo = 'SALIENTE' 
+                            AND fecha::date = CURRENT_DATE
+                        """), {"t": tel_final}).scalar()
+                    
+                    if ya_enviado and ya_enviado > 0:
+                        self.logs.append(f"⏩ {nombre}: Ya recibió mensaje hoy. Saltando...")
+                        self.exitos += 1 # Lo contamos como éxito para que la barra avance
+                        continue # <--- ¡SALTAR AL SIGUIENTE!
+                except Exception as e:
+                    print(f"Error check duplicado: {e}")
+
+                # D. CONSTRUIR MENSAJE MODULAR
                 msg_final = self._construir_mensaje(row)
 
                 # ENVIAR
