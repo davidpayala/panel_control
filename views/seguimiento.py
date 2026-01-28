@@ -18,6 +18,7 @@ def guardar_edicion_rapida(df_modificado, etapa_key):
                                  {"e": row['estado'], "id": row['id_cliente']})
                 
                 # 2. Actualizar DIRECCIÓN (Si existe dirección asociada)
+                # IMPORTANTE: Usamos 'observacion' en singular como está en tu BD
                 if 'id_direccion' in row and pd.notna(row['id_direccion']) and row['id_direccion'] > 0:
                     conn.execute(text("""
                         UPDATE Direcciones SET 
@@ -29,20 +30,23 @@ def guardar_edicion_rapida(df_modificado, etapa_key):
                     """), {
                         "gps": row.get('gps_link', ''),
                         "ref": row.get('referencia', ''),
-                        "obs": row.get('observacion', ''), # Singular confirmado
+                        "obs": row.get('observacion', ''), # Corregido: Singular
                         "dir": row.get('direccion_texto', ''),
                         "id_dir": row['id_direccion']
                     })
                 count += 1
                 
         st.toast(f"✅ {count} registros actualizados.", icon="💾")
+        # Limpiamos caché para ver los cambios reflejados
+        if 'df_seguimiento_cache' in st.session_state:
+            del st.session_state['df_seguimiento_cache']
         time.sleep(1)
         st.rerun()
     except Exception as e:
         st.error(f"Error guardando {etapa_key}: {e}")
 
 def render_seguimiento():
-    # CSS para ajustar altura de filas y hacerlas más legibles
+    # CSS para ajustar altura de filas
     st.markdown("""
         <style>
             div[data-testid="stDataEditor"] td {
@@ -56,58 +60,68 @@ def render_seguimiento():
     c_titulo, c_refresh = st.columns([4, 1])
     c_titulo.subheader("🎯 Tablero de Seguimiento Logístico")
     
+    # BOTÓN MANUAL DE RECARGA (Recuperado de tu versión anterior)
     if c_refresh.button("🔄 Recargar Datos"):
+        if 'df_seguimiento_cache' in st.session_state:
+            del st.session_state['df_seguimiento_cache']
         st.rerun()
 
-    # --- 1. CONFIGURACIÓN DE ETAPAS ---
+    # --- 1. CONFIGURACIÓN ---
     ETAPAS = {
         "ETAPA_0": ["Sin empezar"],
         "ETAPA_1": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
-        "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"], 
-        "ETAPA_3": ["En camino moto", "En camino agencia", "Contraentrega agencia"], 
+        "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"],
+        "ETAPA_3": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
         "ETAPA_4": ["Pendiente agradecer", "Problema post", "Venta cerrada", "Post-venta"]
     }
     TODOS_LOS_ESTADOS = [e for lista in ETAPAS.values() for e in lista]
 
-    # --- 2. CARGA DE DATOS (JOIN CON DIRECCIONES) ---
-    # CORRECCIÓN: Usamos 'total_venta' y 'nota' para el resumen, ya que no hay 'cantidad' ni 'producto'.
-    # COALESCE(nota, '') evita errores si la nota está vacía.
-    query = """
-        SELECT 
-            c.id_cliente, c.nombre_corto, c.telefono, c.estado, c.fecha_seguimiento,
-            d.id_direccion, d.direccion_texto, d.distrito, d.tipo_envio,
-            d.gps_link, d.referencia, d.observacion,
-            (SELECT STRING_AGG(CONCAT('S/ ', total_venta, ' (', COALESCE(nota, '-'), ')'), ', ') 
-             FROM Ventas v WHERE v.id_cliente = c.id_cliente AND v.fecha_venta > (NOW() - INTERVAL '30 days')) as resumen_items
-        FROM Clientes c
-        LEFT JOIN Direcciones d ON c.id_cliente = d.id_cliente AND d.activo = TRUE
-        WHERE c.activo = TRUE
-        ORDER BY c.fecha_seguimiento DESC
-    """
-    
-    with engine.connect() as conn:
-        df = pd.read_sql(text(query), conn)
-
-    # Convertir columnas a string y manejar nulos para evitar errores visuales
-    cols_txt = ['gps_link', 'referencia', 'observacion', 'direccion_texto', 'resumen_items']
-    for col in cols_txt:
-        if col in df.columns:
-            df[col] = df[col].fillna('').astype(str)
+    # --- 2. CARGA DE DATOS (Con Caché y SQL Corregido) ---
+    if 'df_seguimiento_cache' in st.session_state:
+        df = st.session_state['df_seguimiento_cache']
+    else:
+        # CONSULTA CORREGIDA: 'observacion' singular y subquery con 'total_venta'/'nota'
+        query = """
+            SELECT 
+                c.id_cliente, c.nombre_corto, c.telefono, c.estado, c.fecha_seguimiento,
+                d.id_direccion, d.direccion_texto, d.distrito, d.tipo_envio,
+                d.gps_link, d.referencia, d.observacion,
+                (SELECT STRING_AGG(CONCAT('S/ ', total_venta, ' (', COALESCE(nota, '-'), ')'), ', ') 
+                 FROM Ventas v WHERE v.id_cliente = c.id_cliente AND v.fecha_venta > (NOW() - INTERVAL '30 days')) as resumen_items
+            FROM Clientes c
+            LEFT JOIN Direcciones d ON c.id_cliente = d.id_cliente AND d.activo = TRUE
+            WHERE c.activo = TRUE
+            ORDER BY c.fecha_seguimiento DESC
+        """
+        try:
+            with engine.connect() as conn:
+                df = pd.read_sql(text(query), conn)
+            
+            # Normalización de columnas de texto
+            cols_txt = ['gps_link', 'referencia', 'observacion', 'direccion_texto', 'resumen_items']
+            for col in cols_txt:
+                if col in df.columns:
+                    df[col] = df[col].fillna('').astype(str)
+            
+            st.session_state['df_seguimiento_cache'] = df
+        except Exception as e:
+            st.error(f"Error en consulta SQL: {e}")
+            return
 
     # Filtrado por etapas
     df_e0 = df[df['estado'].isin(ETAPAS["ETAPA_0"])]
     df_e1 = df[df['estado'].isin(ETAPAS["ETAPA_1"])]
-    df_e2 = df[df['estado'].isin(ETAPAS["ETAPA_2"])] 
-    df_e3 = df[df['estado'].isin(ETAPAS["ETAPA_3"])] 
+    df_e2 = df[df['estado'].isin(ETAPAS["ETAPA_2"])]
+    df_e3 = df[df['estado'].isin(ETAPAS["ETAPA_3"])]
     df_e4 = df[df['estado'].isin(ETAPAS["ETAPA_4"])]
 
     # --- 3. RENDERING DE TABLAS ---
 
-    # >>> ETAPA 0: SIN EMPEZAR <<<
+    # ETAPA 0
     with st.expander(f"❄️ Sin Empezar ({len(df_e0)})", expanded=False):
         st.dataframe(df_e0[['nombre_corto', 'telefono', 'fecha_seguimiento']], hide_index=True)
 
-    # >>> ETAPA 1: CONVERSACIÓN <<<
+    # ETAPA 1
     with st.expander(f"💬 En Conversación ({len(df_e1)})", expanded=True):
         if not df_e1.empty:
             cols_e1 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
@@ -116,23 +130,23 @@ def render_seguimiento():
                 key="ed_e1", 
                 column_config={
                     "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS, width="medium"),
-                    "id_cliente": None, 
+                    "id_cliente": None,
                     "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
-                    "resumen_items": st.column_config.TextColumn("Últimas Compras (30d)", disabled=True)
+                    "resumen_items": st.column_config.TextColumn("Últimas Compras", disabled=True)
                 },
                 hide_index=True, use_container_width=True
             )
-            if st.button("💾 Guardar Cambios (Conversación)"):
-                cambios = df_e1.loc[event_e1.index].copy()
-                cambios['estado'] = event_e1['estado']
-                guardar_edicion_rapida(cambios, "E1")
+            if st.button("💾 Guardar Conversación"):
+                df_save_e1 = df_e1.loc[event_e1.index].copy()
+                df_save_e1['estado'] = event_e1['estado']
+                guardar_edicion_rapida(df_save_e1, "E1")
         else:
-            st.info("No hay clientes en esta etapa.")
+            st.caption("Vacío.")
 
-    # >>> ETAPA 2: LISTO PARA ENVÍO (MOTO / AGENCIA) <<<
+    # ETAPA 2: LISTOS PARA ENVÍO (Aquí corregimos GPS y Obs)
     st.markdown("---")
     st.subheader(f"📦 Listos para Despachar ({len(df_e2)})")
-    st.caption("Edita aquí GPS, Referencias y Observaciones para limpiar tus datos.")
+    st.caption("💡 Mueve datos de 'Observación' a 'GPS' o 'Referencia' aquí mismo.")
     
     if not df_e2.empty:
         cols_e2 = ["id_cliente", "id_direccion", "estado", "nombre_corto", "distrito", "direccion_texto", "referencia", "gps_link", "observacion", "resumen_items"]
@@ -141,36 +155,36 @@ def render_seguimiento():
             df_e2[cols_e2], 
             key="ed_e2", 
             column_config={
-                "estado": st.column_config.SelectboxColumn("Estado (Mover a En Camino)", options=TODOS_LOS_ESTADOS, width="medium"),
-                "id_cliente": None,
-                "id_direccion": None,
+                "estado": st.column_config.SelectboxColumn("Estado (Avanzar)", options=TODOS_LOS_ESTADOS, width="medium"),
+                "id_cliente": None, "id_direccion": None,
                 "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True, width="medium"),
                 "distrito": st.column_config.TextColumn("Distrito", disabled=True, width="small"),
                 "direccion_texto": st.column_config.TextColumn("Dirección", width="medium"),
                 
+                # Columnas editables para limpieza
                 "gps_link": st.column_config.TextColumn("📍 Link GPS", width="medium"),
                 "referencia": st.column_config.TextColumn("🏠 Referencia", width="medium"),
                 "observacion": st.column_config.TextColumn("🧹 Obs (Limpiar)", width="medium"),
                 
-                "resumen_items": st.column_config.TextColumn("Pedido (Nota)", disabled=True)
+                "resumen_items": st.column_config.TextColumn("Nota Venta", disabled=True)
             },
             hide_index=True, use_container_width=True
         )
         
         if st.button("💾 Guardar Despachos"):
-            cambios_e2 = df_e2.loc[event_e2.index].copy()
-            # Mapeo exacto de columnas
-            cambios_e2['estado'] = event_e2['estado']
-            cambios_e2['gps_link'] = event_e2['gps_link']
-            cambios_e2['referencia'] = event_e2['referencia']
-            cambios_e2['observacion'] = event_e2['observacion']
-            cambios_e2['direccion_texto'] = event_e2['direccion_texto']
+            df_save_e2 = df_e2.loc[event_e2.index].copy()
+            # Asignamos los valores editados
+            df_save_e2['estado'] = event_e2['estado']
+            df_save_e2['gps_link'] = event_e2['gps_link']
+            df_save_e2['referencia'] = event_e2['referencia']
+            df_save_e2['observacion'] = event_e2['observacion']
+            df_save_e2['direccion_texto'] = event_e2['direccion_texto']
             
-            guardar_edicion_rapida(cambios_e2, "E2")
+            guardar_edicion_rapida(df_save_e2, "E2")
     else:
-        st.info("Bandeja de despachos vacía.")
+        st.info("No hay pedidos pendientes de despacho.")
 
-    # >>> ETAPA 3: EN CAMINO <<<
+    # ETAPA 3: EN RUTA
     st.markdown("---")
     st.subheader(f"🚀 En Camino / Ruta ({len(df_e3)})")
     
@@ -191,15 +205,15 @@ def render_seguimiento():
         )
 
         if st.button("💾 Guardar Rutas"):
-            cambios_e3 = df_e3.loc[event_e3.index].copy()
-            cambios_e3['estado'] = event_e3['estado']
-            cambios_e3['gps_link'] = event_e3['gps_link']
-            cambios_e3['observacion'] = event_e3['observacion']
-            guardar_edicion_rapida(cambios_e3, "E3")
+            df_save_e3 = df_e3.loc[event_e3.index].copy()
+            df_save_e3['estado'] = event_e3['estado']
+            df_save_e3['gps_link'] = event_e3['gps_link']
+            df_save_e3['observacion'] = event_e3['observacion']
+            guardar_edicion_rapida(df_save_e3, "E3")
     else:
-        st.caption("Ningún pedido en ruta actualmente.")
+        st.caption("Ningún pedido en ruta.")
 
-    # >>> ETAPA 4: POST-VENTA <<<
+    # ETAPA 4: POST VENTA
     with st.expander(f"✨ Post-Venta ({len(df_e4)})"):
         if not df_e4.empty:
             cols_e4 = ["id_cliente", "estado", "nombre_corto", "fecha_seguimiento"]
@@ -213,6 +227,6 @@ def render_seguimiento():
                 hide_index=True, use_container_width=True
             )
             if st.button("💾 Guardar Post-Venta"):
-                cambios_e4 = df_e4.loc[event_e4.index].copy()
-                cambios_e4['estado'] = event_e4['estado']
-                guardar_edicion_rapida(cambios_e4, "E4")
+                df_save_e4 = df_e4.loc[event_e4.index].copy()
+                df_save_e4['estado'] = event_e4['estado']
+                guardar_edicion_rapida(df_save_e4, "E4")
