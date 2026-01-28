@@ -130,13 +130,19 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
 # FUNCIONES DE SINCRONIZACION (WAHA)
 # ==============================================================================
 def sincronizar_historial(telefono):
-    """Descarga mensajes de WAHA y guarda los que faltan en la DB"""
-    
     try:
-        # 1. Pedimos los últimos 50 mensajes del chat
+        # 1. Preparamos los Headers con la llave de seguridad
+        headers = {
+            "Content-Type": "application/json",
+            "X-Api-Key": WAHA_KEY
+        }
+
+        # 2. Pedimos los últimos 50 mensajes del chat
         chat_id = f"{telefono}@c.us"
         url = f"{WAHA_URL}/api/messages?chatId={chat_id}&limit=50&downloadMedia=false"
-        response = requests.get(url, timeout=5)
+        
+        # AGREGAMOS headers=headers A LA PETICIÓN
+        response = requests.get(url, headers=headers, timeout=5)
         
         if response.status_code == 200:
             mensajes_waha = response.json()
@@ -152,8 +158,7 @@ def sincronizar_historial(telefono):
                     
                     if not cuerpo: continue # Saltamos mensajes vacíos
                     
-                    # 2. EVITAR DUPLICADOS (Truco: Buscamos si ya existe ese texto exacto hoy)
-                    # Lo ideal sería tener un campo 'id_waha' en tu tabla, pero usaremos esto por ahora
+                    # 2. EVITAR DUPLICADOS
                     existe = conn.execute(text("""
                         SELECT count(*) FROM mensajes 
                         WHERE telefono = :t 
@@ -176,8 +181,10 @@ def sincronizar_historial(telefono):
                         nuevos += 1
             
             return True, f"Se sincronizaron {nuevos} mensajes nuevos."
+        elif response.status_code == 401:
+            return False, "Error 401: API Key incorrecta. Revisa la variable WAHA_API_KEY en el código."
         else:
-            return False, "No se pudo conectar con el historial de WhatsApp."
+            return False, f"Error WAHA: {response.status_code} - {response.text}"
             
     except Exception as e:
         return False, f"Error de conexión: {e}"
