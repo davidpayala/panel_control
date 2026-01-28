@@ -129,19 +129,14 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
 # ==============================================================================
 # FUNCIONES DE SINCRONIZACION (WAHA)
 # ==============================================================================
+# --- FUNCIÓN DE SINCRONIZACIÓN (CORREGIDA CON TU ESQUEMA) ---
 def sincronizar_historial(telefono):
+    """Descarga mensajes de WAHA y guarda los que faltan en la DB"""
     try:
-        # 1. Preparamos los Headers con la llave de seguridad
-        headers = {
-            "Content-Type": "application/json",
-            "X-Api-Key": WAHA_KEY
-        }
-
-        # 2. Pedimos los últimos 50 mensajes del chat
+        headers = {"Content-Type": "application/json", "X-Api-Key": WAHA_KEY}
         chat_id = f"{telefono}@c.us"
         url = f"{WAHA_URL}/api/messages?chatId={chat_id}&limit=50&downloadMedia=false"
         
-        # AGREGAMOS headers=headers A LA PETICIÓN
         response = requests.get(url, headers=headers, timeout=5)
         
         if response.status_code == 200:
@@ -150,45 +145,47 @@ def sincronizar_historial(telefono):
             
             with engine.begin() as conn:
                 for msg in mensajes_waha:
-                    # Extraer datos clave
                     cuerpo = msg.get('body', '')
                     es_mio = msg.get('fromMe', False)
                     tipo_msg = 'SALIENTE' if es_mio else 'ENTRANTE'
-                    timestamp = msg.get('timestamp') # Fecha UNIX
+                    timestamp = msg.get('timestamp')
+                    w_id = msg.get('id', None) # ID único de WhatsApp
                     
-                    if not cuerpo: continue # Saltamos mensajes vacíos
+                    if not cuerpo: continue 
                     
-                    # 2. EVITAR DUPLICADOS
-                    existe = conn.execute(text("""
-                        SELECT count(*) FROM mensajes 
-                        WHERE telefono = :t 
-                        AND mensaje = :m 
-                        AND tipo = :tp 
-                        AND fecha > (NOW() - INTERVAL '24 hours')
-                    """), {"t": telefono, "m": cuerpo, "tp": tipo_msg}).scalar()
+                    # 1. VERIFICAR DUPLICADO USANDO whatsapp_id (Más seguro)
+                    # Si no tiene ID, usamos el contenido como respaldo
+                    if w_id:
+                        existe = conn.execute(text("SELECT count(*) FROM mensajes WHERE whatsapp_id = :wid"), {"wid": w_id}).scalar()
+                    else:
+                        existe = conn.execute(text("""
+                            SELECT count(*) FROM mensajes 
+                            WHERE telefono = :t AND contenido = :m AND fecha > (NOW() - INTERVAL '24 hours')
+                        """), {"t": telefono, "m": cuerpo}).scalar()
                     
                     if existe == 0:
-                        # 3. INSERTAR SI NO EXISTE
+                        # 2. INSERTAR CON TUS COLUMNAS CORRECTAS (contenido, whatsapp_id)
                         conn.execute(text("""
-                            INSERT INTO mensajes (telefono, tipo, mensaje, fecha, leido)
-                            VALUES (:t, :tp, :m, to_timestamp(:ts), TRUE)
+                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id)
+                            VALUES (:t, :tp, :m, to_timestamp(:ts), TRUE, :wid)
                         """), {
                             "t": telefono, 
                             "tp": tipo_msg, 
                             "m": cuerpo,
-                            "ts": timestamp
+                            "ts": timestamp,
+                            "wid": w_id
                         })
                         nuevos += 1
             
             return True, f"Se sincronizaron {nuevos} mensajes nuevos."
         elif response.status_code == 401:
-            return False, "Error 401: API Key incorrecta. Revisa la variable WAHA_API_KEY en el código."
+            return False, "Error 401: API Key incorrecta."
         else:
-            return False, f"Error WAHA: {response.status_code} - {response.text}"
+            return False, f"Error WAHA: {response.status_code}"
             
     except Exception as e:
         return False, f"Error de conexión: {e}"
-
+    
 # ==============================================================================
 # LÓGICA GOOGLE (Contactos)
 # ==============================================================================
