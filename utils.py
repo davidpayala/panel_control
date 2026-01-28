@@ -19,7 +19,7 @@ WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
 WAHA_KEY = os.getenv("WAHA_KEY") 
 
 # ==============================================================================
-# 🏆 NORMALIZACIÓN
+# 🏆 NORMALIZACIÓN BLINDADA (Internacionales OK)
 # ==============================================================================
 def normalizar_telefono_maestro(entrada):
     if not entrada: return None
@@ -49,7 +49,7 @@ def normalizar_telefono_maestro(entrada):
     
     if not solo_numeros: return None
     
-    # Permitir internacionales largos pero filtrar basura excesiva
+    # Validaciones de longitud
     if len(solo_numeros) > 15: return None
     if len(solo_numeros) < 7: return None
 
@@ -72,7 +72,7 @@ def normalizar_telefono_maestro(entrada):
     }
 
 # ==============================================================================
-# ENVÍO
+# ENVÍO Y MEDIA
 # ==============================================================================
 def enviar_mensaje_whatsapp(numero, texto):
     if not WAHA_URL: return False, "⚠️ Falta WAHA_URL"
@@ -118,14 +118,14 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
     except Exception as e: return False, str(e)
 
 def subir_archivo_meta(archivo_bytes, mime_type):
-    # Restaurada para compatibilidad con otros archivos
+    # Función auxiliar para compatibilidad
     try:
         b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
         return f"data:{mime_type};base64,{b64_data}", None
     except Exception as e: return None, str(e)
 
 # ==============================================================================
-# SINCRONIZACIÓN (UPDATE + INSERT)
+# SINCRONIZACIÓN (CAPTURA REPLY TEXT)
 # ==============================================================================
 def sincronizar_historial(telefono):
     norm = normalizar_telefono_maestro(telefono)
@@ -161,7 +161,7 @@ def sincronizar_historial(telefono):
                     timestamp = msg.get('timestamp')
                     w_id = msg.get('id', None)
                     
-                    # CAPTURA DE REPLY
+                    # REPLY
                     reply_id = None
                     reply_body = None
                     raw_reply = msg.get('replyTo')
@@ -173,7 +173,7 @@ def sincronizar_historial(telefono):
                         reply_id = raw_reply
 
                     if w_id:
-                        # 1. UPSERT
+                        # UPSERT
                         res = conn.execute(text("""
                             UPDATE mensajes 
                             SET reply_to_id = :rid, reply_content = :rbody, contenido = :m 
@@ -263,7 +263,7 @@ def crear_en_google(nombre, apellido, telefono):
     except: return None
 
 def actualizar_en_google(gid, nombre, apellido, telefono):
-    # Restaurada para compatibilidad con views/clientes.py
+    # Restaurado para vistas/clientes.py
     srv = get_google_service()
     if not srv: return False
     norm = normalizar_telefono_maestro(telefono)
@@ -276,3 +276,49 @@ def actualizar_en_google(gid, nombre, apellido, telefono):
         srv.people().updateContact(resourceName=gid, updatePersonFields='names,phoneNumbers', body=c).execute()
         return True
     except: return False
+
+# ==============================================================================
+# UTILIDADES EXTRA (IA / VERIFICACIÓN) - RESTAURADAS
+# ==============================================================================
+def generar_nombre_ia(alias, nombre_real):
+    # Función para limpiar nombres basura
+    PALABRAS_PROHIBIDAS = [
+        'CLIENTE', 'LENTES', 'MAYOR', 'MAYORISTA', 'OPTICA', 'VENTA', 
+        'TIENDA', 'ALMACEN', 'CONTACTO', 'DR', 'DRA', 'SR', 'SRA', 
+        'ADMIN', 'GRUPO', 'SPAM', 'ESTAFA', 'NO CONTESTA', 'K&M'
+    ]
+    def es_nombre_valido(palabra):
+        if not palabra: return False
+        p = palabra.upper()
+        if len(p) <= 2: return False 
+        if not p.isalpha(): return False 
+        if p in PALABRAS_PROHIBIDAS: return False
+        return True
+
+    candidatos = [nombre_real, alias]
+    for texto in candidatos:
+        if not texto: continue
+        limpio = str(texto).replace('-', ' ').replace('_', ' ').replace('.', ' ').strip()
+        palabras = limpio.split()
+        if not palabras: continue
+        primer_palabra = palabras[0]
+        if es_nombre_valido(primer_palabra):
+            return primer_palabra.capitalize()
+    return ""
+
+def verificar_numero_waha(telefono):
+    try:
+        norm = normalizar_telefono_maestro(telefono)
+        if not norm: return False 
+
+        url = f"{WAHA_URL}/api/contacts/check-exists"
+        payload = {"phone": norm['waha']}
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            return resp.json().get("exists", False)
+        return None
+    except Exception: return None
