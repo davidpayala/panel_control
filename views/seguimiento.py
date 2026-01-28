@@ -246,6 +246,7 @@ def render_seguimiento():
                         texto_ruta += f"*GPS:* {row['gps_link'] or ''}\n"
                         texto_ruta += f"*Telf:* {row['telefono_receptor'] or ''}\n"
                         texto_ruta += f"*Cobrar:* S/ {monto:.2f}\n"
+                        texto_ruta += f"*Telf:* {row['observacion'] or ''}\n"
                         texto_ruta += "----------------------------------\n"
                         count += 1
                     st.code(texto_ruta)
