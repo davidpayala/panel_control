@@ -1,17 +1,19 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
+import json
 import io
 import os
 import time
 import streamlit.components.v1 as components 
+import requests  # <--- AGREGAR ESTO
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh 
 from database import engine 
 from utils import (
     subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp, 
     normalizar_telefono_maestro, buscar_contacto_google, 
-    crear_en_google, actualizar_en_google
+    crear_en_google, actualizar_en_google, sincronizar_historial
 )
 
 # Copiamos las mismas opciones para mantener consistencia
@@ -112,7 +114,7 @@ def render_chat():
     with col_chat:
         telefono_activo = st.session_state['chat_actual_telefono']
 
-        if telefono_activo:
+    if telefono_activo:
             norm_activo = normalizar_telefono_maestro(telefono_activo)
             titulo_tel = norm_activo['corto'] if norm_activo else telefono_activo
             
@@ -120,11 +122,13 @@ def render_chat():
             with engine.connect() as conn:
                 cli_data = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono_activo}).fetchone()
             
-            # HEADER DEL CHAT
-            c1, c2 = st.columns([3, 1])
+            # HEADER DEL CHAT (FUSIONADO: TÍTULO + SYNC + FICHA)
+            # Dividimos en 3 columnas: Título (Grande), Sync (Pequeño), Toggle (Pequeño)
+            c1, c2, c3 = st.columns([3, 0.7, 0.8])
+            
+            # COLUMNA 1: TÍTULO Y ETIQUETAS (Lo que ya tenías)
             with c1: 
                 st.markdown(f"### 💬 {titulo_tel}")
-                # Mostrar etiquetas visuales debajo del nombre
                 if cli_data and cli_data.etiquetas:
                     html_tags = ""
                     for tag in cli_data.etiquetas.split(','):
@@ -135,7 +139,23 @@ def render_chat():
                         html_tags += f'<span class="tag-badge {css_class}">{tag}</span>'
                     st.markdown(html_tags, unsafe_allow_html=True)
 
-            with c2: 
+            # COLUMNA 2: BOTÓN SYNC (Lo nuevo)
+            with c2:
+                st.write("") # Espaciador para alinear verticalmente
+                if st.button("🔄 Sync", help="Descargar historial faltante"):
+                    with st.spinner("Sincronizando..."):
+                        # Llamamos a la función que definimos arriba
+                        ok, msg = sincronizar_historial(telefono_activo) 
+                        if ok:
+                            st.toast(msg, icon="✅")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+            # COLUMNA 3: TOGGLE FICHA (Lo que ya tenías)
+            with c3: 
+                st.write("") # Espaciador
                 ver_info = st.toggle("Ver Ficha", value=False)
             
             st.divider()

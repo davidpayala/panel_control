@@ -125,6 +125,63 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
     except Exception as e:
         return False, str(e)
 
+
+# ==============================================================================
+# FUNCIONES DE SINCRONIZACION (WAHA)
+# ==============================================================================
+def sincronizar_historial(telefono):
+    """Descarga mensajes de WAHA y guarda los que faltan en la DB"""
+    
+    try:
+        # 1. Pedimos los últimos 50 mensajes del chat
+        chat_id = f"{telefono}@c.us"
+        url = f"{WAHA_URL}/api/messages?chatId={chat_id}&limit=50&downloadMedia=false"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            mensajes_waha = response.json()
+            nuevos = 0
+            
+            with engine.begin() as conn:
+                for msg in mensajes_waha:
+                    # Extraer datos clave
+                    cuerpo = msg.get('body', '')
+                    es_mio = msg.get('fromMe', False)
+                    tipo_msg = 'SALIENTE' if es_mio else 'ENTRANTE'
+                    timestamp = msg.get('timestamp') # Fecha UNIX
+                    
+                    if not cuerpo: continue # Saltamos mensajes vacíos
+                    
+                    # 2. EVITAR DUPLICADOS (Truco: Buscamos si ya existe ese texto exacto hoy)
+                    # Lo ideal sería tener un campo 'id_waha' en tu tabla, pero usaremos esto por ahora
+                    existe = conn.execute(text("""
+                        SELECT count(*) FROM mensajes 
+                        WHERE telefono = :t 
+                        AND mensaje = :m 
+                        AND tipo = :tp 
+                        AND fecha > (NOW() - INTERVAL '24 hours')
+                    """), {"t": telefono, "m": cuerpo, "tp": tipo_msg}).scalar()
+                    
+                    if existe == 0:
+                        # 3. INSERTAR SI NO EXISTE
+                        conn.execute(text("""
+                            INSERT INTO mensajes (telefono, tipo, mensaje, fecha, leido)
+                            VALUES (:t, :tp, :m, to_timestamp(:ts), TRUE)
+                        """), {
+                            "t": telefono, 
+                            "tp": tipo_msg, 
+                            "m": cuerpo,
+                            "ts": timestamp
+                        })
+                        nuevos += 1
+            
+            return True, f"Se sincronizaron {nuevos} mensajes nuevos."
+        else:
+            return False, "No se pudo conectar con el historial de WhatsApp."
+            
+    except Exception as e:
+        return False, f"Error de conexión: {e}"
+
 # ==============================================================================
 # LÓGICA GOOGLE (Contactos)
 # ==============================================================================
