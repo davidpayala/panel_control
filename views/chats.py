@@ -38,20 +38,21 @@ def sincronizar_historial(telefono):
     
     try:
         headers = {"Content-Type": "application/json", "X-Api-Key": WAHA_API_KEY}
-        url = f"{WAHA_URL}/api/messages?chatId={chat_id_waha}&limit=50&downloadMedia=false"
+        # Pedimos más mensajes (100) para asegurar que cubrimos el historial reciente
+        url = f"{WAHA_URL}/api/messages?chatId={chat_id_waha}&limit=100&downloadMedia=false"
         
-        response = requests.get(url, headers=headers, timeout=8)
+        response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
             mensajes_waha = response.json()
             nuevos = 0
+            actualizados = 0
             
             with engine.begin() as conn:
                 for msg in mensajes_waha:
                     cuerpo = msg.get('body', '')
                     if not cuerpo: continue
                     
-                    # Validar remitente basura
                     participant_check = msg.get('from')
                     if not normalizar_telefono_maestro(participant_check): continue 
 
@@ -60,40 +61,44 @@ def sincronizar_historial(telefono):
                     timestamp = msg.get('timestamp')
                     w_id = msg.get('id', None)
                     
-                    # --- CAPTURA DE REPLY ---
-                    # WAHA envía 'replyTo' como el ID del mensaje original
+                    # Captura de Reply
                     reply_id = msg.get('replyTo') 
-                    # A veces WAHA lo manda como objeto, aseguramos que sea string
                     if isinstance(reply_id, dict): reply_id = reply_id.get('id')
-                    # ------------------------
 
+                    # LÓGICA MEJORADA: UPSERT
                     if w_id:
-                        existe = conn.execute(text("SELECT count(*) FROM mensajes WHERE whatsapp_id = :wid"), {"wid": w_id}).scalar()
+                        # 1. Intentamos actualizar primero (por si ya existe pero le falta el reply)
+                        res = conn.execute(text("""
+                            UPDATE mensajes 
+                            SET reply_to_id = :rid, contenido = :m 
+                            WHERE whatsapp_id = :wid
+                        """), {"rid": reply_id, "m": cuerpo, "wid": w_id})
+                        
+                        if res.rowcount > 0:
+                            actualizados += 1
+                        else:
+                            # 2. Si no actualizó nada, insertamos
+                            conn.execute(text("""
+                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id, reply_to_id)
+                                VALUES (:t, :tp, :m, to_timestamp(:ts), TRUE, :wid, :rid)
+                            """), {
+                                "t": target_db, "tp": tipo_msg, "m": cuerpo, 
+                                "ts": timestamp, "wid": w_id, "rid": reply_id
+                            })
+                            nuevos += 1
                     else:
-                        existe = conn.execute(text("""
-                            SELECT count(*) FROM mensajes 
-                            WHERE telefono = :t AND contenido = :m AND fecha > (NOW() - INTERVAL '24 hours')
-                        """), {"t": target_db, "m": cuerpo}).scalar()
-                    
-                    if existe == 0:
-                        conn.execute(text("""
-                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id, reply_to_id)
-                            VALUES (:t, :tp, :m, to_timestamp(:ts), TRUE, :wid, :rid)
-                        """), {
-                            "t": target_db, 
-                            "tp": tipo_msg, 
-                            "m": cuerpo,
-                            "ts": timestamp,
-                            "wid": w_id,
-                            "rid": reply_id # <--- GUARDAMOS EL ID DE LA CITA
-                        })
-                        nuevos += 1
+                        # Fallback antiguo por contenido (menos seguro, solo inserta si no existe)
+                        existe = conn.execute(text("SELECT count(*) FROM mensajes WHERE telefono=:t AND contenido=:m AND fecha > (NOW() - INTERVAL '24h')"), 
+                                            {"t": target_db, "m": cuerpo}).scalar()
+                        if existe == 0:
+                            conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido) VALUES (:t, :tp, :m, NOW(), TRUE)"), 
+                                        {"t": target_db, "tp": tipo_msg, "m": cuerpo})
+                            nuevos += 1
             
-            return True, f"Sync: {nuevos} nuevos."
-        elif response.status_code == 401:
-            return False, "Error 401: API Key incorrecta."
-        else:
-            return False, f"Error WAHA: {response.status_code}"
+            return True, f"Sync: {nuevos} nuevos, {actualizados} act."
+        
+        elif response.status_code == 401: return False, "Error 401 API Key"
+        else: return False, f"Error WAHA: {response.status_code}"
             
     except Exception as e:
         return False, f"Error conexión: {e}"
@@ -107,35 +112,71 @@ def render_chat():
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # CSS ACTUALIZADO PARA CITAS
+# CSS ACTUALIZADO Y CORREGIDO PARA CITAS LIMPIAS
     st.markdown("""
     <style>
-    div.stButton > button:first-child { text-align: left; width: 100%; border-radius: 8px; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; }
+    /* Estilo base de los botones del sidebar */
+    div.stButton > button:first-child { 
+        text-align: left; width: 100%; border-radius: 8px; 
+        margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; 
+    }
     
-    .chat-bubble { padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 75%; color: white; font-size: 15px; position: relative; }
+    /* BURBUJA DE CHAT */
+    .chat-bubble { 
+        padding: 12px 16px; 
+        border-radius: 12px; 
+        margin-bottom: 8px; 
+        max-width: 80%; /* Un poco más ancho */
+        color: white; 
+        font-size: 15px; 
+        position: relative;
+        display: flex;       /* Flexbox para ordenar cita y texto verticalmente */
+        flex-direction: column;
+        line-height: 1.4;
+    }
+    
     .incoming { background-color: #262730; margin-right: auto; border-bottom-left-radius: 2px; }
     .outgoing { background-color: #004d40; margin-left: auto; border-bottom-right-radius: 2px; }
     
-    /* ESTILO PARA EL MENSAJE CITADO */
+    /* CONTEXTO DE RESPUESTA (CITA) */
     .reply-context {
-        background-color: rgba(0,0,0,0.2);
-        border-left: 4px solid #00bc8c; /* Verde estilo WhatsApp */
-        padding: 5px 8px;
-        border-radius: 4px;
-        margin-bottom: 6px;
-        font-size: 12px;
-        color: #ddd;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        background-color: rgba(0, 0, 0, 0.25); /* Fondo oscuro semitransparente */
+        border-left: 4px solid #00e676;       /* Borde verde brillante */
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-bottom: 8px;                   /* Separación con el mensaje actual */
+        font-size: 0.85em;
         display: flex;
         flex-direction: column;
     }
-    .reply-author { font-weight: bold; color: #00bc8c; margin-bottom: 2px; }
     
-    .chat-meta { font-size: 10px; opacity: 0.7; margin-top: 4px; display: block; text-align: right; }
+    .reply-author { 
+        font-weight: bold; 
+        color: #00e676; 
+        font-size: 0.9em;
+        margin-bottom: 2px;
+    }
+    
+    .reply-text {
+        color: #eeeeee;
+        white-space: nowrap; 
+        overflow: hidden; 
+        text-overflow: ellipsis; /* Puntos suspensivos si es muy largo */
+        opacity: 0.9;
+    }
+    
+    .chat-meta { 
+        font-size: 10px; 
+        opacity: 0.6; 
+        margin-top: 4px; 
+        align-self: flex-end; /* Alinear hora a la derecha */
+    }
+    
+    /* ETIQUETAS */
     .tag-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.7em; margin-right: 4px; color:black; font-weight:bold; }
-    .tag-spam { background-color: #ffcccc; } .tag-vip { background-color: #d4edda; } .tag-warn { background-color: #fff3cd; }
+    .tag-spam { background-color: #ffcccc; } 
+    .tag-vip { background-color: #d4edda; } 
+    .tag-warn { background-color: #fff3cd; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -244,20 +285,22 @@ def render_chat():
                     reply_html = ""
                     if m['reply_to_id'] and m['reply_texto']:
                         autor_reply = "Tú" if m['reply_tipo'] == 'SALIENTE' else "Cliente"
-                        texto_corto = (m['reply_texto'][:50] + '...') if len(m['reply_texto']) > 50 else m['reply_texto']
+                        # Cortamos texto largo
+                        texto_corto = (m['reply_texto'][:60] + '...') if len(m['reply_texto']) > 60 else m['reply_texto']
+                        
                         reply_html = f"""
                             <div class="reply-context">
                                 <span class="reply-author">{autor_reply}</span>
-                                <span>{texto_corto}</span>
+                                <span class="reply-text">{texto_corto}</span>
                             </div>
                         """
                     # -------------------------------
 
-                    # Renderizado final
+                    # Renderizado final (USANDO FLEXBOX EN CSS, YA NO NECESITA BRs EXTRAS)
                     st.markdown(f"""
                         <div class='chat-bubble {cls}'>
                             {reply_html}
-                            {body}
+                            <span>{body}</span>
                             <span class='chat-meta'>{m['fecha'].strftime('%H:%M')}</span>
                         </div>
                     """, unsafe_allow_html=True)
