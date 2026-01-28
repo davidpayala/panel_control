@@ -209,10 +209,16 @@ def render_seguimiento():
                         n_nom = c1.text_input("Recibe", row_full['nombre_receptor'])
                         n_tel = c2.text_input("Teléfono", row_full['telefono_receptor'])
                         n_dist = c3.text_input("Distrito", row_full['distrito'])
+                        st.caption("📍 Ubicación")
+                        n_dir = st.text_input("Dirección Exacta", row_full['direccion_texto'])
                         
-                        n_dir = st.text_input("Dirección", row_full['direccion_texto'])
-                        n_ref = st.text_input("Referencia", row_full['referencia'])
-                        
+                        c4, c5, c6 = st.columns(3)
+                        n_ref = c4.text_input("Referencia", row_full['referencia'])
+                        # --- AGREGADO GPS Y OBS ---
+                        n_gps = c5.text_input("Link GPS", row_full['gps_link'])
+                        n_obs = c6.text_input("Observaciones", row_full['observacion']) 
+                
+                # Singular en DB
                         if st.form_submit_button("Actualizar Dirección"):
                             with engine.connect() as conn:
                                 # Update inteligente: actualiza la última dirección activa
