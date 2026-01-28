@@ -13,7 +13,7 @@ from database import engine
 from utils import (
     enviar_mensaje_media, enviar_mensaje_whatsapp, 
     normalizar_telefono_maestro, buscar_contacto_google, 
-    crear_en_google, sincronizar_historial
+    crear_en_google, sincronizar_historial, render_chat
 )
 
 # Copiamos las mismas opciones para mantener consistencia
@@ -22,186 +22,8 @@ OPCIONES_TAGS = [
     "✅ Compró", "👀 Prospecto", "❓ Preguntón", 
     "📉 Pide Rebaja", "📦 Mayorista"
 ]
-
-def render_chat():
-    st_autorefresh(interval=5000, key="chat_autorefresh")
-    st.title("💬 Chat Center")
-
-    if 'chat_actual_telefono' not in st.session_state:
-        st.session_state['chat_actual_telefono'] = None
-
-    # Estilos CSS (Botones compactos + Badges de colores)
-    st.markdown("""
-    <style>
-    div.stButton > button:first-child { 
-        text-align: left; 
-        width: 100%; 
-        padding: 10px 15px;
-        border-radius: 8px; 
-        margin-bottom: 2px;
-        white-space: nowrap; 
-        overflow: hidden; 
-        text-overflow: ellipsis; 
-    }
-    .date-separator { text-align: center; margin: 15px 0; position: relative; }
-    .date-separator span { background-color: #f0f2f6; padding: 4px 12px; border-radius: 12px; font-size: 0.75em; color: #555; font-weight: bold;}
-    /* Estilos para etiquetas en el header */
-    .tag-badge { padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: bold; margin-right: 5px; color: black; display: inline-block;}
-    .tag-spam { background-color: #ffcccc; border: 1px solid red; }
-    .tag-vip { background-color: #d4edda; border: 1px solid green; }
-    .tag-warn { background-color: #fff3cd; border: 1px solid orange; }
-    .tag-default { background-color: #e2e3e5; border: 1px solid #ccc; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    col_lista, col_chat = st.columns([1, 2.5])
-
-    # --- COLUMNA IZQUIERDA ---
-    with col_lista:
-        st.subheader("📩 Chats")
-        
-        # 1. Iniciar Nuevo Chat
-        with st.expander("➕ Iniciar Nuevo Chat", expanded=False):
-            nuevo_num = st.text_input("Escribe el número:", placeholder="Ej: 999888777")
-            if st.button("Ir al Chat", use_container_width=True):
-                norm = normalizar_telefono_maestro(nuevo_num)
-                if norm:
-                    st.session_state['chat_actual_telefono'] = norm['db']
-                    st.rerun()
-                else:
-                    st.error("Número inválido")
-
-        # 2. Lista de Chats (AHORA CON ETIQUETAS)
-        query_lista = """
-            SELECT 
-                m.telefono, 
-                MAX(m.fecha) as ultima_fecha,
-                COALESCE(NULLIF(MAX(c.nombre_corto), ''), NULLIF(MAX(c.nombre_corto), 'Cliente WhatsApp'), MAX(m.telefono)) as display_name,
-                MAX(c.etiquetas) as etiquetas,  -- <--- TRAEMOS ETIQUETAS
-                SUM(CASE WHEN m.leido = FALSE AND m.tipo = 'ENTRANTE' THEN 1 ELSE 0 END) as no_leidos
-            FROM mensajes m
-            LEFT JOIN Clientes c ON m.telefono = c.telefono
-            GROUP BY m.telefono 
-            ORDER BY ultima_fecha DESC
-        """
-        with engine.connect() as conn:
-            lista_chats = conn.execute(text(query_lista)).fetchall()
-
-        if not lista_chats: 
-            st.info("Sin historial.")
-
-        st.divider()
-
-        for chat in lista_chats:
-            tel = chat.telefono
-            notif = "🔴" if chat.no_leidos > 0 else "👤"
-            
-            # Icono extra si es especial
-            icono_tag = ""
-            tags_str = chat.etiquetas or ""
-            if "SPAM" in tags_str: icono_tag = "🚫"
-            elif "Problemático" in tags_str: icono_tag = "⚠️"
-            elif "VIP" in tags_str: icono_tag = "💎"
-            
-            label = f"{notif} {icono_tag} {chat.display_name}"
-            
-            tipo_btn = "primary" if st.session_state['chat_actual_telefono'] == tel else "secondary"
-            if st.button(label, key=f"btn_{tel}", type=tipo_btn, use_container_width=True):
-                st.session_state['chat_actual_telefono'] = tel
-                st.rerun()
-
-    # --- COLUMNA DERECHA ---
-    with col_chat:
-        telefono_activo = st.session_state['chat_actual_telefono']
-
-        if telefono_activo:
-            norm_activo = normalizar_telefono_maestro(telefono_activo)
-            titulo_tel = norm_activo['corto'] if norm_activo else telefono_activo
-            
-            # Obtener datos frescos del cliente (incluyendo etiquetas)
-            with engine.connect() as conn:
-                cli_data = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono_activo}).fetchone()
-            
-            # HEADER DEL CHAT (FUSIONADO: TÍTULO + SYNC + FICHA)
-            # Dividimos en 3 columnas: Título (Grande), Sync (Pequeño), Toggle (Pequeño)
-            c1, c2, c3 = st.columns([3, 0.7, 0.8])
-            
-            # COLUMNA 1: TÍTULO Y ETIQUETAS (Lo que ya tenías)
-            with c1: 
-                st.markdown(f"### 💬 {titulo_tel}")
-                if cli_data and cli_data.etiquetas:
-                    html_tags = ""
-                    for tag in cli_data.etiquetas.split(','):
-                        css_class = "tag-default"
-                        if "SPAM" in tag: css_class = "tag-spam"
-                        elif "VIP" in tag: css_class = "tag-vip"
-                        elif "Problemático" in tag: css_class = "tag-warn"
-                        html_tags += f'<span class="tag-badge {css_class}">{tag}</span>'
-                    st.markdown(html_tags, unsafe_allow_html=True)
-
-            # COLUMNA 2: BOTÓN SYNC (Lo nuevo)
-            with c2:
-                st.write("") # Espaciador para alinear verticalmente
-                if st.button("🔄 Sync", help="Descargar historial faltante"):
-                    with st.spinner("Sincronizando..."):
-                        # Llamamos a la función que definimos arriba
-                        ok, msg = sincronizar_historial(telefono_activo) 
-                        if ok:
-                            st.toast(msg, icon="✅")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-
-            # COLUMNA 3: TOGGLE FICHA (Lo que ya tenías)
-            with c3: 
-                st.write("") # Espaciador
-                ver_info = st.toggle("Ver Ficha", value=False)
-            
-            st.divider()
-
-            if ver_info:
-                mostrar_info_avanzada(telefono_activo)
-                st.divider()
-
-            # Historial de Mensajes
-            contenedor = st.container(height=450)
-            with engine.connect() as conn:
-                conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_activo})
-                conn.commit()
-                historial = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha ASC"), conn, params={"t": telefono_activo})
-
-            with contenedor:
-                if historial.empty: st.info("👋 Conversación nueva.")
-                last_date = None
-                for _, row in historial.iterrows():
-                    msg_date = row['fecha'].date()
-                    if last_date != msg_date:
-                        st.markdown(f"""<div class="date-separator"><span>📅 {msg_date.strftime('%d/%m/%Y')}</span></div>""", unsafe_allow_html=True)
-                        last_date = msg_date
-
-                    es_cliente = (row['tipo'] == 'ENTRANTE')
-                    role, avatar = ("user", "👤") if es_cliente else ("assistant", "🛍️")
-                    with st.chat_message(role, avatar=avatar):
-                        if row['archivo_data']:
-                            try: st.image(io.BytesIO(row['archivo_data']), width=250)
-                            except: st.error("Error imagen")
-                        txt = row['contenido'] or ""
-                        if txt: st.markdown(txt)
-                        st.caption(row['fecha'].strftime('%H:%M'))
-            
-            # Auto-Scroll JS
-            components.html("""<script>const elements = window.parent.document.querySelectorAll('.stChatMessage'); if (elements.length > 0) { elements[elements.length - 1].scrollIntoView({behavior: "smooth"}); }</script>""", height=0, width=0)
-
-            # Inputs
-            prompt = st.chat_input("Escribe un mensaje...")
-            with st.expander("📎 Adjuntar Archivo", expanded=False):
-                archivo = st.file_uploader("Subir", key="up_file")
-                if archivo and st.button("Enviar Archivo"):
-                    enviar_archivo_chat(telefono_activo, archivo)
-            if prompt: enviar_texto_chat(telefono_activo, prompt)
-        else:
-            st.markdown("### 👈 Selecciona un chat")
+sincronizar_historial ()
+render_chat ()
 
 def mostrar_info_avanzada(telefono):
     """Ficha de cliente integrada en el chat"""
@@ -310,35 +132,20 @@ def mostrar_info_avanzada(telefono):
             st.markdown(f"📍 **{tipo}:** {txt} ({dist})")
 
 def enviar_texto_chat(telefono, texto):
-    exito, resp = enviar_mensaje_whatsapp(telefono, texto)
-    if exito:
-        guardar_mensaje_saliente(telefono, texto, None)
-        st.rerun()
-    else: st.error(f"Error: {resp}")
+    ok, r = enviar_mensaje_whatsapp(telefono, texto)
+    if ok: guardar_mensaje_saliente(telefono, texto, None); st.rerun()
+    else: st.error(r)
 
 def enviar_archivo_chat(telefono, archivo):
-    with st.spinner("Enviando..."):
-        # YA NO LLAMAMOS A subir_archivo_meta
-        # Pasamos los bytes directos (archivo.getvalue()) a la función de envío
-        
-        exito, resp = enviar_mensaje_media(
-            telefono, 
-            archivo.getvalue(), # <--- AQUÍ ESTÁ EL CAMBIO: Pasamos el archivo crudo
-            archivo.type, 
-            "", 
-            archivo.name
-        )
-        
-        if exito:
-            guardar_mensaje_saliente(telefono, f"📎 {archivo.name}", archivo.getvalue())
-            st.rerun()
-        else: 
-            st.error(f"Error: {resp}")
+    ok, r = enviar_mensaje_media(telefono, archivo.getvalue(), archivo.type, "", archivo.name)
+    if ok: guardar_mensaje_saliente(telefono, f"📎 {archivo.name}", archivo.getvalue()); st.rerun()
+    else: st.error(r)
 
 def guardar_mensaje_saliente(telefono, texto, data):
     norm = normalizar_telefono_maestro(telefono)
-    tel_db = norm['db'] if norm else telefono
+    if not norm: return
+    t = norm['db']
     with engine.connect() as conn:
-        conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro, nombre_corto) VALUES (:t, TRUE, NOW(), 'Nuevo Chat') ON CONFLICT (telefono) DO NOTHING"), {"t": tel_db})
-        conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data) VALUES (:t, 'SALIENTE', :txt, (NOW() - INTERVAL '5 hours'), TRUE, :d)"), {"t": tel_db, "txt": texto, "d": data})
+        conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro, nombre_corto) VALUES (:t, TRUE, NOW(), 'Nuevo') ON CONFLICT (telefono) DO NOTHING"), {"t": t})
+        conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data) VALUES (:t, 'SALIENTE', :c, NOW(), TRUE, :d)"), {"t": t, "c": texto, "d": data})
         conn.commit()
