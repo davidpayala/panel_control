@@ -97,7 +97,7 @@ def render_seguimiento():
             st.rerun()
         except Exception as e:
             st.error(f"Error: {e}")
-
+    # --- 3. FUNCIÓN DE GUARDADO - direcciones   ---
     def guardar_datos_envio_completo(id_direccion, id_cliente, datos):
         """Actualiza la dirección completa (incluyendo GPS/Obs) y el estado desde el formulario"""
         try:
@@ -167,7 +167,7 @@ def render_seguimiento():
                     f"📞 {row['telefono_receptor']}\n"
                     f"📍 {row['direccion_texto']} ({row['distrito']})\n"
                     f"🏠 Ref: {row['referencia']}\n"
-                    f"🗺️ GPS: {row['gps']}\n"
+                    f"🗺️ GPS: {row['gps_link']}\n"  # Changed from 'gps' to 'gps_link'
                     f"📝 Obs: {row['observacion']}")
 
         def formatear_entrega_agencia(row):
@@ -250,21 +250,41 @@ def render_seguimiento():
 # ... (código anterior donde seleccionas el cliente) ...
             
             # REEMPLAZA DESDE AQUÍ HACIA ABAJO (SOLO EL FORMULARIO)
-                with st.form("form_moto_dir"):
-                    st.caption("📦 Datos del Receptor")
-                    c1, c2, c3 = st.columns(3)
-                    n_nom = c1.text_input("Recibe", row_full['nombre_receptor'])
-                    n_tel = c2.text_input("Teléfono", row_full['telefono_receptor'])
-                    n_dist = c3.text_input("Distrito", row_full['distrito'])
-                    
-                    st.caption("📍 Ubicación y Detalles")
-                    n_dir = st.text_input("Dirección", row_full['direccion_texto'])
-                    
-                    # --- AQUÍ ESTÁ LA MODIFICACIÓN: 3 COLUMNAS AHORA ---
-                    c4, c5, c6 = st.columns(3)
-                    n_ref = c4.text_input("Referencia", row_full['referencia'])
-                    n_gps = c5.text_input("Link GPS", row_full['gps_link'])          # <--- NUEVO CAMPO
-                    n_obs = c6.text_input("Observaciones", row_full['observacion'])   # <--- NUEVO CAMPO
+                    with st.form("form_moto_dir"):
+                        c1, c2, c3 = st.columns(3)
+                        n_nom = c1.text_input("Recibe", row_full['nombre_receptor'])
+                        n_tel = c2.text_input("Teléfono", row_full['telefono_receptor'])
+                        n_dist = c3.text_input("Distrito", row_full['distrito'])
+                        
+                        st.caption("📍 Ubicación")
+                        n_dir = st.text_input("Dirección Exacta", row_full['direccion_texto'])
+                        
+                        c4, c5, c6 = st.columns(3)
+                        n_ref = c4.text_input("Referencia", row_full['referencia'])
+                        # --- ADDED GPS AND OBS FIELDS ---
+                        n_gps = c5.text_input("Link GPS", row_full['gps_link'])
+                        n_obs = c6.text_input("Observaciones", row_full['observacion']) 
+                        
+                        if st.form_submit_button("Actualizar Dirección"):
+                            with engine.connect() as conn:
+                                # Update query including new fields
+                                conn.execute(text("""
+                                    UPDATE Direcciones SET 
+                                    nombre_receptor=:n, telefono_receptor=:t, direccion_texto=:d, 
+                                    distrito=:di, referencia=:r, gps_link=:g, observacion=:o
+                                    WHERE id_direccion = :id_dir
+                                """), {
+                                    "n": n_nom, "t": n_tel, "d": n_dir, "di": n_dist, "r": n_ref, 
+                                    "g": n_gps , "o": n_obs , # Pass the new variables
+                                    "id_dir": row_full['id_direccion']
+                                })
+                                conn.commit()
+                            # Clear cache to see changes
+                            if 'df_seguimiento_cache' in st.session_state:
+                                del st.session_state['df_seguimiento_cache']
+                            st.success("Dirección actualizada.")
+                            time.sleep(0.5)
+                            st.rerun()
                     # ---------------------------------------------------
 
                     st.markdown("---")
