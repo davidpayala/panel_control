@@ -3,6 +3,7 @@ import pandas as pd
 from sqlalchemy import text
 import io
 import os
+import time
 import streamlit.components.v1 as components 
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh 
@@ -223,18 +224,47 @@ def mostrar_info_avanzada(telefono):
     new_apellido = col_ape.text_input("Apellido", value=cl.get('apellido') or "", key=f"in_ape_{telefono}")
 
     with col_btns:
-        st.write("") 
-        if st.button("📥 Buscar Google", key=f"btn_search_{telefono}", use_container_width=True):
-            with st.spinner("..."):
-                norm = normalizar_telefono_maestro(telefono)
-                datos = buscar_contacto_google(norm['db']) 
-                if datos and datos['encontrado']:
-                    with engine.connect() as conn:
-                        conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, google_id=:gid, nombre_corto=:nc WHERE telefono=:t"), 
-                                     {"n": datos['nombre'], "a": datos['apellido'], "gid": datos['google_id'], "nc": datos['nombre_completo'], "t": telefono})
-                        conn.commit()
-                    st.rerun()
-                else: st.warning("No encontrado")
+            st.write("") 
+            # Cambiamos el texto del botón para reflejar que también crea
+            if st.button("📥 Google (Buscar/Crear)", key=f"btn_search_{telefono}", use_container_width=True):
+                with st.spinner("Conectando con Google..."):
+                    norm = normalizar_telefono_maestro(telefono)
+                    tel_format = norm['db']
+                    
+                    # 1. Intentamos BUSCAR primero
+                    datos = buscar_contacto_google(tel_format) 
+                    
+                    if datos and datos['encontrado']:
+                        # CASO A: ENCONTRADO -> Actualizamos local
+                        with engine.connect() as conn:
+                            conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, google_id=:gid, nombre_corto=:nc WHERE telefono=:t"), 
+                                        {"n": datos['nombre'], "a": datos['apellido'], "gid": datos['google_id'], "nc": datos['nombre_completo'], "t": telefono})
+                            conn.commit()
+                        st.toast("✅ Sincronizado desde Google")
+                        time.sleep(1)
+                        st.rerun()
+                    
+                    else:
+                        # CASO B: NO ENCONTRADO -> CREAMOS EN GOOGLE
+                        # Verificamos si el usuario escribió un nombre en el input
+                        if new_nombre:
+                            gid_nuevo = crear_en_google(new_nombre, new_apellido, tel_format)
+                            
+                            if gid_nuevo:
+                                # Guardamos el nuevo ID de Google en nuestra BD local
+                                nombre_completo = f"{new_nombre} {new_apellido}".strip()
+                                with engine.connect() as conn:
+                                    conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, google_id=:gid, nombre_corto=:nc WHERE telefono=:t"), 
+                                                {"n": new_nombre, "a": new_apellido, "gid": gid_nuevo, "nc": nombre_completo, "t": telefono})
+                                    conn.commit()
+                                
+                                st.success(f"✅ Contacto creado en Google: {nombre_completo}")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error("❌ Error al intentar crear en Google Contacts.")
+                        else:
+                            st.warning("⚠️ Para crear el contacto, escribe primero el NOMBRE en la casilla.")
 
     # BOTÓN GUARDAR GENERAL (Guarda Alias, Etiquetas y Nombres)
     if st.button("💾 GUARDAR CAMBIOS", key=f"btn_save_loc_{telefono}", type="primary", use_container_width=True):
