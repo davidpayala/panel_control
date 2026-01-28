@@ -108,12 +108,12 @@ def normalizar_telefono_maestro(entrada):
         "corto": local
     }
 # ==============================================================================
-# FUNCIONES DE ENVÍO
+# ENVÍO
 # ==============================================================================
 def enviar_mensaje_whatsapp(numero, texto):
     if not WAHA_URL: return False, "⚠️ Falta WAHA_URL"
     norm = normalizar_telefono_maestro(numero)
-    if not norm: return False, "❌ Número inválido o no es un usuario"
+    if not norm: return False, "❌ Número inválido"
     
     url = f"{WAHA_URL}/api/sendText"
     headers = {"Content-Type": "application/json"}
@@ -153,6 +153,94 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
         return False, f"Error {response.status_code}: {response.text}"
     except Exception as e: return False, str(e)
 
+# ==============================================================================
+# SINCRONIZACIÓN (CAPTURANDO CONTENIDO DEL REPLY)
+# ==============================================================================
+def sincronizar_historial(telefono):
+    norm = normalizar_telefono_maestro(telefono)
+    if not norm: return False, "Teléfono inválido"
+    
+    target_db = norm['db']
+    chat_id_waha = norm['waha']
+
+    WAHA_URL = os.getenv("WAHA_URL", "http://waha:3000") 
+    WAHA_API_KEY = os.getenv("WAHA_KEY", "321") 
+    
+    try:
+        headers = {"Content-Type": "application/json", "X-Api-Key": WAHA_API_KEY}
+        url = f"{WAHA_URL}/api/messages?chatId={chat_id_waha}&limit=100&downloadMedia=false"
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            mensajes_waha = response.json()
+            nuevos = 0
+            actualizados = 0
+            
+            with engine.begin() as conn:
+                for msg in mensajes_waha:
+                    cuerpo = msg.get('body', '')
+                    if not cuerpo: continue
+                    
+                    participant_check = msg.get('from')
+                    if not normalizar_telefono_maestro(participant_check): continue 
+
+                    es_mio = msg.get('fromMe', False)
+                    tipo_msg = 'SALIENTE' if es_mio else 'ENTRANTE'
+                    timestamp = msg.get('timestamp')
+                    w_id = msg.get('id', None)
+                    
+                    # --- CAPTURA AVANZADA DE REPLY ---
+                    reply_id = None
+                    reply_body = None
+                    
+                    raw_reply = msg.get('replyTo')
+                    
+                    if isinstance(raw_reply, dict):
+                        # WAHA moderno devuelve objeto: {id: "...", body: "texto citado", ...}
+                        reply_id = raw_reply.get('id')
+                        reply_body = raw_reply.get('body') 
+                    elif isinstance(raw_reply, str):
+                        # WAHA antiguo devuelve solo ID string
+                        reply_id = raw_reply
+
+                    if w_id:
+                        # 1. UPSERT (Actualizar si existe, Insertar si no)
+                        # Intentamos actualizar reply_content si ya existe el mensaje
+                        res = conn.execute(text("""
+                            UPDATE mensajes 
+                            SET reply_to_id = :rid, reply_content = :rbody, contenido = :m 
+                            WHERE whatsapp_id = :wid
+                        """), {"rid": reply_id, "rbody": reply_body, "m": cuerpo, "wid": w_id})
+                        
+                        if res.rowcount > 0:
+                            actualizados += 1
+                        else:
+                            # Insertar nuevo
+                            conn.execute(text("""
+                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id, reply_to_id, reply_content)
+                                VALUES (:t, :tp, :m, to_timestamp(:ts), TRUE, :wid, :rid, :rbody)
+                            """), {
+                                "t": target_db, "tp": tipo_msg, "m": cuerpo, 
+                                "ts": timestamp, "wid": w_id, "rid": reply_id, "rbody": reply_body
+                            })
+                            nuevos += 1
+                    else:
+                        # Fallback simple
+                        existe = conn.execute(text("SELECT count(*) FROM mensajes WHERE telefono=:t AND contenido=:m AND fecha > (NOW() - INTERVAL '24h')"), 
+                                            {"t": target_db, "m": cuerpo}).scalar()
+                        if existe == 0:
+                            conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido) VALUES (:t, :tp, :m, NOW(), TRUE)"), 
+                                        {"t": target_db, "tp": tipo_msg, "m": cuerpo})
+                            nuevos += 1
+            
+            return True, f"Sync: {nuevos} nuevos, {actualizados} act."
+        
+        elif response.status_code == 401: return False, "Error 401 API Key"
+        else: return False, f"Error WAHA: {response.status_code}"
+            
+    except Exception as e:
+        return False, f"Error conexión: {e}"
 
 # ==============================================================================
 # LÓGICA GOOGLE (Contactos)
