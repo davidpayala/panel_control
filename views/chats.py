@@ -114,7 +114,7 @@ def render_chat():
     with col_chat:
         telefono_activo = st.session_state['chat_actual_telefono']
 
-    if telefono_activo:
+        if telefono_activo:
             norm_activo = normalizar_telefono_maestro(telefono_activo)
             titulo_tel = norm_activo['corto'] if norm_activo else telefono_activo
             
