@@ -98,6 +98,49 @@ def render_seguimiento():
         except Exception as e:
             st.error(f"Error: {e}")
 
+    def guardar_datos_envio_completo(id_direccion, id_cliente, datos):
+        """Actualiza la dirección completa (incluyendo GPS/Obs) y el estado desde el formulario"""
+        try:
+            with engine.begin() as conn:
+                # 1. Actualizar Dirección (Si existe ID válido)
+                if id_direccion and id_direccion > 0:
+                    conn.execute(text("""
+                        UPDATE Direcciones SET 
+                            nombre_receptor = :nom,
+                            telefono_receptor = :tel,
+                            distrito = :dist,
+                            direccion_texto = :dir,
+                            referencia = :ref,
+                            gps_link = :gps,
+                            observacion = :obs
+                        WHERE id_direccion = :id_dir
+                    """), {
+                        "nom": datos['nombre_receptor'],
+                        "tel": datos['telefono_receptor'],
+                        "dist": datos['distrito'],
+                        "dir": datos['direccion_texto'],
+                        "ref": datos['referencia'],
+                        "gps": datos['gps_link'],      # <--- SE GUARDA
+                        "obs": datos['observacion'],   # <--- SE GUARDA
+                        "id_dir": id_direccion
+                    })
+                
+                # 2. Actualizar estado del cliente
+                if datos.get('nuevo_estado'):
+                    conn.execute(text("UPDATE Clientes SET estado = :e, fecha_seguimiento = NOW() WHERE id_cliente = :id"),
+                                {"e": datos['nuevo_estado'], "id": id_cliente})
+                                
+            st.toast("✅ Datos de envío actualizados correctamente.", icon="💾")
+            
+            # Limpiar caché para ver los cambios reflejados
+            if 'df_seguimiento_cache' in st.session_state:
+                del st.session_state['df_seguimiento_cache']
+            time.sleep(1)
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Error guardando formulario: {e}")
+
     # --- 4. RENDERIZADO ---
     if not df_seg.empty:
         # Filtros sobre el DF en memoria
@@ -204,40 +247,48 @@ def render_seguimiento():
                     st.divider()
                     st.info(f"📍 Editando dirección de: **{row_full['nombre_corto']}**")
                     
-                    with st.form("form_moto_dir"):
-                        c1, c2, c3 = st.columns(3)
-                        n_nom = c1.text_input("Recibe", row_full['nombre_receptor'])
-                        n_tel = c2.text_input("Teléfono", row_full['telefono_receptor'])
-                        n_dist = c3.text_input("Distrito", row_full['distrito'])
-                        st.caption("📍 Ubicación")
-                        n_dir = st.text_input("Dirección Exacta", row_full['direccion_texto'])
-                        
-                        c4, c5, c6 = st.columns(3)
-                        n_ref = c4.text_input("Referencia", row_full['referencia'])
-                        # --- AGREGADO GPS Y OBS ---
-                        n_gps = c5.text_input("Link GPS", row_full['gps_link'])
-                        n_obs = c6.text_input("Observaciones", row_full['observacion']) 
-                
-                # Singular en DB
-                        if st.form_submit_button("Actualizar Dirección"):
-                            with engine.connect() as conn:
-                                # Update inteligente: actualiza la última dirección activa
-                                conn.execute(text("""
-                                    UPDATE Direcciones SET 
-                                    nombre_receptor=:n, telefono_receptor=:t, direccion_texto=:d, 
-                                    distrito=:di, referencia=:r 
-                                    WHERE id_direccion = :id_dir
-                                """), {
-                                    "n": n_nom, "t": n_tel, "d": n_dir, "di": n_dist, "r": n_ref, 
-                                    "id_dir": row_full['id_direccion']
-                                })
-                                conn.commit()
-                            # Borramos cache para ver cambios
-                            if 'df_seguimiento_cache' in st.session_state:
-                                del st.session_state['df_seguimiento_cache']
-                            st.success("Dirección actualizada.")
-                            time.sleep(0.5)
-                            st.rerun()
+# ... (código anterior donde seleccionas el cliente) ...
+            
+            # REEMPLAZA DESDE AQUÍ HACIA ABAJO (SOLO EL FORMULARIO)
+                with st.form("form_moto_dir"):
+                    st.caption("📦 Datos del Receptor")
+                    c1, c2, c3 = st.columns(3)
+                    n_nom = c1.text_input("Recibe", row_full['nombre_receptor'])
+                    n_tel = c2.text_input("Teléfono", row_full['telefono_receptor'])
+                    n_dist = c3.text_input("Distrito", row_full['distrito'])
+                    
+                    st.caption("📍 Ubicación y Detalles")
+                    n_dir = st.text_input("Dirección", row_full['direccion_texto'])
+                    
+                    # --- AQUÍ ESTÁ LA MODIFICACIÓN: 3 COLUMNAS AHORA ---
+                    c4, c5, c6 = st.columns(3)
+                    n_ref = c4.text_input("Referencia", row_full['referencia'])
+                    n_gps = c5.text_input("Link GPS", row_full['gps_link'])          # <--- NUEVO CAMPO
+                    n_obs = c6.text_input("Observaciones", row_full['observacion'])   # <--- NUEVO CAMPO
+                    # ---------------------------------------------------
+
+                    st.markdown("---")
+                    col_st, col_btn = st.columns([2, 1])
+                    
+                    # Mantiene el estado actual seleccionado por defecto
+                    idx_estado = 0
+                    if row_full['estado'] in TODOS_LOS_ESTADOS:
+                        idx_estado = TODOS_LOS_ESTADOS.index(row_full['estado'])
+                    
+                    nuevo_estado = col_st.selectbox("Mover a Estado:", TODOS_LOS_ESTADOS, index=idx_estado)
+                    
+                    if col_btn.form_submit_button("💾 Guardar Guía Completa", type="primary"):
+                        datos_form = {
+                            "nombre_receptor": n_nom, 
+                            "telefono_receptor": n_tel,
+                            "distrito": n_dist, 
+                            "direccion_texto": n_dir,
+                            "referencia": n_ref, 
+                            "gps_link": n_gps,     # <--- SE AGREGA AL GUARDAR
+                            "observacion": n_obs,  # <--- SE AGREGA AL GUARDAR
+                            "nuevo_estado": nuevo_estado
+                        }
+                        guardar_datos_envio_completo(row_full['id_direccion'], row_full['id_cliente'], datos_form)
             else:
                 st.caption("No hay pedidos para motorizado.")
 
