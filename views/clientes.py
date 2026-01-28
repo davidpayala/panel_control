@@ -15,95 +15,133 @@ OPCIONES_TAGS = [
 ]
 
 # ==============================================================================
-# SUB-COMPONENTE: GESTIÓN DE DIRECCIONES
+# SUB-COMPONENTE: GESTIÓN DE DIRECCIONES (CORREGIDO GPS Y REF)
 # ==============================================================================
 def render_gestion_direcciones(id_cliente, nombre_cliente):
     st.markdown(f"### 📍 Direcciones de: {nombre_cliente}")
     
-    # 1. AGREGAR NUEVA
-    with st.expander("➕ Agregar Nueva Dirección"):
+    # 1. AGREGAR NUEVA DIRECCIÓN
+    with st.expander("➕ Agregar Nueva Dirección", expanded=True):
         with st.form(f"form_add_dir_{id_cliente}"):
+            st.caption("Datos de Ubicación")
             c1, c2, c3 = st.columns(3)
             tipo = c1.selectbox("Tipo de Envío", ["DOMICILIO", "MOTO", "AGENCIA SHALOM", "AGENCIA OLVA", "OTRA AGENCIA"])
             distrito = c2.text_input("Distrito / Ciudad")
-            referencia = c3.text_input("Referencia")
-            dir_texto = st.text_input("Dirección Exacta o Nombre de Agencia")
+            dir_texto = c3.text_input("Dirección Exacta")
             
+            # --- AQUÍ ESTÁ LA CORRECCIÓN DE CAMPOS ---
+            c_ref, c_gps, c_obs = st.columns(3)
+            referencia = c_ref.text_input("Referencia (Ej: Frente al parque)")
+            gps = c_gps.text_input("Link GPS / Google Maps") # Se guardará en gps_link
+            observaciones = c_obs.text_input("Observaciones Adicionales")
+            
+            st.caption("Datos de Quien Recibe")
             c4, c5, c6 = st.columns(3)
-            receptor = c4.text_input("Receptor (Opcional)")
+            receptor = c4.text_input("Nombre Receptor")
             dni_rec = c5.text_input("DNI Receptor")
             tel_rec = c6.text_input("Telf. Receptor")
             
-            agencia_detalles = ""
+            # Campos específicos para agencia
+            sede_agencia = ""
             if "AGENCIA" in tipo:
-                agencia_detalles = st.text_input("Sede / Observación Agencia")
+                sede_agencia = st.text_input("Sede de Agencia (Ej: Shalom Comas)", help="Específica la oficina de envío")
 
             if st.form_submit_button("Guardar Dirección"):
                 if not dir_texto or not distrito:
-                    st.error("Dirección y distrito obligatorios.")
+                    st.error("Dirección y distrito son obligatorios.")
                 else:
                     try:
-                        # CORRECCIÓN: Usamos engine.begin() para evitar conflictos de transacción
+                        # INSERT CORRECTO: Usando gps_link y referencia por separado
                         with engine.begin() as conn:
                             conn.execute(text("""
                                 INSERT INTO Direcciones (
-                                    id_cliente, tipo_envio, direccion_texto, distrito, referencia,
+                                    id_cliente, tipo_envio, direccion_texto, distrito, 
+                                    referencia, gps_link, observaciones,
                                     nombre_receptor, dni_receptor, telefono_receptor, 
-                                    agencia_nombre, sede_entrega, activo
+                                    sede_entrega, activo
                                 ) VALUES (
-                                    :id, :tipo, :dir, :dist, :ref,
+                                    :id, :tipo, :dir, :dist, 
+                                    :ref, :gps, :obs,
                                     :nom, :dni, :tel,
-                                    :agencia, :sede, TRUE
+                                    :sede, TRUE
                                 )
                             """), {
-                                "id": id_cliente, "tipo": tipo, "dir": dir_texto, "dist": distrito, "ref": referencia,
+                                "id": id_cliente, "tipo": tipo, "dir": dir_texto, "dist": distrito,
+                                "ref": referencia, "gps": gps, "obs": observaciones,
                                 "nom": receptor, "dni": dni_rec, "tel": tel_rec,
-                                "agencia": tipo if "AGENCIA" in tipo else None, 
-                                "sede": agencia_detalles
+                                "sede": sede_agencia
                             })
-                        st.success("✅ Dirección agregada.")
+                        st.success("✅ Dirección guardada correctamente con GPS y Referencia.")
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Error al guardar en DB: {e}")
 
     # 2. EDITAR EXISTENTES
-    # Lectura simple (no necesita transacción)
     with engine.connect() as conn:
-        df_dirs = pd.read_sql(text("SELECT id_direccion, activo, tipo_envio, direccion_texto, distrito, referencia, nombre_receptor, dni_receptor, telefono_receptor, sede_entrega FROM Direcciones WHERE id_cliente = :id ORDER BY id_direccion DESC"), conn, params={"id": id_cliente})
+        # Traemos explícitamente gps_link y referencia
+        query = """
+            SELECT 
+                id_direccion, activo, tipo_envio, 
+                direccion_texto, distrito, referencia, gps_link, observaciones,
+                nombre_receptor, dni_receptor, telefono_receptor, sede_entrega 
+            FROM Direcciones 
+            WHERE id_cliente = :id 
+            ORDER BY id_direccion DESC
+        """
+        try:
+            df_dirs = pd.read_sql(text(query), conn, params={"id": id_cliente})
+        except Exception as e:
+            st.error(f"Error leyendo direcciones: {e}")
+            df_dirs = pd.DataFrame()
 
     if not df_dirs.empty:
+        st.markdown("#### 📝 Editar Direcciones Existentes")
         cambios_dir = st.data_editor(
             df_dirs,
             key=f"editor_dirs_{id_cliente}",
             column_config={
                 "id_direccion": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "activo": st.column_config.CheckboxColumn("Activo?", help="Desmarca para borrar"),
+                "activo": st.column_config.CheckboxColumn("Activo?", width="small"),
                 "tipo_envio": st.column_config.SelectboxColumn("Tipo", options=["DOMICILIO", "MOTO", "AGENCIA SHALOM", "AGENCIA OLVA", "OTRA AGENCIA"], required=True),
-                "direccion_texto": st.column_config.TextColumn("Dirección", required=True, width="large"),
+                "direccion_texto": st.column_config.TextColumn("Dirección", required=True, width="medium"),
+                "gps_link": st.column_config.TextColumn("Link GPS", width="medium"), # Ahora mapeado a gps_link
+                "referencia": st.column_config.TextColumn("Referencia", width="medium"),
+                "observaciones": st.column_config.TextColumn("Obs", width="small"),
+                "sede_entrega": st.column_config.TextColumn("Sede Agencia"),
             },
-            hide_index=True, use_container_width=True
+            hide_index=True, use_container_width=True, num_rows="dynamic"
         )
 
-        if st.button("💾 Actualizar Direcciones", key=f"btn_upd_dir_{id_cliente}"):
+        if st.button("💾 Guardar Cambios en Direcciones", key=f"btn_upd_dir_{id_cliente}"):
             try:
-                # CORRECCIÓN: Transacción segura
                 with engine.begin() as conn:
                     for idx, row in cambios_dir.iterrows():
+                        # Si es una fila nueva agregada desde el editor (ID vacío/NaN)
+                        if pd.isna(row.get("id_direccion")):
+                            continue 
+                            
+                        # UPDATE COMPLETO: Asegurando que gps_link y referencia se actualicen
                         conn.execute(text("""
-                            UPDATE Direcciones SET activo=:act, tipo_envio=:tipo, direccion_texto=:dir, distrito=:dist, referencia=:ref, nombre_receptor=:nom, dni_receptor=:dni, telefono_receptor=:tel, sede_entrega=:sede WHERE id_direccion=:id
+                            UPDATE Direcciones SET 
+                                activo=:act, tipo_envio=:tipo, direccion_texto=:dir, 
+                                distrito=:dist, referencia=:ref, gps_link=:gps, observaciones=:obs,
+                                nombre_receptor=:nom, dni_receptor=:dni, telefono_receptor=:tel, 
+                                sede_entrega=:sede 
+                            WHERE id_direccion=:id
                         """), {
                             "act": row['activo'], "tipo": row['tipo_envio'], "dir": row['direccion_texto'],
-                            "dist": row['distrito'], "ref": row['referencia'], "nom": row['nombre_receptor'],
-                            "dni": row['dni_receptor'], "tel": row['telefono_receptor'], "sede": row['sede_entrega'], "id": row['id_direccion']
+                            "dist": row['distrito'], "ref": row['referencia'], "gps": row['gps_link'], "obs": row['observaciones'],
+                            "nom": row['nombre_receptor'], "dni": row['dni_receptor'], "tel": row['telefono_receptor'], 
+                            "sede": row['sede_entrega'], "id": row['id_direccion']
                         })
-                st.success("Actualizado.")
+                st.success("✅ Direcciones actualizadas.")
                 time.sleep(0.5)
                 st.rerun()
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error al actualizar: {e}")
     else:
-        st.caption("Sin direcciones.")
+        st.info("Este cliente aún no tiene direcciones registradas.")
 
 # ==============================================================================
 # VISTA PRINCIPAL
@@ -147,12 +185,10 @@ def render_clientes():
 
                         if not nombre_corto: nombre_corto = f"{nombre_real} {apellido_real}".strip() or "Cliente Nuevo"
                         
-                        # CALCULO NOMBRE IA
                         nombre_ia_calc = generar_nombre_ia(nombre_corto, nombre_real)
                         tags_str = ",".join(tags_nuevos)
 
                         try:
-                            # CORRECCIÓN: Transacción segura
                             with engine.begin() as conn:
                                 conn.execute(text("""
                                     INSERT INTO Clientes (nombre_corto, nombre, apellido, telefono, etiquetas, estado, google_id, nombre_ia, activo, fecha_registro)
@@ -172,11 +208,9 @@ def render_clientes():
     with st.expander("⚡ Herramientas Masivas"):
         if st.button("🪄 Generar Nombres IA para TODOS (Backfill)"):
             with st.spinner("Analizando nombres..."):
-                # PASO 1: LEER (Solo lectura)
                 with engine.connect() as conn:
                     clientes = pd.read_sql(text("SELECT id_cliente, nombre_corto, nombre FROM Clientes WHERE activo=TRUE"), conn)
                 
-                # PASO 2: ESCRIBIR (Transacción segura)
                 count = 0
                 try:
                     with engine.begin() as conn:
@@ -185,7 +219,7 @@ def render_clientes():
                             conn.execute(text("UPDATE Clientes SET nombre_ia = :nia WHERE id_cliente = :id"), 
                                          {"nia": nuevo_ia, "id": row['id_cliente']})
                             count += 1
-                    st.success(f"✅ Procesados {count} clientes. Nombres IA actualizados.")
+                    st.success(f"✅ Procesados {count} clientes.")
                 except Exception as e:
                     st.error(f"Error masivo: {e}")
 
@@ -224,16 +258,13 @@ def render_clientes():
 
             if st.button("💾 Guardar Cambios Masivos", type="primary"):
                 try:
-                    # CORRECCIÓN: Transacción segura
                     with engine.begin() as conn:
                         for _, row in edited_df.iterrows():
                             tags_final = ",".join(row['etiquetas_list']) if isinstance(row['etiquetas_list'], list) else ""
-                            
                             conn.execute(text("""
                                 UPDATE Clientes SET nombre_ia=:nia, estado=:e, etiquetas=:tag 
                                 WHERE id_cliente=:id
                             """), {"nia": row['nombre_ia'], "e": row['estado'], "tag": tags_final, "id": row['id_cliente']})
-                    
                     st.success("Datos guardados.")
                     time.sleep(1)
                     st.rerun()
@@ -244,7 +275,7 @@ def render_clientes():
             st.divider()
             st.markdown("#### 🚚 Gestionar Direcciones")
             opciones_clientes = df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
-            cliente_seleccionado = st.selectbox("Selecciona cliente:", opciones_clientes)
+            cliente_seleccionado = st.selectbox("Selecciona cliente para ver direcciones:", opciones_clientes)
             
             if cliente_seleccionado:
                 row_sel = df[df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1) == cliente_seleccionado].iloc[0]
@@ -253,7 +284,7 @@ def render_clientes():
         else:
             st.info("No se encontraron clientes.")
     
-    # 3. FUSIÓN DE DUPLICADOS (FIXED CHATS)
+    # 3. FUSIÓN DE DUPLICADOS
     st.divider()
     st.subheader("🧬 Fusión de Clientes Duplicados")
     
@@ -291,9 +322,7 @@ def render_clientes():
                 st.error("Son el mismo cliente.")
             else:
                 try:
-                    # CORRECCIÓN: Transacción segura
                     with engine.begin() as conn:
-                        # Obtener teléfonos
                         dup_data = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente=:id"), {"id": id_duplicado}).fetchone()
                         orig_data = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente=:id"), {"id": id_original}).fetchone()
                         
@@ -301,14 +330,9 @@ def render_clientes():
                             tel_old = dup_data.telefono
                             tel_new = orig_data.telefono
                             
-                            # 1. Mover CHATS (Clave)
                             conn.execute(text("UPDATE mensajes SET telefono=:nt, id_cliente=:ni WHERE telefono=:ot"), {"nt": tel_new, "ni": id_original, "ot": tel_old})
-                            
-                            # 2. Mover Ventas y Direcciones
                             conn.execute(text("UPDATE Ventas SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
                             conn.execute(text("UPDATE Direcciones SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
-                            
-                            # 3. Desactivar duplicado
                             conn.execute(text("UPDATE Clientes SET activo=FALSE, nombre_corto=nombre_corto||' (FUSIONADO)' WHERE id_cliente=:old"), {"old": id_duplicado})
                     
                     st.success("✅ Fusión completada.")
