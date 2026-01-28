@@ -1,110 +1,25 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-import json
 import io
 import os
 import time
+import requests
 import streamlit.components.v1 as components 
-import requests  # <--- AGREGAR ESTO
-from datetime import datetime
 from streamlit_autorefresh import st_autorefresh 
 from database import engine 
 from utils import (
     enviar_mensaje_media, enviar_mensaje_whatsapp, 
     normalizar_telefono_maestro, buscar_contacto_google, 
-    crear_en_google
+    crear_en_google, sincronizar_historial
 )
 
-# Copiamos las mismas opciones para mantener consistencia
 OPCIONES_TAGS = [
     "🚫 SPAM", "⚠️ Problemático", "💎 VIP / Recurrente", 
     "✅ Compró", "👀 Prospecto", "❓ Preguntón", 
     "📉 Pide Rebaja", "📦 Mayorista"
 ]
 
-# ==============================================================================
-# FUNCIONES DE SINCRONIZACION (WAHA)
-# ==============================================================================
-def sincronizar_historial(telefono):
-    norm = normalizar_telefono_maestro(telefono)
-    if not norm: return False, "Teléfono inválido"
-    
-    target_db = norm['db']
-    chat_id_waha = norm['waha']
-
-    WAHA_URL = os.getenv("WAHA_URL", "http://waha:3000") 
-    WAHA_API_KEY = os.getenv("WAHA_KEY", "321") 
-    
-    try:
-        headers = {"Content-Type": "application/json", "X-Api-Key": WAHA_API_KEY}
-        # Pedimos 100 mensajes para asegurar que actualizamos historial reciente
-        url = f"{WAHA_URL}/api/messages?chatId={chat_id_waha}&limit=100&downloadMedia=false"
-        
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            mensajes_waha = response.json()
-            nuevos = 0
-            actualizados = 0
-            
-            with engine.begin() as conn:
-                for msg in mensajes_waha:
-                    cuerpo = msg.get('body', '')
-                    if not cuerpo: continue
-                    
-                    participant_check = msg.get('from')
-                    if not normalizar_telefono_maestro(participant_check): continue 
-
-                    es_mio = msg.get('fromMe', False)
-                    tipo_msg = 'SALIENTE' if es_mio else 'ENTRANTE'
-                    timestamp = msg.get('timestamp')
-                    w_id = msg.get('id', None)
-                    
-                    # Captura de Reply
-                    reply_id = msg.get('replyTo') 
-                    if isinstance(reply_id, dict): reply_id = reply_id.get('id')
-
-                    if w_id:
-                        # 1. INTENTAR ACTUALIZAR PRIMERO (Por si ya existe pero le falta el reply)
-                        res = conn.execute(text("""
-                            UPDATE mensajes 
-                            SET reply_to_id = :rid, contenido = :m 
-                            WHERE whatsapp_id = :wid
-                        """), {"rid": reply_id, "m": cuerpo, "wid": w_id})
-                        
-                        if res.rowcount > 0:
-                            actualizados += 1
-                        else:
-                            # 2. SI NO ACTUALIZÓ, ENTONCES INSERTAMOS
-                            conn.execute(text("""
-                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id, reply_to_id)
-                                VALUES (:t, :tp, :m, to_timestamp(:ts), TRUE, :wid, :rid)
-                            """), {
-                                "t": target_db, "tp": tipo_msg, "m": cuerpo, 
-                                "ts": timestamp, "wid": w_id, "rid": reply_id
-                            })
-                            nuevos += 1
-                    else:
-                        # Fallback simple
-                        existe = conn.execute(text("SELECT count(*) FROM mensajes WHERE telefono=:t AND contenido=:m AND fecha > (NOW() - INTERVAL '24h')"), 
-                                            {"t": target_db, "m": cuerpo}).scalar()
-                        if existe == 0:
-                            conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido) VALUES (:t, :tp, :m, NOW(), TRUE)"), 
-                                        {"t": target_db, "tp": tipo_msg, "m": cuerpo})
-                            nuevos += 1
-            
-            return True, f"Sync: {nuevos} nuevos, {actualizados} actualizados."
-        
-        elif response.status_code == 401: return False, "Error 401 API Key"
-        else: return False, f"Error WAHA: {response.status_code}"
-            
-    except Exception as e:
-        return False, f"Error conexión: {e}"
-        
-# ==============================================================================
-# Render Chat
-# ==============================================================================
 def render_chat():
     st_autorefresh(interval=10000, key="chat_autorefresh")
     st.title("💬 Chat Center")
@@ -112,7 +27,7 @@ def render_chat():
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # CSS: Agregamos estilos específicos para la caja de la cita (Reply)
+    # CSS OPTIMIZADO: Quita los márgenes del código y ajusta la burbuja
     st.markdown("""
     <style>
     div.stButton > button:first-child { text-align: left; width: 100%; border-radius: 8px; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; }
@@ -133,21 +48,19 @@ def render_chat():
     .incoming { background-color: #262730; margin-right: auto; border-bottom-left-radius: 2px; }
     .outgoing { background-color: #004d40; margin-left: auto; border-bottom-right-radius: 2px; }
     
-    /* ESTILO DE LA CITA */
     .reply-context {
-        background-color: rgba(0, 0, 0, 0.2);
+        background-color: rgba(0, 0, 0, 0.25);
         border-left: 4px solid #00e676;
-        border-radius: 4px;
-        padding: 6px 8px;
-        margin-bottom: 6px;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
         font-size: 0.85em;
         display: flex;
         flex-direction: column;
-        cursor: pointer;
     }
     
     .reply-author { font-weight: bold; color: #00e676; margin-bottom: 2px; font-size: 0.9em; }
-    .reply-text { color: #eeeeee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
+    .reply-text { color: #eeeeee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.9; }
     
     .chat-meta { font-size: 10px; opacity: 0.6; margin-top: 4px; align-self: flex-end; }
     
@@ -158,7 +71,7 @@ def render_chat():
 
     col_lista, col_chat = st.columns([1, 2.5])
 
-    # --- SIDEBAR (LISTA DE CHATS) ---
+    # --- SIDEBAR ---
     with col_lista:
         st.subheader("Bandeja")
         filtro = st.text_input("🔍 Buscar", placeholder="Teléfono o nombre")
@@ -191,7 +104,7 @@ def render_chat():
                 st.session_state['chat_actual_telefono'] = c.telefono
                 st.rerun()
 
-    # --- ÁREA DE CHAT ACTIVO ---
+    # --- CHAT ACTIVO ---
     with col_chat:
         tel_activo = st.session_state['chat_actual_telefono']
         if tel_activo:
@@ -225,27 +138,20 @@ def render_chat():
             
             if ver_ficha: mostrar_info_avanzada(tel_activo)
 
-            # --- CONSULTA SQL MEJORADA (TRAE EL MENSAJE CITADO) ---
-            # Hacemos LEFT JOIN para buscar el contenido del mensaje original
+            # LECTURA MENSAJES (PRIORIDAD: reply_content LOCAL > JOIN)
             query_msgs = """
-                SELECT 
-                    m.*, 
-                    orig.contenido as reply_texto, 
-                    orig.tipo as reply_tipo,
-                    orig.archivo_data as reply_archivo
+                SELECT m.*, 
+                       orig.contenido as reply_texto_join, 
+                       orig.tipo as reply_tipo
                 FROM mensajes m 
                 LEFT JOIN mensajes orig ON m.reply_to_id = orig.whatsapp_id
-                WHERE m.telefono = :t 
-                ORDER BY m.fecha ASC
+                WHERE m.telefono = :t ORDER BY m.fecha ASC
             """
-            
             with engine.connect() as conn:
-                # Marcar como leídos al abrir
                 conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": tel_activo})
                 conn.commit()
                 msgs = pd.read_sql(text(query_msgs), conn, params={"t": tel_activo})
 
-            # --- RENDERIZADO DE MENSAJES ---
             cont = st.container(height=500)
             with cont:
                 for _, m in msgs.iterrows():
@@ -254,38 +160,33 @@ def render_chat():
                     
                     if m['archivo_data']: body = "📄 [Archivo Adjunto]"
 
-                    # 1. Construcción del HTML de la cita (Reply)
                     reply_html = ""
-                    if m['reply_to_id']:
-                        # Definimos el autor de la cita
-                        autor = "Tú" if m['reply_tipo'] == 'SALIENTE' else "Cliente"
-                        
-                        # Definimos el texto de la cita
-                        txt_r = m['reply_texto']
-                        if not txt_r and m['reply_archivo']: 
-                            txt_r = "📷 [Foto/Archivo]"
-                        elif not txt_r:
-                            txt_r = "Mensaje no disponible"
-                        
-                        # Cortamos si es muy largo
-                        txt_r = (txt_r[:60] + '...') if len(txt_r) > 60 else txt_r
-                        
-                        # HTML Compacto (Sin indentación para evitar bug visual)
-                        reply_html = f"""<div class="reply-context"><span class="reply-author">{autor}</span><span class="reply-text">{txt_r}</span></div>"""
+                    # Priorizamos el contenido guardado directamente (reply_content)
+                    texto_cita = m['reply_content'] if 'reply_content' in m and m['reply_content'] else m['reply_texto_join']
 
-                    # 2. Renderizado Final del Mensaje
-                    # IMPORTANTE: Todo en una línea o pegado a la izquierda para evitar que Streamlit lo muestre como código
-                    st.markdown(f"""<div class='chat-bubble {cls}'>{reply_html}<span>{body}</span><span class='chat-meta'>{m['fecha'].strftime('%H:%M')}</span></div>""", unsafe_allow_html=True)
+                    if m['reply_to_id'] and texto_cita:
+                        # Si no sabemos quién fue (porque vino del content directo), asumimos por defecto o miramos el tipo del join
+                        autor = "Respuesta"
+                        if m['reply_tipo']:
+                            autor = "Tú" if m['reply_tipo'] == 'SALIENTE' else "Cliente"
+                        
+                        # Cortamos texto largo
+                        txt_r = (texto_cita[:60] + '...') if len(texto_cita) > 60 else texto_cita
+                        
+                        # HTML EN UNA SOLA LÍNEA para evitar bug visual de Streamlit
+                        reply_html = f'<div class="reply-context"><span class="reply-author">{autor}</span><span class="reply-text">{txt_r}</span></div>'
+
+                    # RENDERIZADO FINAL SIN ESPACIOS AL INICIO DEL STRING HTML
+                    html_msg = f"""<div class='chat-bubble {cls}'>{reply_html}<span>{body}</span><span class='chat-meta'>{m['fecha'].strftime('%H:%M')}</span></div>"""
+                    st.markdown(html_msg, unsafe_allow_html=True)
                     
-                    # 3. Mostrar imagen si existe
                     if m['archivo_data']:
                         try: st.image(io.BytesIO(m['archivo_data']), width=200)
                         except: pass
                 
-                # Auto-scroll JS
                 components.html("<script>var x=window.parent.document.querySelectorAll('.stChatMessage'); if(x.length>0)x[x.length-1].scrollIntoView();</script>", height=0)
 
-            # --- INPUT DE MENSAJE ---
+            # INPUT
             with st.form("send_form", clear_on_submit=True):
                 c_in, c_btn = st.columns([4, 1])
                 txt = c_in.text_input("Mensaje", key="txt_in")
@@ -311,7 +212,6 @@ def mostrar_info_avanzada(telefono):
         id_cliente = cl.get('id_cliente')
         dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE id_cliente=:id"), conn, params={"id": id_cliente})
 
-    # EDICIÓN
     with st.container():
         c1, c2 = st.columns(2)
         new_corto = c1.text_input("Alias", value=cl.get('nombre_corto') or "", key=f"in_corto_{telefono}")
