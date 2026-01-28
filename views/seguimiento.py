@@ -3,7 +3,7 @@ import pandas as pd
 import time
 from sqlalchemy import text
 from database import engine
-from datetime import datetime, timedelta # <--- AGREGA ESTO AL INICIO
+from datetime import datetime, timedelta
 
 def render_seguimiento():
     # CSS para ajustar altura de filas
@@ -226,7 +226,7 @@ def render_seguimiento():
 
                 if c_btn2.button("📋 Generar Lista Ruta"):
                     # 1. CALCULAR FECHA DE MAÑANA
-                    fecha_manana = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+                    fecha_manana = (datetime.now() - timedelta(hours=5) + timedelta(days=1)).strftime("%d/%m/%Y")
             
                     # 2. CREAR ENCABEZADO
                     texto_lista = f"*Fecha {fecha_manana}*\n"
@@ -237,6 +237,16 @@ def render_seguimiento():
                     count = 1
                     df_rut = df_moto.loc[event_moto.index] # Usamos el orden actual
                     for idx, row in df_rut.iterrows():
+                        # Lógica para convertir el monto a número seguro
+                        try:
+                            monto = float(row['pendiente_pago']) if row['pendiente_pago'] else 0.0
+                        except:
+                            monto = 0.0
+                        # LÓGICA DE COBRO: Si es 0, dice "Pagó todo"
+                        if monto <= 0:
+                            str_cobro = "Pagó todo"
+                        else:
+                            str_cobro = f"S/ {monto:.2f}"
                         monto = float(row['pendiente_pago']) if pd.notnull(row['pendiente_pago']) else 0.0
                         texto_ruta += f"*Pedido {count}*\n"
                         texto_ruta += f"*Recibe:* {row['nombre_receptor'] or ''}\n"
@@ -245,8 +255,8 @@ def render_seguimiento():
                         texto_ruta += f"*Distrito:* {row['distrito'] or ''}\n"
                         texto_ruta += f"*GPS:* {row['gps_link'] or ''}\n"
                         texto_ruta += f"*Telf:* {row['telefono_receptor'] or ''}\n"
-                        texto_ruta += f"*Cobrar:* S/ {monto:.2f}\n"
-                        texto_ruta += f"*Telf:* {row['observacion'] or ''}\n"
+                        texto_ruta += f"*Cobrar:* {str_cobro}\n"
+                        texto_ruta += f"*Observación:* {row['observacion'] or ''}\n"
                         texto_ruta += "----------------------------------\n"
                         count += 1
                     st.code(texto_ruta)
