@@ -4,60 +4,13 @@ import time
 from sqlalchemy import text
 from database import engine
 
-def guardar_edicion_rapida(df_modificado, etapa_key):
-    """Guarda cambios de Estado y Dirección Completa"""
-    if df_modificado.empty: return
-    
-    try:
-        count = 0
-        with engine.begin() as conn:
-            for index, row in df_modificado.iterrows():
-                # 1. Actualizar ESTADO del Cliente
-                if 'estado' in row and row['estado']:
-                    conn.execute(text("UPDATE Clientes SET estado = :e, fecha_seguimiento = NOW() WHERE id_cliente = :id"), 
-                                 {"e": row['estado'], "id": row['id_cliente']})
-                
-                # 2. Actualizar DIRECCIÓN (Si es una fila con dirección)
-                if 'id_direccion' in row and pd.notna(row['id_direccion']) and row['id_direccion'] > 0:
-                    conn.execute(text("""
-                        UPDATE Direcciones SET 
-                            activo = :act,
-                            tipo_envio = :tipo,
-                            distrito = :dist,
-                            direccion_texto = :dir,
-                            gps_link = :gps,
-                            referencia = :ref,
-                            observacion = :obs
-                        WHERE id_direccion = :id_dir
-                    """), {
-                        "act": row.get('dir_activo', True), # El Check
-                        "tipo": row.get('tipo_envio', 'DOMICILIO'),
-                        "dist": row.get('distrito', ''),
-                        "dir": row.get('direccion_texto', ''),
-                        "gps": row.get('gps_link', ''),
-                        "ref": row.get('referencia', ''),
-                        "obs": row.get('observacion', ''),
-                        "id_dir": row['id_direccion']
-                    })
-                count += 1
-                
-        st.toast(f"✅ {count} registros actualizados.", icon="💾")
-        if 'df_seguimiento_cache' in st.session_state:
-            del st.session_state['df_seguimiento_cache']
-        time.sleep(1)
-        st.rerun()
-    except Exception as e:
-        st.error(f"Error guardando {etapa_key}: {e}")
-
 def render_seguimiento():
-    # Estilos para celdas más amplias
+    # CSS para ajustar altura de filas
     st.markdown("""
         <style>
             div[data-testid="stDataEditor"] td {
                 white-space: pre-wrap !important;
                 vertical-align: top !important;
-                font-size: 13px;
-                min-width: 100px;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -65,6 +18,7 @@ def render_seguimiento():
     c_titulo, c_refresh = st.columns([4, 1])
     c_titulo.subheader("🎯 Tablero de Seguimiento Logístico")
     
+    # BOTÓN MANUAL DE RECARGA (Para evitar auto-refresco molesto)
     if c_refresh.button("🔄 Recargar Datos"):
         if 'df_seguimiento_cache' in st.session_state:
             del st.session_state['df_seguimiento_cache']
@@ -76,166 +30,332 @@ def render_seguimiento():
         "ETAPA_1": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
         "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"],
         "ETAPA_3": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
-        "ETAPA_4": ["Pendiente agradecer", "Problema post", "Venta cerrada", "Post-venta"]
+        "ETAPA_4": ["Pendiente agradecer", "Problema post"]
     }
     TODOS_LOS_ESTADOS = [e for lista in ETAPAS.values() for e in lista]
-    OPCIONES_ENVIO = ["DOMICILIO", "MOTO", "AGENCIA SHALOM", "AGENCIA OLVA", "OTRA AGENCIA"]
 
-    # --- 2. CARGA DE DATOS ---
-    if 'df_seguimiento_cache' in st.session_state:
-        df = st.session_state['df_seguimiento_cache']
-    else:
-        # Nota: Quitamos "AND d.activo = TRUE" para ver todas y poder activar/desactivar con el check
-        query = """
-            SELECT 
-                c.id_cliente, c.nombre_corto, c.telefono, c.estado, c.fecha_seguimiento,
-                d.id_direccion, d.activo as dir_activo, d.tipo_envio, d.distrito, d.direccion_texto,
-                d.gps_link, d.referencia, d.observacion,
-                (SELECT STRING_AGG(CONCAT('S/ ', total_venta, ' (', COALESCE(nota, '-'), ')'), ', ') 
-                 FROM Ventas v WHERE v.id_cliente = c.id_cliente AND v.fecha_venta > (NOW() - INTERVAL '30 days')) as resumen_items
-            FROM Clientes c
-            LEFT JOIN Direcciones d ON c.id_cliente = d.id_cliente
-            WHERE c.activo = TRUE
-            ORDER BY c.fecha_seguimiento DESC
-        """
+    # --- 2. CARGA DE DATOS CONTROLADA (FIX DEL PARPADEO) ---
+    # Solo consultamos la DB si no existe en memoria o si forzamos recarga
+    if 'df_seguimiento_cache' not in st.session_state:
+        with engine.connect() as conn:
+            query_seg = text("""
+                SELECT 
+                    c.id_cliente, c.nombre_corto, c.telefono, c.estado, c.fecha_seguimiento, 
+                    
+                    -- Datos de Venta
+                    v.id_venta, v.total_venta, v.clave_seguridad, 
+                    v.fecha_venta, 
+                    v.pendiente_pago,
+                    (SELECT STRING_AGG(d.cantidad || 'x ' || d.descripcion, ', ') 
+                        FROM DetalleVenta d WHERE d.id_venta = v.id_venta) as resumen_items,
+
+                    -- Datos de Dirección
+                    dir.id_direccion, dir.nombre_receptor, dir.telefono_receptor, 
+                    dir.direccion_texto, dir.distrito, 
+                    dir.referencia, dir.gps, dir.observacion,
+                    dir.dni_receptor, dir.agencia_nombre, dir.sede_entrega
+
+                FROM Clientes c
+                LEFT JOIN LATERAL (
+                    SELECT * FROM Ventas v2 WHERE v2.id_cliente = c.id_cliente ORDER BY v2.id_venta DESC LIMIT 1
+                ) v ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT * FROM Direcciones d2 WHERE d2.id_cliente = c.id_cliente ORDER BY d2.id_direccion DESC LIMIT 1
+                ) dir ON TRUE
+                WHERE c.activo = TRUE 
+                ORDER BY c.fecha_seguimiento ASC
+            """)
+            df_loaded = pd.read_sql(query_seg, conn)
+            # Guardamos en cache
+            st.session_state['df_seguimiento_cache'] = df_loaded
+    
+    # Usamos la data de la memoria
+    df_seg = st.session_state['df_seguimiento_cache']
+
+    # --- 3. FUNCIÓN DE GUARDADO ---
+    def guardar_edicion_rapida(df_editado, tipo_tabla):
         try:
             with engine.connect() as conn:
-                df = pd.read_sql(text(query), conn)
+                for index, row in df_editado.iterrows():
+                    # A) Actualizar Estado y FECHA
+                    conn.execute(text("UPDATE Clientes SET estado = :est, fecha_seguimiento = :fec WHERE id_cliente = :id"), 
+                                    {"est": row['estado'], "fec": row['fecha_seguimiento'], "id": row['id_cliente']})
+                    
+                    # B) Actualizar Pendiente de Pago
+                    if pd.notnull(row['id_venta']):
+                        conn.execute(text("UPDATE Ventas SET pendiente_pago = :pen WHERE id_venta = :idv"),
+                                        {"pen": row['pendiente_pago'], "idv": row['id_venta']})
+                        
+                conn.commit()
             
-            # Limpieza de nulos
-            cols_txt = ['gps_link', 'referencia', 'observacion', 'direccion_texto', 'distrito', 'tipo_envio']
-            for col in cols_txt:
-                if col in df.columns:
-                    df[col] = df[col].fillna('').astype(str)
-            
-            # Asegurar booleanos
-            if 'dir_activo' in df.columns:
-                df['dir_activo'] = df['dir_activo'].fillna(False).astype(bool)
-
-            st.session_state['df_seguimiento_cache'] = df
+            # IMPORTANTE: Borrar cache para ver los cambios reflejados
+            if 'df_seguimiento_cache' in st.session_state:
+                del st.session_state['df_seguimiento_cache']
+                
+            st.toast("✅ Cambios guardados correctamente", icon="💾")
+            time.sleep(1)
+            st.rerun()
         except Exception as e:
-            st.error(f"Error SQL: {e}")
-            return
+            st.error(f"Error: {e}")
 
-    # Filtros
-    df_e0 = df[df['estado'].isin(ETAPAS["ETAPA_0"])]
-    df_e1 = df[df['estado'].isin(ETAPAS["ETAPA_1"])]
-    df_e2 = df[df['estado'].isin(ETAPAS["ETAPA_2"])]
-    df_e3 = df[df['estado'].isin(ETAPAS["ETAPA_3"])]
-    df_e4 = df[df['estado'].isin(ETAPAS["ETAPA_4"])]
+    # --- 4. RENDERIZADO ---
+    if not df_seg.empty:
+        # Filtros sobre el DF en memoria
+        df_moto = df_seg[df_seg['estado'].isin(["Venta motorizado", "Venta express moto"])].copy()
+        df_agencia = df_seg[df_seg['estado'] == "Venta agencia"].copy()
+        df_ruta = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_3"])].copy()
+        df_e1 = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_1"])].copy()
+        df_e4 = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_4"])].copy()
 
-    # --- 3. TABLAS ---
+        # Métricas
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🛵 Moto / Express", len(df_moto))
+        c2.metric("🏢 Agencia", len(df_agencia))
+        c3.metric("🚚 En Ruta", len(df_ruta))
+        c4.metric("💬 Conversación", len(df_e1))
+        
+        st.divider()
+        
+        tab_moto, tab_agencia = st.tabs(["🛵 MOTORIZADO", "🏢 AGENCIA"])
 
-    # ETAPA 0
-    with st.expander(f"❄️ Sin Empezar ({len(df_e0)})"):
-        st.dataframe(df_e0[['nombre_corto', 'telefono']], hide_index=True)
+        # --- FORMATOS VISUALES ---
+        def formatear_entrega_moto(row):
+            return (f"👤 {row['nombre_receptor']}\n"
+                    f"📞 {row['telefono_receptor']}\n"
+                    f"📍 {row['direccion_texto']} ({row['distrito']})\n"
+                    f"🏠 Ref: {row['referencia']}\n"
+                    f"🗺️ GPS: {row['gps']}\n"
+                    f"📝 Obs: {row['observacion']}")
 
-    # ETAPA 1
-    with st.expander(f"💬 En Conversación ({len(df_e1)})", expanded=True):
-        if not df_e1.empty:
-            cols_e1 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
-            event_e1 = st.data_editor(
-                df_e1[cols_e1], 
-                key="ed_e1", 
+        def formatear_entrega_agencia(row):
+            return (f"👤 {row['nombre_receptor']}\n"
+                    f"🆔 DNI: {row['dni_receptor']}\n"
+                    f"📞 {row['telefono_receptor']}\n"
+                    f"🏢 {row['agencia_nombre']} - {row['sede_entrega']}\n"
+                    f"🔐 Clave: {row['clave_seguridad']}")
+
+        def formatear_venta_resumen(row):
+            if pd.isnull(row['id_venta']): return ""
+            fecha_str = row['fecha_venta'].strftime('%d/%m %H:%M') if pd.notnull(row['fecha_venta']) else "--"
+            total = float(row['total_venta']) if pd.notnull(row['total_venta']) else 0.0
+            return (f"📅 {fecha_str}\n"
+                    f"🛒 {row['resumen_items']}\n"
+                    f"💰 Total: S/ {total:.2f}")
+
+        # >>>>>>>>>>>>>>>>>>>>>>>>> PESTAÑA MOTO <<<<<<<<<<<<<<<<<<<<<<<<<
+        with tab_moto:
+            if not df_moto.empty:
+                df_moto["datos_entrega"] = df_moto.apply(formatear_entrega_moto, axis=1)
+                df_moto["resumen_venta"] = df_moto.apply(formatear_venta_resumen, axis=1)
+                
+                df_view = df_moto.copy()
+                df_view.insert(0, "Seleccionar", False)
+
+                cols_show = ["Seleccionar", "id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", 
+                                "resumen_venta", "datos_entrega", "pendiente_pago"]
+                
+                event_moto = st.data_editor(
+                    df_view[cols_show], 
+                    key="ed_moto", 
+                    column_config={
+                        "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
+                        "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS, width="medium"),
+                        "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"),
+                        "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
+                        "telefono": st.column_config.TextColumn("📞 Telf.", disabled=True),
+                        "resumen_venta": st.column_config.TextColumn("🧾 Venta", width="medium", disabled=True),
+                        "datos_entrega": st.column_config.TextColumn("📦 Entrega", width="large", disabled=True),
+                        "pendiente_pago": st.column_config.NumberColumn("❗ Cobrar", format="S/ %.2f"),
+                        "id_cliente": None
+                    },
+                    hide_index=True, use_container_width=True
+                )
+                
+                c_btn1, c_btn2 = st.columns([1, 1])
+                
+                if c_btn1.button("💾 Guardar Cambios Moto", type="primary"): 
+                    df_save = df_moto.loc[event_moto.index].copy()
+                    df_save['estado'] = event_moto['estado']
+                    df_save['fecha_seguimiento'] = event_moto['fecha_seguimiento']
+                    df_save['pendiente_pago'] = event_moto['pendiente_pago']
+                    guardar_edicion_rapida(df_save, "MOTO")
+
+                if c_btn2.button("📋 Generar Lista Ruta"):
+                    texto_ruta = ""
+                    count = 1
+                    df_rut = df_moto.loc[event_moto.index] # Usamos el orden actual
+                    for idx, row in df_rut.iterrows():
+                        monto = float(row['pendiente_pago']) if pd.notnull(row['pendiente_pago']) else 0.0
+                        texto_ruta += f"*Pedido {count}*\n"
+                        texto_ruta += f"*Recibe:* {row['nombre_receptor'] or ''}\n"
+                        texto_ruta += f"*Dirección:* {row['direccion_texto'] or ''}\n"
+                        texto_ruta += f"*Ref:* {row['referencia'] or ''}\n"
+                        texto_ruta += f"*Distrito:* {row['distrito'] or ''}\n"
+                        texto_ruta += f"*Telf:* {row['telefono_receptor'] or ''}\n"
+                        texto_ruta += f"*Cobrar:* S/ {monto:.2f}\n"
+                        texto_ruta += "----------------------------------\n"
+                        count += 1
+                    st.code(texto_ruta)
+
+                # GESTIÓN DIRECCIÓN MOTO
+                filas_sel = event_moto[event_moto["Seleccionar"] == True]
+                if not filas_sel.empty:
+                    row_full = df_moto.loc[filas_sel.index[0]]
+                    st.divider()
+                    st.info(f"📍 Editando dirección de: **{row_full['nombre_corto']}**")
+                    
+                    with st.form("form_moto_dir"):
+                        c1, c2, c3 = st.columns(3)
+                        n_nom = c1.text_input("Recibe", row_full['nombre_receptor'])
+                        n_tel = c2.text_input("Teléfono", row_full['telefono_receptor'])
+                        n_dist = c3.text_input("Distrito", row_full['distrito'])
+                        
+                        n_dir = st.text_input("Dirección", row_full['direccion_texto'])
+                        n_ref = st.text_input("Referencia", row_full['referencia'])
+                        
+                        if st.form_submit_button("Actualizar Dirección"):
+                            with engine.connect() as conn:
+                                # Update inteligente: actualiza la última dirección activa
+                                conn.execute(text("""
+                                    UPDATE Direcciones SET 
+                                    nombre_receptor=:n, telefono_receptor=:t, direccion_texto=:d, 
+                                    distrito=:di, referencia=:r 
+                                    WHERE id_direccion = :id_dir
+                                """), {
+                                    "n": n_nom, "t": n_tel, "d": n_dir, "di": n_dist, "r": n_ref, 
+                                    "id_dir": row_full['id_direccion']
+                                })
+                                conn.commit()
+                            # Borramos cache para ver cambios
+                            if 'df_seguimiento_cache' in st.session_state:
+                                del st.session_state['df_seguimiento_cache']
+                            st.success("Dirección actualizada.")
+                            time.sleep(0.5)
+                            st.rerun()
+            else:
+                st.caption("No hay pedidos para motorizado.")
+
+        # >>>>>>>>>>>>>>>>>>>>>>>>> PESTAÑA AGENCIA <<<<<<<<<<<<<<<<<<<<<<<<<
+        with tab_agencia:
+            if not df_agencia.empty:
+                df_agencia["datos_entrega"] = df_agencia.apply(formatear_entrega_agencia, axis=1)
+                df_agencia["resumen_venta"] = df_agencia.apply(formatear_venta_resumen, axis=1)
+                
+                df_view_a = df_agencia.copy()
+                df_view_a.insert(0, "Seleccionar", False)
+                
+                cols_show_a = ["Seleccionar", "id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", 
+                                "resumen_venta", "datos_entrega", "pendiente_pago"]
+                
+                event_agencia = st.data_editor(
+                    df_view_a[cols_show_a], key="ed_age", 
+                    column_config={
+                        "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
+                        "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS, width="medium"),
+                        "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"),
+                        "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
+                        "telefono": st.column_config.TextColumn("Telf.", disabled=True),
+                        "resumen_venta": st.column_config.TextColumn("Resumen", width="medium", disabled=True),
+                        "datos_entrega": st.column_config.TextColumn("Envío", width="large", disabled=True),
+                        "pendiente_pago": st.column_config.NumberColumn("Cobrar", format="S/ %.2f"),
+                        "id_cliente": None
+                    }, 
+                    hide_index=True, use_container_width=True
+                )
+                
+                if st.button("💾 Guardar Cambios Agencia", type="primary"): 
+                    df_save_a = df_agencia.loc[event_agencia.index].copy()
+                    df_save_a['estado'] = event_agencia['estado']
+                    df_save_a['fecha_seguimiento'] = event_agencia['fecha_seguimiento'] 
+                    df_save_a['pendiente_pago'] = event_agencia['pendiente_pago']
+                    guardar_edicion_rapida(df_save_a, "AGENCIA")
+
+                # GESTIÓN AGENCIA
+                filas_sel_a = event_agencia[event_agencia["Seleccionar"] == True]
+                if not filas_sel_a.empty:
+                    row_full_a = df_agencia.loc[filas_sel_a.index[0]]
+                    st.divider()
+                    st.info(f"🏢 Editando agencia de: **{row_full_a['nombre_corto']}**")
+                    with st.form("form_age"):
+                        c1, c2, c3 = st.columns(3)
+                        n_nom = c1.text_input("Recibe", row_full_a['nombre_receptor'])
+                        n_dni = c2.text_input("DNI", row_full_a['dni_receptor'])
+                        n_tel = c3.text_input("Telf", row_full_a['telefono_receptor'])
+                        
+                        c4, c5 = st.columns(2)
+                        n_age = c4.selectbox("Agencia", ["Shalom", "Olva", "Marvisur"])
+                        n_sede = c5.text_input("Sede", row_full_a['sede_entrega'])
+                        
+                        if st.form_submit_button("Actualizar Agencia"):
+                                with engine.connect() as conn:
+                                    conn.execute(text("""
+                                        UPDATE Direcciones SET 
+                                        nombre_receptor=:n, dni_receptor=:d, telefono_receptor=:t, 
+                                        agencia_nombre=:a, sede_entrega=:s 
+                                        WHERE id_direccion = :id_dir
+                                    """), {
+                                        "n": n_nom, "d": n_dni, "t": n_tel, "a": n_age, "s": n_sede,
+                                        "id_dir": row_full_a['id_direccion']
+                                    })
+                                    conn.commit()
+                                if 'df_seguimiento_cache' in st.session_state:
+                                    del st.session_state['df_seguimiento_cache']
+                                st.success("Datos actualizados.")
+                                time.sleep(0.5)
+                                st.rerun()
+            else:
+                st.caption("No hay envíos por agencia.")
+
+        st.divider()
+        st.markdown("### 🚚 En Ruta")
+        
+        if not df_ruta.empty:
+            cols_ruta = ["id_cliente", "estado", "fecha_seguimiento", "nombre_corto", "telefono", "resumen_items"]
+            edit_ruta = st.data_editor(
+                df_ruta[cols_ruta], 
+                key="ed_ruta", 
                 column_config={
                     "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
-                    "id_cliente": None,
-                    "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
-                    "resumen_items": st.column_config.TextColumn("Compras", disabled=True)
-                },
+                    "fecha_seguimiento": st.column_config.DateColumn("Fecha Seg.", format="DD/MM/YYYY"),
+                    "id_cliente": None
+                }, 
                 hide_index=True, use_container_width=True
             )
-            if st.button("💾 Guardar Conversación"):
-                df_save = df_e1.loc[event_e1.index].copy()
-                df_save['estado'] = event_e1['estado']
-                guardar_edicion_rapida(df_save, "E1")
+            
+            if st.button("💾 Actualizar Ruta"):
+                df_save_ruta = df_ruta.loc[edit_ruta.index].copy()
+                df_save_ruta['estado'] = edit_ruta['estado']
+                df_save_ruta['fecha_seguimiento'] = edit_ruta['fecha_seguimiento']
+                guardar_edicion_rapida(df_save_ruta, "RUTA")
         else:
-            st.caption("Vacío")
+            st.caption("Nada en ruta.")
 
-    # ETAPA 2: DESPACHOS (Aquí está la edición completa que pediste)
-    st.markdown("---")
-    st.subheader(f"📦 Listos para Despachar ({len(df_e2)})")
-    
-    if not df_e2.empty:
-        # Incluimos: Activo (Check), Tipo Envio, Distrito, Dirección, GPS, Ref, Obs
-        cols_e2 = ["id_cliente", "id_direccion", "estado", "nombre_corto", 
-                   "dir_activo", "tipo_envio", "distrito", "direccion_texto", 
-                   "gps_link", "referencia", "observacion", "resumen_items"]
-        
-        event_e2 = st.data_editor(
-            df_e2[cols_e2], 
-            key="ed_e2", 
-            column_config={
-                "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
-                "id_cliente": None, "id_direccion": None,
-                "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
-                
-                # --- SECCIÓN DIRECCIONES ---
-                "dir_activo": st.column_config.CheckboxColumn("Usar?", width="small"),
-                "tipo_envio": st.column_config.SelectboxColumn("Tipo", options=OPCIONES_ENVIO, width="medium"),
-                "distrito": st.column_config.TextColumn("Distrito", width="small"),
-                "direccion_texto": st.column_config.TextColumn("Dirección", width="medium"),
-                
-                # --- TUS CAMPOS PEDIDOS ---
-                "gps_link": st.column_config.TextColumn("📍 GPS", width="medium"),
-                "referencia": st.column_config.TextColumn("🏠 Ref", width="medium"),
-                "observacion": st.column_config.TextColumn("📝 Obs", width="medium"),
-                
-                "resumen_items": st.column_config.TextColumn("Nota Venta", disabled=True)
-            },
-            hide_index=True, use_container_width=True
-        )
-        
-        if st.button("💾 Guardar Despachos"):
-            df_save = df_e2.loc[event_e2.index].copy()
-            # Mapeamos todo lo editable
-            for col in ["estado", "dir_activo", "tipo_envio", "distrito", "direccion_texto", "gps_link", "referencia", "observacion"]:
-                df_save[col] = event_e2[col]
-            guardar_edicion_rapida(df_save, "E2")
-    else:
-        st.info("Sin despachos.")
+        # --- OTRAS BANDEJAS ---
+        st.divider()
+        with st.expander(f"💬 Conversación / Cotizando ({len(df_e1)})"):
+            if not df_e1.empty:
+                cols_e1 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
+                event_e1 = st.data_editor(df_e1[cols_e1], key="ed_e1", 
+                                          column_config={"estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS), "id_cliente": None}, 
+                                          hide_index=True, use_container_width=True)
+                if st.button("💾 Guardar Conversación"):
+                        df_save_e1 = df_e1.loc[event_e1.index].copy()
+                        df_save_e1['estado'] = event_e1['estado']
+                        df_save_e1['fecha_seguimiento'] = event_e1['fecha_seguimiento']
+                        guardar_edicion_rapida(df_save_e1, "E1")
+            else:
+                st.caption("Vacío.")
 
-    # ETAPA 3: EN RUTA
-    st.markdown("---")
-    st.subheader(f"🚀 En Camino ({len(df_e3)})")
-    
-    if not df_e3.empty:
-        cols_e3 = ["id_cliente", "id_direccion", "estado", "nombre_corto", "dir_activo", "gps_link", "observacion"]
-        
-        event_e3 = st.data_editor(
-            df_e3[cols_e3], 
-            key="ed_e3", 
-            column_config={
-                "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
-                "id_cliente": None, "id_direccion": None,
-                "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
-                "dir_activo": st.column_config.CheckboxColumn("Ok?", disabled=True),
-                "gps_link": st.column_config.TextColumn("GPS"),
-                "observacion": st.column_config.TextColumn("Notas Entrega")
-            },
-            hide_index=True, use_container_width=True
-        )
-
-        if st.button("💾 Guardar Rutas"):
-            df_save = df_e3.loc[event_e3.index].copy()
-            df_save['estado'] = event_e3['estado']
-            df_save['gps_link'] = event_e3['gps_link']
-            df_save['observacion'] = event_e3['observacion']
-            guardar_edicion_rapida(df_save, "E3")
-    else:
-        st.caption("Nada en ruta.")
-
-    # ETAPA 4: POST VENTA
-    with st.expander(f"✨ Post-Venta ({len(df_e4)})"):
-        if not df_e4.empty:
-            cols_e4 = ["id_cliente", "estado", "nombre_corto"]
-            event_e4 = st.data_editor(
-                df_e4[cols_e4], 
-                key="ed_e4", 
-                column_config={"estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS), "id_cliente": None},
-                hide_index=True, use_container_width=True
-            )
-            if st.button("💾 Guardar Post-Venta"):
-                df_save = df_e4.loc[event_e4.index].copy()
-                df_save['estado'] = event_e4['estado']
-                guardar_edicion_rapida(df_save, "E4")
+        with st.expander(f"✨ Post-Venta ({len(df_e4)})"):
+                if not df_e4.empty:
+                    cols_e4 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
+                    event_e4 = st.data_editor(df_e4[cols_e4], key="ed_e4", 
+                                              column_config={"estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS), "id_cliente": None},
+                                              hide_index=True, use_container_width=True)
+                    if st.button("💾 Guardar Post-Venta"):
+                            df_save_e4 = df_e4.loc[event_e4.index].copy()
+                            df_save_e4['estado'] = event_e4['estado']
+                            df_save_e4['fecha_seguimiento'] = event_e4['fecha_seguimiento']
+                            guardar_edicion_rapida(df_save_e4, "E4")
+                else:
+                    st.caption("Vacío.")
