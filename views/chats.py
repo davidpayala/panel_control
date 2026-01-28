@@ -11,9 +11,9 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh 
 from database import engine 
 from utils import (
-    subir_archivo_meta, enviar_mensaje_media, enviar_mensaje_whatsapp, 
+    enviar_mensaje_media, enviar_mensaje_whatsapp, 
     normalizar_telefono_maestro, buscar_contacto_google, 
-    crear_en_google, actualizar_en_google, sincronizar_historial
+    crear_en_google, sincronizar_historial
 )
 
 # Copiamos las mismas opciones para mantener consistencia

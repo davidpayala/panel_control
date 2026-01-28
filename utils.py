@@ -18,113 +18,139 @@ WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
 WAHA_KEY = os.getenv("WAHA_KEY") 
 
 # ==============================================================================
-# 🏆 FUNCIÓN MAESTRA DE NORMALIZACIÓN
+# 🏆 FUNCIÓN MAESTRA DE NORMALIZACIÓN (FILTROS WAHA ESTRICTOS)
 # ==============================================================================
 def normalizar_telefono_maestro(entrada):
     """
-    Recibe cualquier cosa (+51 999 999, 999999, 51999..., objetos WAHA)
-    Retorna un diccionario con todos los formatos estandarizados.
+    Recibe: String o Diccionario (Objeto Mensaje WAHA)
+    Aplica las reglas de WAHA para filtrar IDs de sistema, grupos y canales.
+    Retorna: Diccionario estandarizado o None si no es un usuario válido.
     """
     if not entrada: return None
 
-    # 1. Limpieza brutal: Solo dejar números
-    sucio = str(entrada)
+    raw_id = ""
+
+    # --- 1. EXTRACCIÓN DEL ID CRUDO ---
     if isinstance(entrada, dict):
-        # Intenta sacar el numero si viene dentro de un objeto de Waha
-        sucio = str(entrada.get('user') or entrada.get('_serialized') or "")
+        # Prioridad: Buscar el ID serializado completo para analizar el sufijo (@...)
+        # WAHA suele tener: id._serialized, o from, o to
+        
+        # Si es un mensaje saliente (fromMe=True), el cliente es 'to'
+        if entrada.get('fromMe', False):
+            raw_id = entrada.get('to', '')
+        else:
+            # Si es entrante, el cliente es 'from'
+            raw_id = entrada.get('from', '')
+            
+        # Si falló, buscamos en id.remote o participant
+        if not raw_id:
+            raw_id = entrada.get('id', {}).get('remote', '') or entrada.get('participant', '')
+
+        # Fallback final: user
+        if not raw_id:
+            raw_id = str(entrada.get('user', ''))
+    else:
+        raw_id = str(entrada)
+
+    # --- 2. FILTROS DE SEGURIDAD (SEGÚN DOCS WAHA) ---
+    # Si detectamos estos sufijos, NO es un cliente real (CRM), es sistema/grupo.
     
-    # Quitar todo lo que no sea número
-    solo_numeros = "".join(filter(str.isdigit, sucio))
+    # ❌ Estados (Status)
+    if 'status@broadcast' in raw_id: return None
+    
+    # ❌ Grupos (Groups)
+    if '@g.us' in raw_id: return None
+    
+    # ❌ Canales (Channels / Newsletter)
+    if '@newsletter' in raw_id: return None
+    
+    # ❌ LIDs (Hidden User IDs - No sirven para enviar mensajes normales)
+    if '@lid' in raw_id: return None
+
+    # ✅ Permitidos:
+    # @c.us (Cuentas de usuario estándar)
+    # @s.whatsapp.net (Formato antiguo/interno, compatible con @c.us)
+    # Sin sufijo (Asumimos que es un número ingresado manualmente por el usuario)
+
+    # --- 3. LIMPIEZA DEL FORMATO ---
+    # Nos quedamos solo con la parte izquierda del @
+    cadena_limpia = raw_id.split('@')[0] if '@' in raw_id else raw_id
+
+    # Quitamos caracteres no numéricos (+, espacios, guiones)
+    solo_numeros = "".join(filter(str.isdigit, cadena_limpia))
     
     if not solo_numeros: return None
-    
-    # 2. Lógica Perú (Detectar 9 dígitos)
+
+    # --- 4. VALIDACIÓN DE LONGITUD (IMPORTANTE) ---
+    # Un ID de canal o timestamp puede tener muchos dígitos.
+    # Un teléfono real raramente pasa de 15 dígitos.
+    if len(solo_numeros) > 15: return None  # Filtra basura como '24176488382510'
+    if len(solo_numeros) < 7: return None   # Demasiado corto
+
+    # --- 5. ESTANDARIZACIÓN (PERÚ) ---
     full = solo_numeros
     local = solo_numeros
     
+    # Caso Perú sin código (9 dígitos) -> Agregar 51
     if len(solo_numeros) == 9:
         full = f"51{solo_numeros}"
         local = solo_numeros
+    # Caso Perú con código (11 dígitos empezando con 51)
     elif len(solo_numeros) == 11 and solo_numeros.startswith("51"):
         full = solo_numeros
         local = solo_numeros[2:]
     
-    # 3. Retornar paquete con formatos listos
     return {
-        "db": full,                  # 51986203398 (Para ID SQL)
-        "waha": f"{full}@c.us",      # 51986203398@c.us (Para enviar mensajes)
-        "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}", # +51 986 203 398 (Display)
-        "corto": local               # 986203398 (Nombre corto)
+        "db": full,                  # ID único para BD
+        "waha": f"{full}@c.us",      # ID para API WAHA (Siempre @c.us para enviar)
+        "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}" if len(local)==9 else f"+{full}",
+        "corto": local
     }
-
 # ==============================================================================
-# FUNCIONES DE ENVÍO (WAHA)
+# FUNCIONES DE ENVÍO
 # ==============================================================================
-def formatear_numero_waha(numero):
-    norm = normalizar_telefono_maestro(numero)
-    if norm: return norm['db']
-    return str(numero)
-
 def enviar_mensaje_whatsapp(numero, texto):
-    if not WAHA_URL: return False, "⚠️ Falta WAHA_URL en .env"
-    number_clean = formatear_numero_waha(numero)
-    chat_id = f"{number_clean}@c.us"
+    if not WAHA_URL: return False, "⚠️ Falta WAHA_URL"
+    norm = normalizar_telefono_maestro(numero)
+    if not norm: return False, "❌ Número inválido o no es un usuario"
     
     url = f"{WAHA_URL}/api/sendText"
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY 
     
-    payload = {"session": WAHA_SESSION, "chatId": chat_id, "text": texto}
+    payload = {"session": WAHA_SESSION, "chatId": norm['waha'], "text": texto}
     try:
-        r = requests.post(url, headers=headers, json=payload)
+        r = requests.post(url, headers=headers, json=payload, timeout=10)
         if r.status_code in [200, 201]: return True, r.json()
-        return False, f"Error WAHA {r.status_code}: {r.text}"
+        return False, f"WAHA {r.status_code}: {r.text}"
     except Exception as e: return False, str(e)
-
-def subir_archivo_meta(archivo_bytes, mime_type):
-    try:
-        b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
-        return f"data:{mime_type};base64,{b64_data}", None
-    except Exception as e: return None, str(e)
 
 def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
     try:
-        # 1. Convertimos tus bytes a Base64 (Esto crea el "Data URI")
+        norm = normalizar_telefono_maestro(telefono)
+        if not norm: return False, "Número inválido"
+
         media_b64 = base64.b64encode(archivo_bytes).decode('utf-8')
         data_uri = f"data:{mime_type};base64,{media_b64}"
 
-        # 2. Preparamos la URL
         url = f"{WAHA_URL}/api/sendImage"
-        
-        # 3. Armamos el JSON EXACTAMENTE como pide tu ejemplo
         payload = {
-            "session": "default",
-            "chatId": f"{telefono}@c.us",
+            "session": WAHA_SESSION,
+            "chatId": norm['waha'],
             "file": {
                 "mimetype": mime_type,
                 "filename": filename,
-                "url": data_uri  # <--- Esto cumple con el campo "url"
+                "url": data_uri
             },
             "caption": caption
         }
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
 
-        headers = {
-            "Content-Type": "application/json",
-            "X-Api-Key": WAHA_KEY
-        }
-
-        # 4. Enviamos
         response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code == 201:
-            return True, response.json()
-        else:
-            # Si aquí sale 422, es 100% culpa del motor de la sesión (Pasos 1-3 arriba)
-            return False, f"Error {response.status_code}: {response.text}"
-
-    except Exception as e:
-        return False, str(e)
-
+        if response.status_code == 201: return True, response.json()
+        return False, f"Error {response.status_code}: {response.text}"
+    except Exception as e: return False, str(e)
 
 # ==============================================================================
 # FUNCIONES DE SINCRONIZACION (WAHA)
