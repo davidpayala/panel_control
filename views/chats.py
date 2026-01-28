@@ -27,7 +27,7 @@ def render_chat():
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # CSS OPTIMIZADO: Quita los márgenes del código y ajusta la burbuja
+    # CSS OPTIMIZADO PARA CITAS
     st.markdown("""
     <style>
     div.stButton > button:first-child { text-align: left; width: 100%; border-radius: 8px; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; }
@@ -77,7 +77,7 @@ def render_chat():
         filtro = st.text_input("🔍 Buscar", placeholder="Teléfono o nombre")
         
         with st.expander("➕ Nuevo Chat"):
-            num_manual = st.text_input("Número")
+            num_manual = st.text_input("Número (Ej: +51...)")
             if st.button("Ir") and num_manual:
                 norm = normalizar_telefono_maestro(num_manual)
                 if norm:
@@ -85,14 +85,16 @@ def render_chat():
                     st.rerun()
                 else: st.error("Inválido")
 
+        # --- CONSULTA LISTA DE CHATS ---
+        # ELIMINADO EL FILTRO "LENGTH < 14" PARA PERMITIR INTERNACIONALES
         q = """
             SELECT m.telefono, MAX(m.fecha) as f, 
             COALESCE(MAX(c.nombre_corto), m.telefono) as nom, MAX(c.etiquetas) as tags
             FROM mensajes m LEFT JOIN Clientes c ON m.telefono = c.telefono
-            WHERE LENGTH(m.telefono) < 14 
+            WHERE 1=1 
         """
         if filtro: q += f" AND (m.telefono ILIKE '%%{filtro}%%' OR c.nombre_corto ILIKE '%%{filtro}%%')"
-        q += " GROUP BY m.telefono ORDER BY f DESC LIMIT 20"
+        q += " GROUP BY m.telefono ORDER BY f DESC LIMIT 50"
         
         with engine.connect() as conn:
             chats = conn.execute(text(q)).fetchall()
@@ -165,15 +167,14 @@ def render_chat():
                     texto_cita = m['reply_content'] if 'reply_content' in m and m['reply_content'] else m['reply_texto_join']
 
                     if m['reply_to_id'] and texto_cita:
-                        # Si no sabemos quién fue (porque vino del content directo), asumimos por defecto o miramos el tipo del join
+                        # Si no sabemos quién fue, asumimos por el tipo del join
                         autor = "Respuesta"
                         if m['reply_tipo']:
                             autor = "Tú" if m['reply_tipo'] == 'SALIENTE' else "Cliente"
                         
-                        # Cortamos texto largo
                         txt_r = (texto_cita[:60] + '...') if len(texto_cita) > 60 else texto_cita
                         
-                        # HTML EN UNA SOLA LÍNEA para evitar bug visual de Streamlit
+                        # HTML EN UNA SOLA LÍNEA
                         reply_html = f'<div class="reply-context"><span class="reply-author">{autor}</span><span class="reply-text">{txt_r}</span></div>'
 
                     # RENDERIZADO FINAL SIN ESPACIOS AL INICIO DEL STRING HTML
