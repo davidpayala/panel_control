@@ -52,7 +52,7 @@ def render_seguimiento():
                     -- Datos de Dirección
                     dir.id_direccion, dir.nombre_receptor, dir.telefono_receptor, 
                     dir.direccion_texto, dir.distrito, 
-                    dir.referencia, dir.gps, dir.observacion,
+                    dir.referencia, dir.gps_link, dir.observacion,
                     dir.dni_receptor, dir.agencia_nombre, dir.sede_entrega
 
                 FROM Clientes c
