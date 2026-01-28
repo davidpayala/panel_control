@@ -49,23 +49,20 @@ def normalizar_telefono_maestro(entrada):
     
     if not solo_numeros: return None
     
-    # Ajustamos límites para permitir números internacionales largos (hasta 15)
-    # y cortos válidos (min 7)
+    # Permitir internacionales largos pero filtrar basura excesiva
     if len(solo_numeros) > 15: return None
     if len(solo_numeros) < 7: return None
 
     full = solo_numeros
     local = solo_numeros
     
-    # Lógica PERÚ (Solo si cumple patrones peruanos)
+    # Lógica Perú
     if len(solo_numeros) == 9:
         full = f"51{solo_numeros}"
         local = solo_numeros
     elif len(solo_numeros) == 11 and solo_numeros.startswith("51"):
         full = solo_numeros
         local = solo_numeros[2:]
-    
-    # Para otros países, 'full' y 'local' quedan igual, permitiendo el acceso.
     
     return {
         "db": full,
@@ -120,8 +117,15 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
         return False, f"Error {response.status_code}: {response.text}"
     except Exception as e: return False, str(e)
 
+def subir_archivo_meta(archivo_bytes, mime_type):
+    # Restaurada para compatibilidad con otros archivos
+    try:
+        b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
+        return f"data:{mime_type};base64,{b64_data}", None
+    except Exception as e: return None, str(e)
+
 # ==============================================================================
-# SINCRONIZACIÓN (CAPTURANDO CONTENIDO DEL REPLY)
+# SINCRONIZACIÓN (UPDATE + INSERT)
 # ==============================================================================
 def sincronizar_historial(telefono):
     norm = normalizar_telefono_maestro(telefono)
@@ -157,10 +161,9 @@ def sincronizar_historial(telefono):
                     timestamp = msg.get('timestamp')
                     w_id = msg.get('id', None)
                     
-                    # --- CAPTURA AVANZADA DE REPLY ---
+                    # CAPTURA DE REPLY
                     reply_id = None
                     reply_body = None
-                    
                     raw_reply = msg.get('replyTo')
                     
                     if isinstance(raw_reply, dict):
@@ -170,7 +173,7 @@ def sincronizar_historial(telefono):
                         reply_id = raw_reply
 
                     if w_id:
-                        # 1. UPSERT (Actualizar si existe, Insertar si no)
+                        # 1. UPSERT
                         res = conn.execute(text("""
                             UPDATE mensajes 
                             SET reply_to_id = :rid, reply_content = :rbody, contenido = :m 
@@ -189,7 +192,7 @@ def sincronizar_historial(telefono):
                             })
                             nuevos += 1
                     else:
-                        # Fallback simple
+                        # Fallback
                         existe = conn.execute(text("SELECT count(*) FROM mensajes WHERE telefono=:t AND contenido=:m AND fecha > (NOW() - INTERVAL '24h')"), 
                                             {"t": target_db, "m": cuerpo}).scalar()
                         if existe == 0:
@@ -258,3 +261,18 @@ def crear_en_google(nombre, apellido, telefono):
         }).execute()
         return True 
     except: return None
+
+def actualizar_en_google(gid, nombre, apellido, telefono):
+    # Restaurada para compatibilidad con views/clientes.py
+    srv = get_google_service()
+    if not srv: return False
+    norm = normalizar_telefono_maestro(telefono)
+    if not norm: return False
+
+    try:
+        c = srv.people().get(resourceName=gid, personFields='names,phoneNumbers').execute()
+        c['names'] = [{"givenName": nombre, "familyName": apellido}]
+        c['phoneNumbers'] = [{"value": norm['google']}]
+        srv.people().updateContact(resourceName=gid, updatePersonFields='names,phoneNumbers', body=c).execute()
+        return True
+    except: return False
