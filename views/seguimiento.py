@@ -3,6 +3,7 @@ import pandas as pd
 import time
 from sqlalchemy import text
 from database import engine
+from datetime import datetime, timedelta # <--- AGREGA ESTO AL INICIO
 
 def render_seguimiento():
     # CSS para ajustar altura de filas
@@ -224,7 +225,15 @@ def render_seguimiento():
                     guardar_edicion_rapida(df_save, "MOTO")
 
                 if c_btn2.button("📋 Generar Lista Ruta"):
-                    texto_ruta = ""
+                    # 1. CALCULAR FECHA DE MAÑANA
+                    fecha_manana = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+            
+                    # 2. CREAR ENCABEZADO
+                    texto_lista = f"*Fecha {fecha_manana}*\n"
+                    texto_lista += "----------------\n\n"
+            
+                    # 3. ITERAR PEDIDOS
+                    texto_ruta = texto_lista
                     count = 1
                     df_rut = df_moto.loc[event_moto.index] # Usamos el orden actual
                     for idx, row in df_rut.iterrows():
@@ -234,6 +243,7 @@ def render_seguimiento():
                         texto_ruta += f"*Dirección:* {row['direccion_texto'] or ''}\n"
                         texto_ruta += f"*Ref:* {row['referencia'] or ''}\n"
                         texto_ruta += f"*Distrito:* {row['distrito'] or ''}\n"
+                        texto_ruta += f"*GPS:* {row['gps_link'] or ''}\n"
                         texto_ruta += f"*Telf:* {row['telefono_receptor'] or ''}\n"
                         texto_ruta += f"*Cobrar:* S/ {monto:.2f}\n"
                         texto_ruta += "----------------------------------\n"
