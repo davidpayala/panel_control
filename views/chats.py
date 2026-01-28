@@ -112,7 +112,7 @@ def render_chat():
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # CSS OPTIMIZADO PARA CITAS
+    # CSS: Agregamos estilos específicos para la caja de la cita (Reply)
     st.markdown("""
     <style>
     div.stButton > button:first-child { text-align: left; width: 100%; border-radius: 8px; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; }
@@ -133,19 +133,21 @@ def render_chat():
     .incoming { background-color: #262730; margin-right: auto; border-bottom-left-radius: 2px; }
     .outgoing { background-color: #004d40; margin-left: auto; border-bottom-right-radius: 2px; }
     
+    /* ESTILO DE LA CITA */
     .reply-context {
-        background-color: rgba(0, 0, 0, 0.25);
+        background-color: rgba(0, 0, 0, 0.2);
         border-left: 4px solid #00e676;
-        border-radius: 6px;
-        padding: 8px 10px;
-        margin-bottom: 8px;
+        border-radius: 4px;
+        padding: 6px 8px;
+        margin-bottom: 6px;
         font-size: 0.85em;
         display: flex;
         flex-direction: column;
+        cursor: pointer;
     }
     
     .reply-author { font-weight: bold; color: #00e676; margin-bottom: 2px; font-size: 0.9em; }
-    .reply-text { color: #eeeeee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.9; }
+    .reply-text { color: #eeeeee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
     
     .chat-meta { font-size: 10px; opacity: 0.6; margin-top: 4px; align-self: flex-end; }
     
@@ -156,7 +158,7 @@ def render_chat():
 
     col_lista, col_chat = st.columns([1, 2.5])
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR (LISTA DE CHATS) ---
     with col_lista:
         st.subheader("Bandeja")
         filtro = st.text_input("🔍 Buscar", placeholder="Teléfono o nombre")
@@ -189,7 +191,7 @@ def render_chat():
                 st.session_state['chat_actual_telefono'] = c.telefono
                 st.rerun()
 
-    # --- CHAT ACTIVO ---
+    # --- ÁREA DE CHAT ACTIVO ---
     with col_chat:
         tel_activo = st.session_state['chat_actual_telefono']
         if tel_activo:
@@ -223,17 +225,27 @@ def render_chat():
             
             if ver_ficha: mostrar_info_avanzada(tel_activo)
 
-            # LECTURA MENSAJES (CON CITA)
+            # --- CONSULTA SQL MEJORADA (TRAE EL MENSAJE CITADO) ---
+            # Hacemos LEFT JOIN para buscar el contenido del mensaje original
             query_msgs = """
-                SELECT m.*, orig.contenido as reply_texto, orig.tipo as reply_tipo
-                FROM mensajes m LEFT JOIN mensajes orig ON m.reply_to_id = orig.whatsapp_id
-                WHERE m.telefono = :t ORDER BY m.fecha ASC
+                SELECT 
+                    m.*, 
+                    orig.contenido as reply_texto, 
+                    orig.tipo as reply_tipo,
+                    orig.archivo_data as reply_archivo
+                FROM mensajes m 
+                LEFT JOIN mensajes orig ON m.reply_to_id = orig.whatsapp_id
+                WHERE m.telefono = :t 
+                ORDER BY m.fecha ASC
             """
+            
             with engine.connect() as conn:
+                # Marcar como leídos al abrir
                 conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": tel_activo})
                 conn.commit()
                 msgs = pd.read_sql(text(query_msgs), conn, params={"t": tel_activo})
 
+            # --- RENDERIZADO DE MENSAJES ---
             cont = st.container(height=500)
             with cont:
                 for _, m in msgs.iterrows():
@@ -242,30 +254,38 @@ def render_chat():
                     
                     if m['archivo_data']: body = "📄 [Archivo Adjunto]"
 
+                    # 1. Construcción del HTML de la cita (Reply)
                     reply_html = ""
-                    if m['reply_to_id'] and m['reply_texto']:
+                    if m['reply_to_id']:
+                        # Definimos el autor de la cita
                         autor = "Tú" if m['reply_tipo'] == 'SALIENTE' else "Cliente"
-                        txt_r = (m['reply_texto'][:60] + '...') if len(m['reply_texto']) > 60 else m['reply_texto']
                         
-                        # Sin indentación para evitar bug de código
+                        # Definimos el texto de la cita
+                        txt_r = m['reply_texto']
+                        if not txt_r and m['reply_archivo']: 
+                            txt_r = "📷 [Foto/Archivo]"
+                        elif not txt_r:
+                            txt_r = "Mensaje no disponible"
+                        
+                        # Cortamos si es muy largo
+                        txt_r = (txt_r[:60] + '...') if len(txt_r) > 60 else txt_r
+                        
+                        # HTML Compacto (Sin indentación para evitar bug visual)
                         reply_html = f"""<div class="reply-context"><span class="reply-author">{autor}</span><span class="reply-text">{txt_r}</span></div>"""
 
-                    # Renderizado SIN INDENTACIÓN para arreglar el bug visual
-                    st.markdown(f"""
-<div class='chat-bubble {cls}'>
-{reply_html}
-<span>{body}</span>
-<span class='chat-meta'>{m['fecha'].strftime('%H:%M')}</span>
-</div>
-""", unsafe_allow_html=True)
+                    # 2. Renderizado Final del Mensaje
+                    # IMPORTANTE: Todo en una línea o pegado a la izquierda para evitar que Streamlit lo muestre como código
+                    st.markdown(f"""<div class='chat-bubble {cls}'>{reply_html}<span>{body}</span><span class='chat-meta'>{m['fecha'].strftime('%H:%M')}</span></div>""", unsafe_allow_html=True)
                     
+                    # 3. Mostrar imagen si existe
                     if m['archivo_data']:
                         try: st.image(io.BytesIO(m['archivo_data']), width=200)
                         except: pass
                 
+                # Auto-scroll JS
                 components.html("<script>var x=window.parent.document.querySelectorAll('.stChatMessage'); if(x.length>0)x[x.length-1].scrollIntoView();</script>", height=0)
 
-            # INPUT
+            # --- INPUT DE MENSAJE ---
             with st.form("send_form", clear_on_submit=True):
                 c_in, c_btn = st.columns([4, 1])
                 txt = c_in.text_input("Mensaje", key="txt_in")
