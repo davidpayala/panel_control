@@ -122,7 +122,7 @@ def render_seguimiento():
                         "ref": datos['referencia'],
                         "gps": datos['gps_link'],      # <--- SE GUARDA
                         "obs": datos['observacion'],   # <--- SE GUARDA
-                        "id_dir": row_full['id_direccion']
+                        "id_dir": int(row_full['id_direccion'])
                     })
                 
                 # 2. Actualizar estado del cliente
@@ -276,7 +276,7 @@ def render_seguimiento():
                                 """), {
                                     "n": n_nom, "t": n_tel, "d": n_dir, "di": n_dist, "r": n_ref, 
                                     "g": n_gps , "o": n_obs , # Pass the new variables
-                                    "id_dir": row_full['id_direccion']
+                                    "id_dir": int(row_full['id_direccion'])
                                 })
                                 conn.commit()
                             # Clear cache to see changes
