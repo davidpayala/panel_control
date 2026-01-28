@@ -122,7 +122,7 @@ def render_seguimiento():
                         "ref": datos['referencia'],
                         "gps": datos['gps_link'],      # <--- SE GUARDA
                         "obs": datos['observacion'],   # <--- SE GUARDA
-                        "id_dir": id_direccion
+                        "id_dir": row_full['id_direccion']
                     })
                 
                 # 2. Actualizar estado del cliente
