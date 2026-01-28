@@ -13,7 +13,7 @@ from database import engine
 from utils import (
     enviar_mensaje_media, enviar_mensaje_whatsapp, 
     normalizar_telefono_maestro, buscar_contacto_google, 
-    crear_en_google, sincronizar_historial, render_chat
+    crear_en_google
 )
 
 # Copiamos las mismas opciones para mantener consistencia
