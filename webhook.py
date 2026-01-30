@@ -4,7 +4,6 @@ from database import engine
 import os
 import requests
 import sys
-from datetime import datetime
 from utils import normalizar_telefono_maestro, buscar_contacto_google
 
 app = Flask(__name__)
@@ -12,7 +11,7 @@ app = Flask(__name__)
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
-# --- LOGGING ---
+# --- LOGGING PARA RAILWAY ---
 def log_info(msg):
     print(f"[INFO] {msg}", file=sys.stdout, flush=True)
 
@@ -22,8 +21,6 @@ def log_error(msg):
 def descargar_media_plus(media_url):
     try:
         if not media_url: return None
-        
-        # Corrección de URL para Docker/Railway
         url_final = media_url
         if not media_url.startswith("http"):
              base = WAHA_URL.rstrip('/') if WAHA_URL else ""
@@ -37,13 +34,10 @@ def descargar_media_plus(media_url):
         
         headers = {}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY   
-        
-        # Timeout corto
         r = requests.get(url_final, headers=headers, timeout=10)
         return r.content if r.status_code == 200 else None
-            
     except Exception as e:
-        log_error(f"Media download error: {e}")
+        log_error(f"Error Media: {e}")
         return None
 
 def obtener_datos_mensaje(payload):
@@ -57,64 +51,80 @@ def obtener_datos_mensaje(payload):
             push_name = None 
         else:
             remote_id = payload.get('from')
-            if not remote_id:
-                remote_id = _data.get('id', {}).get('remote')
+            # Fallback para estructuras raras
+            if not remote_id: remote_id = _data.get('id', {}).get('remote')
+            
             tipo = 'ENTRANTE'
             push_name = _data.get('notifyName')
 
         if remote_id:
+            # LIMPIEZA BÁSICA
             clean_num = remote_id.replace('@c.us', '').replace('@s.whatsapp.net', '')
+            
+            # NOTA: Si quieres recibir GRUPOS, comenta la siguiente línea:
             if '@g.us' in remote_id: return None, None, None
+            
             return clean_num, tipo, push_name
         return None, None, None
     except: return None, None, None
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V5 (Duplicate Fix)", 200
+    return "Webhook V6 (Session Debug)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
-    # 1. Validación básica
     try:
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
     except:
         return jsonify({"status": "error"}), 500
 
-    # 2. Procesar Eventos
     try:
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
             if evento.get('event') != 'message': continue
 
+            # --- DIAGNÓSTICO DE SESIÓN ---
+            session_name = evento.get('session', 'DESCONOCIDA')
             payload = evento.get('payload')
             if not payload: continue
 
-            # Ignorar estados
+            # Ignorar estados (Status Stories)
             if 'status@broadcast' in str(payload.get('from')): continue
 
-            # Extraer datos
+            # 1. Extracción de Datos
             numero_crudo, tipo_msg, push_name = obtener_datos_mensaje(payload)
-            if not numero_crudo: continue
+            
+            if not numero_crudo:
+                log_info(f"⚠️ Sesión {session_name}: Mensaje ignorado (Sin ID válido)")
+                continue
 
+            # 2. Normalización (Más permisiva)
             formatos = normalizar_telefono_maestro(numero_crudo)
-            if not formatos: continue
             
-            telefono_db = formatos['db']
-            
-            # Contenido y Media
+            # Si falla la normalización estricta, usamos el número crudo como fallback
+            # Esto corrige el problema de "no recibo de todos los usuarios"
+            if formatos:
+                telefono_db = formatos['db']
+            else:
+                # Fallback de emergencia: Solo guardar dígitos
+                telefono_db = "".join(filter(str.isdigit, numero_crudo))
+                if len(telefono_db) < 5: continue # Muy corto para ser real
+
+            log_info(f"📩 [{session_name}] Procesando: {telefono_db}")
+
+            # 3. Contenido
             body = payload.get('body', '')
             media_url = payload.get('mediaUrl') or payload.get('media', {}).get('url')
             
             archivo_bytes = None
             if media_url:
-                log_info(f"📷 Descargando media de {telefono_db}...")
                 archivo_bytes = descargar_media_plus(media_url)
                 if archivo_bytes and not body: body = "📷 Archivo Multimedia"
 
-            # Reply (Cita)
+            # 4. Reply
             reply_id = None
             reply_content = None
             raw_reply = payload.get('replyTo')
@@ -124,30 +134,27 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
 
-            # 3. GUARDAR EN DB (LA SOLUCIÓN AL ERROR)
+            # 5. GUARDAR (UPSERT)
             try:
                 nombre_final = push_name or "Cliente Nuevo"
                 
-                # Intento rápido de obtener nombre real de Google
-                if tipo_msg == 'ENTRANTE' and nombre_final == "Cliente Nuevo":
+                # Búsqueda Google (Opcional - Puede comentarse si da lentitud)
+                if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final:
                      try:
-                        # Comenta esto si notas lentitud en Railway
                         datos_google = buscar_contacto_google(telefono_db)
                         if datos_google and datos_google['encontrado']:
                             nombre_final = datos_google['nombre_completo']
                      except: pass
 
                 with engine.connect() as conn:
-                    # A) CLIENTE
+                    # A) Clientes
                     conn.execute(text("""
                         INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                         VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
                         ON CONFLICT (telefono) DO UPDATE SET activo = TRUE
                     """), {"t": telefono_db, "n": nombre_final})
                     
-                    # B) MENSAJE (AQUÍ ESTÁ LA CORRECCIÓN CLAVE)
-                    # Usamos ON CONFLICT (whatsapp_id) DO UPDATE ...
-                    # Esto evita el error de "duplicate key"
+                    # B) Mensajes (Upsert)
                     conn.execute(text("""
                         INSERT INTO mensajes (
                             telefono, tipo, contenido, fecha, leido, archivo_data, 
@@ -170,16 +177,16 @@ def recibir_mensaje():
                     })
                     
                     conn.commit()
-                    log_info(f"✅ {telefono_db}: Mensaje procesado correctamente.")
+                    log_info(f"✅ [{session_name}] Guardado OK: {telefono_db}")
 
             except Exception as e:
-                log_error(f"🔥 Error DB escribiendo {telefono_db}: {e}")
+                log_error(f"🔥 Error DB [{session_name}]: {e}")
 
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        log_error(f"🔥 Error Crítico Webhook: {e}")
-        return jsonify({"status": "error", "msg": str(e)}), 500
+        log_error(f"🔥 Error Webhook: {e}")
+        return jsonify({"status": "error"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
