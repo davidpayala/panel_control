@@ -3,16 +3,16 @@ from sqlalchemy import text
 from database import engine
 import os
 import requests
-import sys # Para forzar logs en Railway
+import sys
 from datetime import datetime
-from utils import normalizar_telefono_maestro
+from utils import normalizar_telefono_maestro, buscar_contacto_google
 
 app = Flask(__name__)
 
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
-# --- FUNCIÓN DE LOGGING (Para ver errores en tiempo real) ---
+# --- LOGGING PARA RAILWAY ---
 def log_info(msg):
     print(f"[INFO] {msg}", file=sys.stdout, flush=True)
 
@@ -22,6 +22,8 @@ def log_error(msg):
 def descargar_media_plus(media_url):
     try:
         if not media_url: return None
+        
+        # Corrección de URL para Docker/Railway
         url_final = media_url
         if not media_url.startswith("http"):
              base = WAHA_URL.rstrip('/') if WAHA_URL else ""
@@ -35,8 +37,11 @@ def descargar_media_plus(media_url):
         
         headers = {}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY   
+        
+        # Timeout corto para no bloquear el webhook
         r = requests.get(url_final, headers=headers, timeout=10)
         return r.content if r.status_code == 200 else None
+            
     except Exception as e:
         log_error(f"Media download error: {e}")
         return None
@@ -44,7 +49,6 @@ def descargar_media_plus(media_url):
 def obtener_datos_mensaje(payload):
     try:
         from_me = payload.get('fromMe', False)
-        # Blindaje contra _data nulo
         _data = payload.get('_data') or {}
 
         if from_me:
@@ -67,17 +71,18 @@ def obtener_datos_mensaje(payload):
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V3 (Flush Logs)", 200
+    return "Webhook V4 (Upsert Fix)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
+    # 1. Validación básica
     try:
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
-    except Exception as e:
-        log_error(f"JSON Error: {e}")
+    except:
         return jsonify({"status": "error"}), 500
 
+    # 2. Procesar Eventos
     try:
         eventos = data if isinstance(data, list) else [data]
 
@@ -88,31 +93,28 @@ def recibir_mensaje():
             if not payload: continue
 
             # Ignorar estados
-            remoto = str(payload.get('from', ''))
-            if 'status@broadcast' in remoto: continue
+            if 'status@broadcast' in str(payload.get('from')): continue
 
-            # 1. Procesar Datos
+            # Extraer datos
             numero_crudo, tipo_msg, push_name = obtener_datos_mensaje(payload)
             if not numero_crudo: continue
 
             formatos = normalizar_telefono_maestro(numero_crudo)
-            if not formatos:
-                log_info(f"⚠️ Ignorado por formato: {numero_crudo}")
-                continue
+            if not formatos: continue
             
             telefono_db = formatos['db']
             
-            # 2. Contenido
+            # Contenido y Media
             body = payload.get('body', '')
             media_url = payload.get('mediaUrl') or payload.get('media', {}).get('url')
             
             archivo_bytes = None
             if media_url:
-                log_info(f"📷 Descargando media de {telefono_db}")
+                log_info(f"📷 Descargando media de {telefono_db}...")
                 archivo_bytes = descargar_media_plus(media_url)
-                if archivo_bytes and not body: body = "📷 Archivo"
+                if archivo_bytes and not body: body = "📷 Archivo Multimedia"
 
-            # 3. Reply
+            # Reply (Cita)
             reply_id = None
             reply_content = None
             raw_reply = payload.get('replyTo')
@@ -122,22 +124,39 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
 
-            # 4. Guardar (Sin Google para velocidad)
+            # 3. GUARDAR EN DB (UPSERT PARA EVITAR ERRORES)
             try:
                 nombre_final = push_name or "Cliente Nuevo"
                 
+                # Intento rápido de obtener nombre real de Google si es nuevo
+                if tipo_msg == 'ENTRANTE' and nombre_final == "Cliente Nuevo":
+                     try:
+                        # Nota: Esto podría demorar un poco, si prefieres velocidad comenta estas 3 lineas
+                        datos_google = buscar_contacto_google(telefono_db)
+                        if datos_google and datos_google['encontrado']:
+                            nombre_final = datos_google['nombre_completo']
+                     except: pass
+
                 with engine.connect() as conn:
-                    # Upsert Cliente
+                    # A) CLIENTE: Insertar si no existe, actualizar activo
                     conn.execute(text("""
                         INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                         VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
                         ON CONFLICT (telefono) DO UPDATE SET activo = TRUE
                     """), {"t": telefono_db, "n": nombre_final})
                     
-                    # Insert Mensaje
+                    # B) MENSAJE: Insertar o Actualizar si ya existe (UPSERT)
+                    # Esto corrige el error "duplicate key"
                     conn.execute(text("""
-                        INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content)
+                        INSERT INTO mensajes (
+                            telefono, tipo, contenido, fecha, leido, archivo_data, 
+                            whatsapp_id, reply_to_id, reply_content
+                        )
                         VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody)
+                        ON CONFLICT (whatsapp_id) DO UPDATE SET
+                            reply_to_id = EXCLUDED.reply_to_id,
+                            reply_content = EXCLUDED.reply_content,
+                            archivo_data = COALESCE(mensajes.archivo_data, EXCLUDED.archivo_data)
                     """), {
                         "t": telefono_db, 
                         "tipo": tipo_msg, 
@@ -148,8 +167,9 @@ def recibir_mensaje():
                         "rid": reply_id,
                         "rbody": reply_content
                     })
+                    
                     conn.commit()
-                    log_info(f"✅ MENSAJE GUARDADO: {telefono_db}")
+                    log_info(f"✅ {telefono_db}: Mensaje procesado correctamente.")
 
             except Exception as e:
                 log_error(f"🔥 Error DB escribiendo {telefono_db}: {e}")
@@ -157,8 +177,8 @@ def recibir_mensaje():
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        log_error(f"🔥 Error General Webhook: {e}")
-        return jsonify({"status": "error"}), 500
+        log_error(f"🔥 Error Crítico Webhook: {e}")
+        return jsonify({"status": "error", "msg": str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
