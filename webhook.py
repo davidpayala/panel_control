@@ -12,7 +12,7 @@ app = Flask(__name__)
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
-# --- LOGGING PARA RAILWAY ---
+# --- LOGGING ---
 def log_info(msg):
     print(f"[INFO] {msg}", file=sys.stdout, flush=True)
 
@@ -38,7 +38,7 @@ def descargar_media_plus(media_url):
         headers = {}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY   
         
-        # Timeout corto para no bloquear el webhook
+        # Timeout corto
         r = requests.get(url_final, headers=headers, timeout=10)
         return r.content if r.status_code == 200 else None
             
@@ -71,7 +71,7 @@ def obtener_datos_mensaje(payload):
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V4 (Upsert Fix)", 200
+    return "Webhook V5 (Duplicate Fix)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -124,29 +124,30 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
 
-            # 3. GUARDAR EN DB (UPSERT PARA EVITAR ERRORES)
+            # 3. GUARDAR EN DB (LA SOLUCIÓN AL ERROR)
             try:
                 nombre_final = push_name or "Cliente Nuevo"
                 
-                # Intento rápido de obtener nombre real de Google si es nuevo
+                # Intento rápido de obtener nombre real de Google
                 if tipo_msg == 'ENTRANTE' and nombre_final == "Cliente Nuevo":
                      try:
-                        # Nota: Esto podría demorar un poco, si prefieres velocidad comenta estas 3 lineas
+                        # Comenta esto si notas lentitud en Railway
                         datos_google = buscar_contacto_google(telefono_db)
                         if datos_google and datos_google['encontrado']:
                             nombre_final = datos_google['nombre_completo']
                      except: pass
 
                 with engine.connect() as conn:
-                    # A) CLIENTE: Insertar si no existe, actualizar activo
+                    # A) CLIENTE
                     conn.execute(text("""
                         INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                         VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
                         ON CONFLICT (telefono) DO UPDATE SET activo = TRUE
                     """), {"t": telefono_db, "n": nombre_final})
                     
-                    # B) MENSAJE: Insertar o Actualizar si ya existe (UPSERT)
-                    # Esto corrige el error "duplicate key"
+                    # B) MENSAJE (AQUÍ ESTÁ LA CORRECCIÓN CLAVE)
+                    # Usamos ON CONFLICT (whatsapp_id) DO UPDATE ...
+                    # Esto evita el error de "duplicate key"
                     conn.execute(text("""
                         INSERT INTO mensajes (
                             telefono, tipo, contenido, fecha, leido, archivo_data, 
