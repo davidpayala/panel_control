@@ -164,7 +164,19 @@ def render_chat():
                 if c_btn.form_submit_button("🚀"):
                     if adj: enviar_archivo_chat(tel_activo, adj)
                     elif txt: enviar_texto_chat(tel_activo, txt)
+# ... (código existente del chat) ...
 
+    # --- ZONA DE DIAGNÓSTICO (AÑADIR AL FINAL DE RENDER_CHAT) ---
+    with st.expander("🛠️ DIAGNÓSTICO DB (Ver todos los mensajes)"):
+        with engine.connect() as conn:
+            # Mostramos los últimos 10 mensajes tal cual están en la base de datos
+            raw_msgs = pd.read_sql(text("SELECT id_mensaje, telefono, contenido, whatsapp_id, fecha FROM mensajes ORDER BY fecha DESC LIMIT 10"), conn)
+            st.dataframe(raw_msgs)
+            
+            # Contar clientes
+            count = conn.execute(text("SELECT count(*) FROM Clientes")).scalar()
+            st.write(f"Total Clientes en DB: {count}")
+            
 def mostrar_info_avanzada(telefono):
     """Ficha de cliente integrada"""
     with engine.connect() as conn:
