@@ -19,13 +19,15 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🚑 PARCHE DE BASE DE DATOS ---
+# --- 🚑 PARCHE DB (Asegurar soporte para números largos) ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
-            # Convertimos columnas a TEXTO para que acepten LIDs largos si es necesario
+            # Convertimos a VARCHAR para evitar error "Out of Range"
             conn.execute(text("ALTER TABLE mensajes ALTER COLUMN telefono TYPE VARCHAR(50)"))
             conn.execute(text("ALTER TABLE \"Clientes\" ALTER COLUMN telefono TYPE VARCHAR(50)"))
+            # Aseguramos que whatsapp_id sea texto
+            conn.execute(text("ALTER TABLE mensajes ALTER COLUMN whatsapp_id TYPE VARCHAR(100)"))
     except: pass 
 
 aplicar_parche_db()
@@ -51,22 +53,17 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
-# --- 🕵️‍♂️ DETECTIVE DE NÚMEROS REALES ---
+# --- 🕵️‍♂️ RESOLVER NÚMEROS DE EMPRESA (LID) ---
 def resolver_numero_real(payload, session):
-    """
-    Intenta descubrir el número de teléfono real si viene un LID (8204...).
-    """
     try:
-        # 1. Datos básicos
         raw_from = payload.get('from', '')
         _data = payload.get('_data') or {}
         
-        # Si NO es un LID (es un número normal corto), retornamos eso.
+        # Si es número normal, devolver limpio
         if '@c.us' in raw_from and not '@lid' in raw_from:
              return raw_from.replace('@c.us', '')
 
-        # 2. Si es LID, buscamos en _data (Truco para empresas)
-        # A veces el número real está en _data.id.remote o _data.id.user
+        # Si es LID, buscar en metadatos ocultos
         candidate = _data.get('id', {}).get('remote', '')
         if '@s.whatsapp.net' in candidate: 
             return candidate.replace('@s.whatsapp.net', '')
@@ -75,34 +72,25 @@ def resolver_numero_real(payload, session):
         if candidate_user and candidate_user.isdigit() and len(candidate_user) < 16:
             return candidate_user
 
-        # 3. Si sigue siendo oculto, PREGUNTAMOS A WAHA (API)
-        # WAHA tiene un endpoint para "traducir" LIDs a Números
+        # Consultar API WAHA si es necesario
         if '@lid' in raw_from and WAHA_URL:
             lid_clean = raw_from
-            # Llamada a API: /api/{session}/lids/{lid}
             url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
             headers = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
-            
             try:
                 r = requests.get(url_api, headers=headers, timeout=5)
                 if r.status_code == 200:
-                    data = r.json() # { "lid": "...", "pn": "51999...@c.us" }
-                    pn = data.get('pn')
-                    if pn:
-                        log_info(f"🕵️ LID Resuelto: {lid_clean} -> {pn}")
-                        return pn.replace('@c.us', '').replace('@s.whatsapp.net', '')
-            except Exception as e:
-                log_error(f"Fallo resolviendo LID: {e}")
+                    pn = r.json().get('pn')
+                    if pn: return pn.replace('@c.us', '').replace('@s.whatsapp.net', '')
+            except: pass
 
-        # 4. Si todo falla, devolvemos el ID original limpio
         return raw_from.replace('@c.us', '').replace('@lid', '')
-
     except:
         return payload.get('from', '').replace('@c.us', '')
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V9 (Business/LID Solver)", 200
+    return "Webhook V10 (Manual Upsert)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -118,10 +106,11 @@ def recibir_mensaje():
             session_name = evento.get('session', 'default')
             payload = evento.get('payload')
             if not payload: continue
-
+            
+            # Ignorar Broadcasts
             if 'status@broadcast' in str(payload.get('from')): continue
 
-            # --- PASO CRÍTICO: RESOLVER QUIÉN ES ---
+            # 1. RESOLVER NÚMERO (Fix Principal/LID)
             telefono_real = resolver_numero_real(payload, session_name)
             
             # Normalización
@@ -129,13 +118,12 @@ def recibir_mensaje():
             if formatos:
                 telefono_db = formatos['db']
             else:
-                # Fallback para números internacionales raros
                 telefono_db = "".join(filter(str.isdigit, telefono_real))
                 if len(telefono_db) < 5: continue
 
             log_info(f"📩 [{session_name}] Procesando: {telefono_db}")
 
-            # Contenido
+            # 2. CONTENIDO
             body = payload.get('body', '')
             media_obj = payload.get('media') or {} 
             media_url = payload.get('mediaUrl') or media_obj.get('url')
@@ -145,7 +133,7 @@ def recibir_mensaje():
                 archivo_bytes = descargar_media_plus(media_url)
                 if archivo_bytes and not body: body = "📷 Archivo Multimedia"
 
-            # Reply
+            # 3. REPLY
             reply_id = None
             reply_content = None
             raw_reply = payload.get('replyTo')
@@ -155,17 +143,17 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
             
-            # Guardar
+            # 4. GUARDAR (MODO MANUAL - SIN ON CONFLICT)
             try:
-                # PushName o Google
+                # Nombre
                 _data = payload.get('_data') or {}
                 push_name = _data.get('notifyName')
                 nombre_final = push_name or "Cliente Nuevo"
-
-                # Búsqueda Google (Solo si parece un número normal)
-                tipo_msg = 'ENTRANTE' # Asumimos entrante si llega al webhook
+                
+                tipo_msg = 'ENTRANTE'
                 if payload.get('fromMe'): tipo_msg = 'SALIENTE'
 
+                # Google (Opcional)
                 if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final and len(telefono_db) <= 13:
                      try:
                         datos_google = buscar_contacto_google(telefono_db)
@@ -173,35 +161,50 @@ def recibir_mensaje():
                             nombre_final = datos_google['nombre_completo']
                      except: pass
 
+                whatsapp_id = payload.get('id')
+
                 with engine.connect() as conn:
-                    # 1. Clientes
-                    conn.execute(text("""
-                        INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
-                        VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
-                        ON CONFLICT (telefono) DO UPDATE SET activo = TRUE
-                    """), {"t": telefono_db, "n": nombre_final})
+                    # A) Clientes (Upsert Manual)
+                    existe_cli = conn.execute(text("SELECT 1 FROM \"Clientes\" WHERE telefono=:t"), {"t": telefono_db}).scalar()
+                    if not existe_cli:
+                        conn.execute(text("""
+                            INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+                            VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
+                        """), {"t": telefono_db, "n": nombre_final})
+                    else:
+                        conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
+
+                    # B) Mensajes (Upsert Manual para evitar error DB)
+                    existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
-                    # 2. Mensajes (Upsert)
-                    conn.execute(text("""
-                        INSERT INTO mensajes (
-                            telefono, tipo, contenido, fecha, leido, archivo_data, 
-                            whatsapp_id, reply_to_id, reply_content
-                        )
-                        VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody)
-                        ON CONFLICT (whatsapp_id) DO UPDATE SET
-                            reply_to_id = EXCLUDED.reply_to_id,
-                            reply_content = EXCLUDED.reply_content,
-                            archivo_data = COALESCE(mensajes.archivo_data, EXCLUDED.archivo_data)
-                    """), {
-                        "t": telefono_db, 
-                        "tipo": tipo_msg, 
-                        "txt": body, 
-                        "leido": (tipo_msg == 'SALIENTE'), 
-                        "d": archivo_bytes,
-                        "wid": payload.get('id'),
-                        "rid": reply_id,
-                        "rbody": reply_content
-                    })
+                    if existe_msg:
+                        # ACTUALIZAR
+                        conn.execute(text("""
+                            UPDATE mensajes SET 
+                                reply_to_id = :rid,
+                                reply_content = :rbody,
+                                archivo_data = COALESCE(mensajes.archivo_data, :d)
+                            WHERE whatsapp_id = :wid
+                        """), {"wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "d": archivo_bytes})
+                    else:
+                        # INSERTAR
+                        conn.execute(text("""
+                            INSERT INTO mensajes (
+                                telefono, tipo, contenido, fecha, leido, archivo_data, 
+                                whatsapp_id, reply_to_id, reply_content
+                            )
+                            VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody)
+                        """), {
+                            "t": telefono_db, 
+                            "tipo": tipo_msg, 
+                            "txt": body, 
+                            "leido": (tipo_msg == 'SALIENTE'), 
+                            "d": archivo_bytes,
+                            "wid": whatsapp_id,
+                            "rid": reply_id,
+                            "rbody": reply_content
+                        })
+                    
                     conn.commit()
                     log_info(f"✅ [{session_name}] Guardado OK: {telefono_db}")
 
