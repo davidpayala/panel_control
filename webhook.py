@@ -11,7 +11,7 @@ app = Flask(__name__)
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
-# --- LOGGING PARA RAILWAY ---
+# --- LOGGING ---
 def log_info(msg):
     print(f"[INFO] {msg}", file=sys.stdout, flush=True)
 
@@ -43,6 +43,7 @@ def descargar_media_plus(media_url):
 def obtener_datos_mensaje(payload):
     try:
         from_me = payload.get('fromMe', False)
+        # BLINDAJE 1: _data nunca puede ser None
         _data = payload.get('_data') or {}
 
         if from_me:
@@ -51,26 +52,24 @@ def obtener_datos_mensaje(payload):
             push_name = None 
         else:
             remote_id = payload.get('from')
-            # Fallback para estructuras raras
-            if not remote_id: remote_id = _data.get('id', {}).get('remote')
+            # BLINDAJE 2: id interno seguro
+            if not remote_id:
+                _id_obj = _data.get('id') or {}
+                remote_id = _id_obj.get('remote')
             
             tipo = 'ENTRANTE'
             push_name = _data.get('notifyName')
 
         if remote_id:
-            # LIMPIEZA BÁSICA
             clean_num = remote_id.replace('@c.us', '').replace('@s.whatsapp.net', '')
-            
-            # NOTA: Si quieres recibir GRUPOS, comenta la siguiente línea:
             if '@g.us' in remote_id: return None, None, None
-            
             return clean_num, tipo, push_name
         return None, None, None
     except: return None, None, None
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V6 (Session Debug)", 200
+    return "Webhook V7 (Null Safety)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -86,38 +85,31 @@ def recibir_mensaje():
         for evento in eventos:
             if evento.get('event') != 'message': continue
 
-            # --- DIAGNÓSTICO DE SESIÓN ---
             session_name = evento.get('session', 'DESCONOCIDA')
             payload = evento.get('payload')
             if not payload: continue
 
-            # Ignorar estados (Status Stories)
             if 'status@broadcast' in str(payload.get('from')): continue
 
-            # 1. Extracción de Datos
             numero_crudo, tipo_msg, push_name = obtener_datos_mensaje(payload)
-            
-            if not numero_crudo:
-                log_info(f"⚠️ Sesión {session_name}: Mensaje ignorado (Sin ID válido)")
-                continue
+            if not numero_crudo: continue
 
-            # 2. Normalización (Más permisiva)
             formatos = normalizar_telefono_maestro(numero_crudo)
             
-            # Si falla la normalización estricta, usamos el número crudo como fallback
-            # Esto corrige el problema de "no recibo de todos los usuarios"
             if formatos:
                 telefono_db = formatos['db']
             else:
-                # Fallback de emergencia: Solo guardar dígitos
                 telefono_db = "".join(filter(str.isdigit, numero_crudo))
-                if len(telefono_db) < 5: continue # Muy corto para ser real
+                if len(telefono_db) < 5: continue 
 
             log_info(f"📩 [{session_name}] Procesando: {telefono_db}")
 
-            # 3. Contenido
+            # BLINDAJE 3: Acceso seguro a Media
             body = payload.get('body', '')
-            media_url = payload.get('mediaUrl') or payload.get('media', {}).get('url')
+            
+            # Aquí estaba el error: payload.get('media') podía ser None
+            media_obj = payload.get('media') or {} 
+            media_url = payload.get('mediaUrl') or media_obj.get('url')
             
             archivo_bytes = None
             if media_url:
@@ -134,12 +126,12 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
 
-            # 5. GUARDAR (UPSERT)
+            # 5. Guardar
             try:
                 nombre_final = push_name or "Cliente Nuevo"
                 
-                # Búsqueda Google (Opcional - Puede comentarse si da lentitud)
-                if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final:
+                # Búsqueda Google (Sólo si no es un número muy raro)
+                if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final and len(telefono_db) <= 12:
                      try:
                         datos_google = buscar_contacto_google(telefono_db)
                         if datos_google and datos_google['encontrado']:
@@ -147,14 +139,12 @@ def recibir_mensaje():
                      except: pass
 
                 with engine.connect() as conn:
-                    # A) Clientes
                     conn.execute(text("""
                         INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                         VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
                         ON CONFLICT (telefono) DO UPDATE SET activo = TRUE
                     """), {"t": telefono_db, "n": nombre_final})
                     
-                    # B) Mensajes (Upsert)
                     conn.execute(text("""
                         INSERT INTO mensajes (
                             telefono, tipo, contenido, fecha, leido, archivo_data, 
