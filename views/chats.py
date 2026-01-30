@@ -27,40 +27,17 @@ def render_chat():
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # CSS
+    # CSS (Sin indentación extraña)
     st.markdown("""
     <style>
     div.stButton > button:first-child { text-align: left; width: 100%; border-radius: 8px; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; }
-    
-    .chat-bubble { 
-        padding: 12px 16px; 
-        border-radius: 12px; 
-        margin-bottom: 8px; 
-        max-width: 80%;
-        color: white; 
-        font-size: 15px; 
-        position: relative;
-        display: flex;
-        flex-direction: column;
-        line-height: 1.4;
-    }
+    .chat-bubble { padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 80%; color: white; font-size: 15px; position: relative; display: flex; flex-direction: column;}
     .incoming { background-color: #262730; margin-right: auto; border-bottom-left-radius: 2px; }
     .outgoing { background-color: #004d40; margin-left: auto; border-bottom-right-radius: 2px; }
-    
-    .reply-context {
-        background-color: rgba(0, 0, 0, 0.25);
-        border-left: 4px solid #00e676;
-        border-radius: 6px;
-        padding: 8px 10px;
-        margin-bottom: 8px;
-        font-size: 0.85em;
-        display: flex;
-        flex-direction: column;
-    }
-    
+    .reply-context { background-color: rgba(0,0,0,0.25); border-left: 4px solid #00e676; padding: 6px 8px; border-radius: 4px; margin-bottom: 6px; font-size: 0.85em; display: flex; flex-direction: column; }
     .reply-author { font-weight: bold; color: #00e676; margin-bottom: 2px; font-size: 0.9em; }
     .reply-text { color: #eeeeee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.9; }
-    .chat-meta { font-size: 10px; opacity: 0.6; margin-top: 4px; align-self: flex-end; }
+    .chat-meta { font-size: 10px; opacity: 0.7; margin-top: 4px; align-self: flex-end; }
     .tag-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.7em; margin-right: 4px; color:black; font-weight:bold; }
     .tag-spam { background-color: #ffcccc; } .tag-vip { background-color: #d4edda; } .tag-warn { background-color: #fff3cd; }
     </style>
@@ -111,7 +88,7 @@ def render_chat():
             with engine.connect() as conn:
                 cli = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": tel_activo}).fetchone()
 
-            # HEADER
+            # Header
             c1, c2, c3 = st.columns([3, 0.5, 0.5])
             with c1: 
                 st.markdown(f"### {titulo}")
@@ -135,7 +112,7 @@ def render_chat():
             
             if ver_ficha: mostrar_info_avanzada(tel_activo)
 
-            # LECTURA MENSAJES (PRIORIDAD: reply_content LOCAL > JOIN)
+            # LECTURA MENSAJES
             query_msgs = """
                 SELECT m.*, 
                        orig.contenido as reply_texto_join, 
@@ -157,23 +134,18 @@ def render_chat():
                     
                     if m['archivo_data']: body = "📄 [Archivo Adjunto]"
 
+                    # HTML COMPACTO PARA EL REPLY
                     reply_html = ""
-                    # Priorizamos el contenido guardado directamente (reply_content)
                     texto_cita = m['reply_content'] if 'reply_content' in m and m['reply_content'] else m['reply_texto_join']
 
                     if m['reply_to_id'] and texto_cita:
-                        # Si no sabemos quién fue, asumimos por el tipo del join
                         autor = "Respuesta"
-                        if m['reply_tipo']:
-                            autor = "Tú" if m['reply_tipo'] == 'SALIENTE' else "Cliente"
-                        
+                        if m['reply_tipo']: autor = "Tú" if m['reply_tipo'] == 'SALIENTE' else "Cliente"
                         txt_r = (texto_cita[:60] + '...') if len(texto_cita) > 60 else texto_cita
-                        
-                        # HTML EN UNA SOLA LÍNEA SIN ESPACIOS
+                        # Sin sangría ni saltos de línea para evitar bug
                         reply_html = f'<div class="reply-context"><span class="reply-author">{autor}</span><span class="reply-text">{txt_r}</span></div>'
 
-                    # RENDERIZADO FINAL SIN ESPACIOS AL INICIO DEL STRING HTML
-                    # Esto corrige el problema visual de <span class...> apareciendo como texto
+                    # HTML FINAL EN UNA SOLA LÍNEA
                     html_burbuja = f"<div class='chat-bubble {cls}'>{reply_html}<span>{body}</span><span class='chat-meta'>{m['fecha'].strftime('%H:%M')}</span></div>"
                     
                     st.markdown(html_burbuja, unsafe_allow_html=True)

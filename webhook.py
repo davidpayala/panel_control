@@ -3,33 +3,30 @@ from sqlalchemy import text
 from database import engine
 import os
 import requests
-import json
-import base64
+import sys # Para forzar logs en Railway
 from datetime import datetime
-import pytz 
-from utils import normalizar_telefono_maestro, buscar_contacto_google
+from utils import normalizar_telefono_maestro
 
 app = Flask(__name__)
 
-# VARIABLES DE ENTORNO
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
-# --- FUNCIONES AUXILIARES ---
+# --- FUNCIÓN DE LOGGING (Para ver errores en tiempo real) ---
+def log_info(msg):
+    print(f"[INFO] {msg}", file=sys.stdout, flush=True)
+
+def log_error(msg):
+    print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
 def descargar_media_plus(media_url):
-    """Descarga media desde WAHA Plus con autenticación y corrección de URL."""
     try:
         if not media_url: return None
-        
         url_final = media_url
-        
-        # Corrección 1: URLs relativas
         if not media_url.startswith("http"):
              base = WAHA_URL.rstrip('/') if WAHA_URL else ""
              path = media_url.lstrip('/')
              url_final = f"{base}/{path}"
-        # Corrección 2: URLs internas (localhost)
         elif "localhost" in media_url or "waha:" in media_url:
              if WAHA_URL:
                 path_real = media_url.split('/api/')[-1]
@@ -38,71 +35,50 @@ def descargar_media_plus(media_url):
         
         headers = {}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY   
-        
-        r = requests.get(url_final, headers=headers, timeout=15)
+        r = requests.get(url_final, headers=headers, timeout=10)
         return r.content if r.status_code == 200 else None
-            
     except Exception as e:
-        print(f"⚠️ Error descarga: {e}")
+        log_error(f"Media download error: {e}")
         return None
 
 def obtener_datos_mensaje(payload):
-    """
-    Determina quién es el 'Otro' (Cliente) y la dirección del mensaje.
-    BLINDADO CONTRA ERRORES NONETYPE.
-    """
     try:
-        # 1. ¿Lo envié yo?
         from_me = payload.get('fromMe', False)
-        
-        # Aseguramos que _data sea un diccionario, incluso si viene None
+        # Blindaje contra _data nulo
         _data = payload.get('_data') or {}
 
         if from_me:
-            # SI LO ENVIÉ YO (Saliente)
             remote_id = payload.get('to')
             tipo = 'SALIENTE'
             push_name = None 
         else:
-            # ME LO ENVIARON (Entrante)
             remote_id = payload.get('from')
-            # Fallback seguro
             if not remote_id:
                 remote_id = _data.get('id', {}).get('remote')
-            
             tipo = 'ENTRANTE'
             push_name = _data.get('notifyName')
 
         if remote_id:
-            # Limpiar sufijos de WhatsApp
             clean_num = remote_id.replace('@c.us', '').replace('@s.whatsapp.net', '')
             if '@g.us' in remote_id: return None, None, None
-            
             return clean_num, tipo, push_name
-            
         return None, None, None
-
-    except Exception as e:
-        print(f"⚠️ Error extrayendo datos: {e}")
-        return None, None, None
-
-# --- RUTAS ---
+    except: return None, None, None
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook Activo 🚀 v2.2 (Anti-Crash)", 200
+    return "Webhook V3 (Flush Logs)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
-    # Validación API Key (Opcional)
-    api_key = request.headers.get('X-Api-Key')
-    if WAHA_KEY and api_key and api_key != WAHA_KEY:
-        pass 
-
     try:
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
+    except Exception as e:
+        log_error(f"JSON Error: {e}")
+        return jsonify({"status": "error"}), 500
 
+    try:
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
@@ -111,74 +87,54 @@ def recibir_mensaje():
             payload = evento.get('payload')
             if not payload: continue
 
-            # 1. IGNORAR ESTADOS
-            if 'status@broadcast' in str(payload.get('from')) or 'status@broadcast' in str(payload.get('to')):
-                continue
+            # Ignorar estados
+            remoto = str(payload.get('from', ''))
+            if 'status@broadcast' in remoto: continue
 
-            # 2. DETERMINAR CLIENTE
+            # 1. Procesar Datos
             numero_crudo, tipo_msg, push_name = obtener_datos_mensaje(payload)
             if not numero_crudo: continue
 
-            # 3. NORMALIZAR NÚMERO
             formatos = normalizar_telefono_maestro(numero_crudo)
             if not formatos:
+                log_info(f"⚠️ Ignorado por formato: {numero_crudo}")
                 continue
             
             telefono_db = formatos['db']
-            telefono_corto = formatos['corto']
             
-            print(f"📩 Procesando: {telefono_corto} | Tipo: {tipo_msg}")
-
-            # 4. GESTIÓN DE CONTENIDO Y MEDIA
+            # 2. Contenido
             body = payload.get('body', '')
+            media_url = payload.get('mediaUrl') or payload.get('media', {}).get('url')
             
-            media_url = payload.get('mediaUrl')
-            if not media_url:
-                media_obj = payload.get('media') or {}
-                media_url = media_obj.get('url')
-
             archivo_bytes = None
             if media_url:
+                log_info(f"📷 Descargando media de {telefono_db}")
                 archivo_bytes = descargar_media_plus(media_url)
-                if archivo_bytes:
-                    if not body: body = "📷 Archivo Multimedia"
-                else:
-                    msg_err = f"⚠️ Error descargando imagen"
-                    body = f"{body}\n({msg_err})" if body else msg_err
+                if archivo_bytes and not body: body = "📷 Archivo"
 
-            # --- 5. EXTRAER DATOS DEL REPLY ---
+            # 3. Reply
             reply_id = None
             reply_content = None
-            
             raw_reply = payload.get('replyTo')
             if isinstance(raw_reply, dict):
                 reply_id = raw_reply.get('id')
                 reply_content = raw_reply.get('body')
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
-            # ----------------------------------
 
-            # 6. GUARDAR EN BASE DE DATOS
+            # 4. Guardar (Sin Google para velocidad)
             try:
-                nombre_final = push_name or "Cliente"
+                nombre_final = push_name or "Cliente Nuevo"
                 
-                # Intentar recuperar nombre de Google si es entrante
-                if tipo_msg == 'ENTRANTE' and nombre_final == "Cliente":
-                     try:
-                        datos_google = buscar_contacto_google(telefono_db)
-                        if datos_google and datos_google['encontrado']:
-                            nombre_final = datos_google['nombre_completo']
-                     except: pass
-
                 with engine.connect() as conn:
-                    # A) Upsert Cliente
+                    # Upsert Cliente
                     conn.execute(text("""
                         INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                         VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
                         ON CONFLICT (telefono) DO UPDATE SET activo = TRUE
                     """), {"t": telefono_db, "n": nombre_final})
                     
-                    # B) Insertar Mensaje (CON REPLY)
+                    # Insert Mensaje
                     conn.execute(text("""
                         INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content)
                         VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody)
@@ -192,18 +148,17 @@ def recibir_mensaje():
                         "rid": reply_id,
                         "rbody": reply_content
                     })
-                    
                     conn.commit()
-                    print(f"✅ {telefono_corto}: Guardado OK.")
+                    log_info(f"✅ MENSAJE GUARDADO: {telefono_db}")
 
             except Exception as e:
-                print(f"❌ Error DB: {e}")
+                log_error(f"🔥 Error DB escribiendo {telefono_db}: {e}")
 
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        print(f"🔥 Error Crítico Webhook: {e}")
-        return jsonify({"status": "error", "msg": str(e)}), 500
+        log_error(f"🔥 Error General Webhook: {e}")
+        return jsonify({"status": "error"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
