@@ -19,6 +19,7 @@ OPCIONES_TAGS = [
     "✅ Compró", "👀 Prospecto", "❓ Preguntón", 
     "📉 Pide Rebaja", "📦 Mayorista"
 ]
+
 def render_chat():
     st_autorefresh(interval=10000, key="chat_autorefresh")
     st.title("💬 Chat Center")
@@ -26,40 +27,40 @@ def render_chat():
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
-    # CSS ACTUALIZADO PARA CITAS
+    # CSS
     st.markdown("""
     <style>
     div.stButton > button:first-child { text-align: left; width: 100%; border-radius: 8px; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; }
     
     .chat-bubble { 
-        padding: 10px 15px; 
+        padding: 12px 16px; 
         border-radius: 12px; 
         margin-bottom: 8px; 
-        max-width: 80%; 
+        max-width: 80%;
         color: white; 
         font-size: 15px; 
         position: relative;
         display: flex;
         flex-direction: column;
+        line-height: 1.4;
     }
     .incoming { background-color: #262730; margin-right: auto; border-bottom-left-radius: 2px; }
     .outgoing { background-color: #004d40; margin-left: auto; border-bottom-right-radius: 2px; }
     
-    /* ESTILO PARA EL MENSAJE CITADO */
     .reply-context {
-        background-color: rgba(0,0,0,0.25);
-        border-left: 4px solid #00e676; 
-        padding: 6px 8px;
-        border-radius: 4px;
-        margin-bottom: 6px;
+        background-color: rgba(0, 0, 0, 0.25);
+        border-left: 4px solid #00e676;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
         font-size: 0.85em;
         display: flex;
         flex-direction: column;
     }
+    
     .reply-author { font-weight: bold; color: #00e676; margin-bottom: 2px; font-size: 0.9em; }
     .reply-text { color: #eeeeee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.9; }
-
-    .chat-meta { font-size: 10px; opacity: 0.7; margin-top: 4px; align-self: flex-end; }
+    .chat-meta { font-size: 10px; opacity: 0.6; margin-top: 4px; align-self: flex-end; }
     .tag-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.7em; margin-right: 4px; color:black; font-weight:bold; }
     .tag-spam { background-color: #ffcccc; } .tag-vip { background-color: #d4edda; } .tag-warn { background-color: #fff3cd; }
     </style>
@@ -85,7 +86,7 @@ def render_chat():
             SELECT m.telefono, MAX(m.fecha) as f, 
             COALESCE(MAX(c.nombre_corto), m.telefono) as nom, MAX(c.etiquetas) as tags
             FROM mensajes m LEFT JOIN Clientes c ON m.telefono = c.telefono
-            WHERE LENGTH(m.telefono) < 14 
+            WHERE LENGTH(m.telefono) < 16 
         """
         if filtro: q += f" AND (m.telefono ILIKE '%%{filtro}%%' OR c.nombre_corto ILIKE '%%{filtro}%%')"
         q += " GROUP BY m.telefono ORDER BY f DESC LIMIT 20"
@@ -110,7 +111,7 @@ def render_chat():
             with engine.connect() as conn:
                 cli = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": tel_activo}).fetchone()
 
-            # Header
+            # HEADER
             c1, c2, c3 = st.columns([3, 0.5, 0.5])
             with c1: 
                 st.markdown(f"### {titulo}")
@@ -134,19 +135,15 @@ def render_chat():
             
             if ver_ficha: mostrar_info_avanzada(tel_activo)
 
-            # --- LECTURA CON JOIN PARA CITAS ---
-            # Priorizamos 'reply_content' guardado, si es NULL usamos el JOIN
+            # LECTURA MENSAJES (PRIORIDAD: reply_content LOCAL > JOIN)
             query_msgs = """
-                SELECT 
-                    m.*, 
-                    orig.contenido as reply_texto_join,
-                    orig.tipo as reply_tipo
-                FROM mensajes m
+                SELECT m.*, 
+                       orig.contenido as reply_texto_join, 
+                       orig.tipo as reply_tipo
+                FROM mensajes m 
                 LEFT JOIN mensajes orig ON m.reply_to_id = orig.whatsapp_id
-                WHERE m.telefono = :t 
-                ORDER BY m.fecha ASC
+                WHERE m.telefono = :t ORDER BY m.fecha ASC
             """
-
             with engine.connect() as conn:
                 conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": tel_activo})
                 conn.commit()
@@ -160,36 +157,34 @@ def render_chat():
                     
                     if m['archivo_data']: body = "📄 [Archivo Adjunto]"
 
-                    # --- CONSTRUCCIÓN HTML COMPACTA (Solución al error visual) ---
                     reply_html = ""
-                    
-                    # Usamos el contenido guardado en reply_content si existe, sino el del JOIN
+                    # Priorizamos el contenido guardado directamente (reply_content)
                     texto_cita = m['reply_content'] if 'reply_content' in m and m['reply_content'] else m['reply_texto_join']
 
                     if m['reply_to_id'] and texto_cita:
-                        # Determinar autor de la cita
+                        # Si no sabemos quién fue, asumimos por el tipo del join
                         autor = "Respuesta"
                         if m['reply_tipo']:
                             autor = "Tú" if m['reply_tipo'] == 'SALIENTE' else "Cliente"
                         
-                        # Cortar texto
                         txt_r = (texto_cita[:60] + '...') if len(texto_cita) > 60 else texto_cita
                         
-                        # HTML EN UNA SOLA LÍNEA SIN ESPACIOS EXTRA
+                        # HTML EN UNA SOLA LÍNEA SIN ESPACIOS
                         reply_html = f'<div class="reply-context"><span class="reply-author">{autor}</span><span class="reply-text">{txt_r}</span></div>'
 
-                    # RENDERIZADO FINAL: HTML TODO PEGADO A LA IZQUIERDA
-                    html_burbuja = f"""<div class='chat-bubble {cls}'>{reply_html}<span>{body}</span><span class='chat-meta'>{m['fecha'].strftime('%H:%M')}</span></div>"""
+                    # RENDERIZADO FINAL SIN ESPACIOS AL INICIO DEL STRING HTML
+                    # Esto corrige el problema visual de <span class...> apareciendo como texto
+                    html_burbuja = f"<div class='chat-bubble {cls}'>{reply_html}<span>{body}</span><span class='chat-meta'>{m['fecha'].strftime('%H:%M')}</span></div>"
                     
                     st.markdown(html_burbuja, unsafe_allow_html=True)
-
+                    
                     if m['archivo_data']:
                         try: st.image(io.BytesIO(m['archivo_data']), width=200)
                         except: pass
                 
                 components.html("<script>var x=window.parent.document.querySelectorAll('.stChatMessage'); if(x.length>0)x[x.length-1].scrollIntoView();</script>", height=0)
 
-            # Input
+            # INPUT
             with st.form("send_form", clear_on_submit=True):
                 c_in, c_btn = st.columns([4, 1])
                 txt = c_in.text_input("Mensaje", key="txt_in")
