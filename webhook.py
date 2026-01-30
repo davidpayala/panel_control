@@ -4,7 +4,6 @@ from database import engine
 import os
 import requests
 import sys
-import time
 from utils import normalizar_telefono_maestro, buscar_contacto_google
 
 app = Flask(__name__)
@@ -19,20 +18,18 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🚑 PARCHE DB (Asegurar soporte para números largos) ---
+# --- 🚑 PARCHE DB ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
-            # Convertimos a VARCHAR para evitar error "Out of Range"
             conn.execute(text("ALTER TABLE mensajes ALTER COLUMN telefono TYPE VARCHAR(50)"))
             conn.execute(text("ALTER TABLE \"Clientes\" ALTER COLUMN telefono TYPE VARCHAR(50)"))
-            # Aseguramos que whatsapp_id sea texto
             conn.execute(text("ALTER TABLE mensajes ALTER COLUMN whatsapp_id TYPE VARCHAR(100)"))
     except: pass 
 
 aplicar_parche_db()
 
-# --- FUNCIONES AUXILIARES ---
+# --- FUNCIONES ---
 def descargar_media_plus(media_url):
     try:
         if not media_url: return None
@@ -53,17 +50,14 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
-# --- 🕵️‍♂️ RESOLVER NÚMEROS DE EMPRESA (LID) ---
 def resolver_numero_real(payload, session):
     try:
         raw_from = payload.get('from', '')
         _data = payload.get('_data') or {}
         
-        # Si es número normal, devolver limpio
         if '@c.us' in raw_from and not '@lid' in raw_from:
              return raw_from.replace('@c.us', '')
 
-        # Si es LID, buscar en metadatos ocultos
         candidate = _data.get('id', {}).get('remote', '')
         if '@s.whatsapp.net' in candidate: 
             return candidate.replace('@s.whatsapp.net', '')
@@ -72,7 +66,6 @@ def resolver_numero_real(payload, session):
         if candidate_user and candidate_user.isdigit() and len(candidate_user) < 16:
             return candidate_user
 
-        # Consultar API WAHA si es necesario
         if '@lid' in raw_from and WAHA_URL:
             lid_clean = raw_from
             url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
@@ -90,7 +83,7 @@ def resolver_numero_real(payload, session):
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V10 (Manual Upsert)", 200
+    return "Webhook V11 (Table Name Fix)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -107,13 +100,11 @@ def recibir_mensaje():
             payload = evento.get('payload')
             if not payload: continue
             
-            # Ignorar Broadcasts
             if 'status@broadcast' in str(payload.get('from')): continue
 
-            # 1. RESOLVER NÚMERO (Fix Principal/LID)
+            # 1. RESOLVER NÚMERO
             telefono_real = resolver_numero_real(payload, session_name)
             
-            # Normalización
             formatos = normalizar_telefono_maestro(telefono_real)
             if formatos:
                 telefono_db = formatos['db']
@@ -143,9 +134,8 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
             
-            # 4. GUARDAR (MODO MANUAL - SIN ON CONFLICT)
+            # 4. GUARDAR
             try:
-                # Nombre
                 _data = payload.get('_data') or {}
                 push_name = _data.get('notifyName')
                 nombre_final = push_name or "Cliente Nuevo"
@@ -153,7 +143,6 @@ def recibir_mensaje():
                 tipo_msg = 'ENTRANTE'
                 if payload.get('fromMe'): tipo_msg = 'SALIENTE'
 
-                # Google (Opcional)
                 if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final and len(telefono_db) <= 13:
                      try:
                         datos_google = buscar_contacto_google(telefono_db)
@@ -164,8 +153,8 @@ def recibir_mensaje():
                 whatsapp_id = payload.get('id')
 
                 with engine.connect() as conn:
-                    # A) Clientes (Upsert Manual)
-                    existe_cli = conn.execute(text("SELECT 1 FROM \"Clientes\" WHERE telefono=:t"), {"t": telefono_db}).scalar()
+                    # A) Clientes (CORREGIDO: Sin comillas en el nombre de la tabla)
+                    existe_cli = conn.execute(text("SELECT 1 FROM Clientes WHERE telefono=:t"), {"t": telefono_db}).scalar()
                     if not existe_cli:
                         conn.execute(text("""
                             INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
@@ -174,11 +163,10 @@ def recibir_mensaje():
                     else:
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
 
-                    # B) Mensajes (Upsert Manual para evitar error DB)
+                    # B) Mensajes
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if existe_msg:
-                        # ACTUALIZAR
                         conn.execute(text("""
                             UPDATE mensajes SET 
                                 reply_to_id = :rid,
@@ -187,7 +175,6 @@ def recibir_mensaje():
                             WHERE whatsapp_id = :wid
                         """), {"wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "d": archivo_bytes})
                     else:
-                        # INSERTAR
                         conn.execute(text("""
                             INSERT INTO mensajes (
                                 telefono, tipo, contenido, fecha, leido, archivo_data, 
