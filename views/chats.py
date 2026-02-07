@@ -20,73 +20,90 @@ OPCIONES_TAGS = [
     "📉 Pide Rebaja", "📦 Mayorista"
 ]
 
+
 def render_chat():
-    # Refresco automático cada 5 seg
+    # 1. Configuración inicial
     st_autorefresh(interval=5000, key="chat_autorefresh")
-    
     st.title("💬 Chat Center")
 
-    # --- SIDEBAR: Lista de Clientes ---
+    # 2. Lógica de la Barra Lateral (SIDEBAR)
     with st.sidebar:
         st.header("Clientes")
         
-        # Botón para traer mensajes antiguos de WAHA
+        # Botón Sincronizar
         if st.button("🔄 Sincronizar Historial"):
-            with st.spinner("Trayendo últimos mensajes..."):
-                res = sincronizar_historial()
-            st.success(res)
-            time.sleep(1)
-            st.rerun()
+            try:
+                with st.spinner("Trayendo mensajes..."):
+                    res = sincronizar_historial()
+                st.success(res)
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al sincronizar: {e}")
 
         # Buscador
-        busqueda = st.text_input("🔍 Buscar número o nombre", "")
+        busqueda = st.text_input("🔍 Buscar:", "")
         
-        # --- CORRECCIÓN AQUÍ: Quitamos las comillas de "Clientes" ---
+        # --- CORRECCIÓN CLAVE: Tabla en minúsculas 'clientes' ---
         query_clientes = """
             SELECT telefono, nombre_corto, estado, 
-                   (SELECT COUNT(*) FROM mensajes WHERE telefono = Clientes.telefono AND leido = FALSE AND tipo = 'ENTRANTE') as no_leidos
-            FROM Clientes
+                   (SELECT COUNT(*) FROM mensajes WHERE telefono = clientes.telefono AND leido = FALSE AND tipo = 'ENTRANTE') as no_leidos
+            FROM clientes
             WHERE activo = TRUE
             ORDER BY no_leidos DESC, fecha_registro DESC
         """
         
-        with engine.connect() as conn:
-            df_clientes = pd.read_sql(query_clientes, conn)
-            
-        if busqueda:
-            df_clientes = df_clientes[
-                df_clientes['telefono'].astype(str).str.contains(busqueda) | 
-                df_clientes['nombre_corto'].str.lower().str.contains(busqueda.lower())
-            ]
+        try:
+            with engine.connect() as conn:
+                df_clientes = pd.read_sql(query_clientes, conn)
+                
+            if busqueda:
+                # Filtrado en memoria
+                df_clientes = df_clientes[
+                    df_clientes['telefono'].astype(str).str.contains(busqueda) | 
+                    df_clientes['nombre_corto'].str.lower().str.contains(busqueda.lower(), na=False)
+                ]
 
-        # Renderizar lista
-        for _, row in df_clientes.iterrows():
-            tel = row['telefono']
-            nombre = row['nombre_corto'] or tel
-            notif = f"🔴 {row['no_leidos']}" if row['no_leidos'] > 0 else ""
-            label = f"{notif} {nombre} ({tel})"
+            if df_clientes.empty:
+                st.info("No hay clientes activos.")
             
-            if st.button(label, key=f"btn_{tel}"):
-                st.session_state['chat_actual_telefono'] = tel
-                st.rerun()
+            # Renderizar lista
+            for _, row in df_clientes.iterrows():
+                tel = row['telefono']
+                nombre = row['nombre_corto'] or tel
+                
+                # Formato visual
+                notif = f"🔴 {row['no_leidos']}" if row['no_leidos'] > 0 else ""
+                label = f"{notif} {nombre} ({tel})"
+                
+                # Botón de selección
+                if st.button(label, key=f"btn_{tel}"):
+                    st.session_state['chat_actual_telefono'] = tel
+                    st.rerun()
+                    
+        except Exception as e:
+            st.error(f"Error cargando clientes: {e}")
+            st.code(query_clientes, language="sql")
 
-    # --- CHAT PRINCIPAL ---
+    # 3. Chat Principal
     if not st.session_state.get('chat_actual_telefono'):
-        st.info("👈 Selecciona un chat para comenzar")
+        st.info("👈 Selecciona un chat del menú lateral para comenzar")
         return
 
     telefono_actual = st.session_state['chat_actual_telefono']
     
-    # Header del Chat y marcar como leídos
+    # Obtener info del cliente seleccionado
     with engine.connect() as conn:
-        # CORRECCIÓN: Quitamos comillas también aquí por si acaso
-        info_cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
+        # CORRECCIÓN: 'clientes' en minúscula
+        info_cliente = conn.execute(text("SELECT * FROM clientes WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
         
+        # Marcar leídos
         conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
         conn.commit()
 
+    # Encabezado del chat
     if info_cliente:
-        st.subheader(f"Conversación con {info_cliente.nombre_corto} ({telefono_actual})")
+        st.subheader(f"Conversación con {info_cliente.nombre_corto}")
     else:
         st.subheader(f"Chat: {telefono_actual}")
 
@@ -99,10 +116,9 @@ def render_chat():
     with engine.connect() as conn:
         df_msgs = pd.read_sql(query_msgs, conn, params={"t": telefono_actual})
 
-    # Renderizar Mensajes (Burbujas)
+    # Renderizar Burbujas de Chat
     contenedor_mensajes = st.container()
     with contenedor_mensajes:
-        # Estilos CSS
         st.markdown("""
         <style>
         .chat-row { display: flex; width: 100%; margin-bottom: 10px; }
@@ -125,12 +141,10 @@ def render_chat():
             contenido = msg['contenido'] or ""
             hora = msg['fecha'].strftime("%H:%M") if msg['fecha'] else ""
             
-            # HTML del Reply
             html_reply = ""
             if msg.get('reply_content'):
                 html_reply = f"<div class='reply-box'>↪ {msg['reply_content'][:60]}...</div>"
 
-            # HTML del Archivo
             html_archivo = ""
             if msg.get('archivo_data'):
                 html_archivo = f"<div style='margin-bottom:5px'>📎 <i>Archivo adjunto</i></div>"
@@ -146,7 +160,7 @@ def render_chat():
             </div>
             """, unsafe_allow_html=True)
 
-    # --- INPUT DE TEXTO ---
+    # Input Area
     st.markdown("---")
     c1, c2 = st.columns([5, 1])
     with c1:
@@ -160,17 +174,6 @@ def render_chat():
         elif txt_input:
             enviar_texto_chat(telefono_actual, txt_input)
 
-    # --- ZONA DE DIAGNÓSTICO (AÑADIR AL FINAL DE RENDER_CHAT) ---
-    with st.expander("🛠️ DIAGNÓSTICO DB (Ver todos los mensajes)"):
-        with engine.connect() as conn:
-            # Mostramos los últimos 10 mensajes tal cual están en la base de datos
-            raw_msgs = pd.read_sql(text("SELECT id_mensaje, telefono, contenido, whatsapp_id, fecha FROM mensajes ORDER BY fecha DESC LIMIT 10"), conn)
-            st.dataframe(raw_msgs)
-            
-            # Contar clientes
-            count = conn.execute(text("SELECT count(*) FROM Clientes")).scalar()
-            st.write(f"Total Clientes en DB: {count}")
-            
 def mostrar_info_avanzada(telefono):
     """Ficha de cliente integrada"""
     with engine.connect() as conn:
