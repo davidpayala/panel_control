@@ -21,6 +21,13 @@ OPCIONES_TAGS = [
 ]
 
 def render_chat():
+    if st.sidebar.button("🔄 Sincronizar Historial Completo"):
+        with st.spinner("Trayendo mensajes antiguos de WAHA..."):
+            msg = sincronizar_historial()
+        st.success(msg)
+        time.sleep(2)
+        st.rerun()
+
     st_autorefresh(interval=10000, key="chat_autorefresh")
     st.title("💬 Chat Center")
 
