@@ -21,7 +21,7 @@ OPCIONES_TAGS = [
 ]
 
 def render_chat():
-    # Refresco automático cada 5 seg para ver mensajes nuevos
+    # Refresco automático cada 5 seg
     st_autorefresh(interval=5000, key="chat_autorefresh")
     
     st.title("💬 Chat Center")
@@ -41,11 +41,11 @@ def render_chat():
         # Buscador
         busqueda = st.text_input("🔍 Buscar número o nombre", "")
         
-        # Cargar clientes ordenados por último mensaje (si es posible) o registro
+        # --- CORRECCIÓN AQUÍ: Quitamos las comillas de "Clientes" ---
         query_clientes = """
             SELECT telefono, nombre_corto, estado, 
                    (SELECT COUNT(*) FROM mensajes WHERE telefono = Clientes.telefono AND leido = FALSE AND tipo = 'ENTRANTE') as no_leidos
-            FROM "Clientes"
+            FROM Clientes
             WHERE activo = TRUE
             ORDER BY no_leidos DESC, fecha_registro DESC
         """
@@ -59,7 +59,7 @@ def render_chat():
                 df_clientes['nombre_corto'].str.lower().str.contains(busqueda.lower())
             ]
 
-        # Renderizar lista de clientes
+        # Renderizar lista
         for _, row in df_clientes.iterrows():
             tel = row['telefono']
             nombre = row['nombre_corto'] or tel
@@ -77,10 +77,11 @@ def render_chat():
 
     telefono_actual = st.session_state['chat_actual_telefono']
     
-    # Header del Chat
+    # Header del Chat y marcar como leídos
     with engine.connect() as conn:
-        info_cliente = conn.execute(text("SELECT * FROM \"Clientes\" WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
-        # Marcar como leídos al entrar
+        # CORRECCIÓN: Quitamos comillas también aquí por si acaso
+        info_cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
+        
         conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
         conn.commit()
 
@@ -101,7 +102,7 @@ def render_chat():
     # Renderizar Mensajes (Burbujas)
     contenedor_mensajes = st.container()
     with contenedor_mensajes:
-        # CSS para burbujas
+        # Estilos CSS
         st.markdown("""
         <style>
         .chat-row { display: flex; width: 100%; margin-bottom: 10px; }
@@ -116,7 +117,6 @@ def render_chat():
         """, unsafe_allow_html=True)
 
         for _, msg in df_msgs.iterrows():
-            # Determinar dirección: 'SALIENTE' es mío, 'ENTRANTE' es del cliente
             es_mio = (msg['tipo'] == 'SALIENTE')
             
             clase_row = "row-der" if es_mio else "row-izq"
@@ -125,12 +125,12 @@ def render_chat():
             contenido = msg['contenido'] or ""
             hora = msg['fecha'].strftime("%H:%M") if msg['fecha'] else ""
             
-            # HTML del Reply (si existe)
+            # HTML del Reply
             html_reply = ""
             if msg.get('reply_content'):
                 html_reply = f"<div class='reply-box'>↪ {msg['reply_content'][:60]}...</div>"
 
-            # HTML del Archivo (si existe)
+            # HTML del Archivo
             html_archivo = ""
             if msg.get('archivo_data'):
                 html_archivo = f"<div style='margin-bottom:5px'>📎 <i>Archivo adjunto</i></div>"
@@ -160,34 +160,16 @@ def render_chat():
         elif txt_input:
             enviar_texto_chat(telefono_actual, txt_input)
 
-# --- Helpers de envío para el chat ---
-def enviar_texto_chat(telefono, texto):
-    ok, r = enviar_mensaje_whatsapp(telefono, texto)
-    if ok: 
-        guardar_mensaje_saliente(telefono, texto, None)
-        st.rerun()
-    else: st.error(r)
-
-def enviar_archivo_chat(telefono, archivo):
-    ok, r = enviar_mensaje_media(telefono, archivo.getvalue(), archivo.type, "", archivo.name)
-    if ok: 
-        guardar_mensaje_saliente(telefono, f"📎 {archivo.name}", archivo.getvalue())
-        st.rerun()
-    else: st.error(r)
-
-def guardar_mensaje_saliente(telefono, texto, data):
-    # Función auxiliar para guardar en DB lo que acabamos de enviar desde el UI
-    # para que aparezca instantáneamente sin esperar al webhook
-    norm = normalizar_telefono_maestro(telefono)
-    if not norm: return
-    t = norm['db']
-    
-    with engine.connect() as conn:
-        conn.execute(text("""
-            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data) 
-            VALUES (:t, 'SALIENTE', :c, NOW(), TRUE, :d)
-        """), {"t": t, "c": texto, "d": data})
-        conn.commit()
+    # --- ZONA DE DIAGNÓSTICO (AÑADIR AL FINAL DE RENDER_CHAT) ---
+    with st.expander("🛠️ DIAGNÓSTICO DB (Ver todos los mensajes)"):
+        with engine.connect() as conn:
+            # Mostramos los últimos 10 mensajes tal cual están en la base de datos
+            raw_msgs = pd.read_sql(text("SELECT id_mensaje, telefono, contenido, whatsapp_id, fecha FROM mensajes ORDER BY fecha DESC LIMIT 10"), conn)
+            st.dataframe(raw_msgs)
+            
+            # Contar clientes
+            count = conn.execute(text("SELECT count(*) FROM Clientes")).scalar()
+            st.write(f"Total Clientes en DB: {count}")
             
 def mostrar_info_avanzada(telefono):
     """Ficha de cliente integrada"""
