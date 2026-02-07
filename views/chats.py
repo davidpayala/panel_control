@@ -164,7 +164,6 @@ def render_chat():
                 if c_btn.form_submit_button("🚀"):
                     if adj: enviar_archivo_chat(tel_activo, adj)
                     elif txt: enviar_texto_chat(tel_activo, txt)
-# ... (código existente del chat) ...
 
     # --- ZONA DE DIAGNÓSTICO (AÑADIR AL FINAL DE RENDER_CHAT) ---
     with st.expander("🛠️ DIAGNÓSTICO DB (Ver todos los mensajes)"):

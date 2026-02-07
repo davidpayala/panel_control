@@ -52,11 +52,19 @@ def descargar_media_plus(media_url):
 
 def resolver_numero_real(payload, session):
     try:
-        raw_from = payload.get('from', '')
+        # ### CAMBIO CRÍTICO: Detectar dirección del mensaje
+        # Si fromMe es True (Saliente), el contacto es 'to'.
+        # Si fromMe es False (Entrante), el contacto es 'from'.
+        if payload.get('fromMe'):
+            raw_target = payload.get('to', '')
+        else:
+            raw_target = payload.get('from', '')
+            
         _data = payload.get('_data') or {}
         
-        if '@c.us' in raw_from and not '@lid' in raw_from:
-             return raw_from.replace('@c.us', '')
+        # Usamos raw_target en lugar de raw_from para la lógica
+        if '@c.us' in raw_target and not '@lid' in raw_target:
+             return raw_target.replace('@c.us', '')
 
         candidate = _data.get('id', {}).get('remote', '')
         if '@s.whatsapp.net' in candidate: 
@@ -66,8 +74,8 @@ def resolver_numero_real(payload, session):
         if candidate_user and candidate_user.isdigit() and len(candidate_user) < 16:
             return candidate_user
 
-        if '@lid' in raw_from and WAHA_URL:
-            lid_clean = raw_from
+        if '@lid' in raw_target and WAHA_URL:
+            lid_clean = raw_target
             url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
             headers = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
             try:
@@ -77,13 +85,14 @@ def resolver_numero_real(payload, session):
                     if pn: return pn.replace('@c.us', '').replace('@s.whatsapp.net', '')
             except: pass
 
-        return raw_from.replace('@c.us', '').replace('@lid', '')
+        return raw_target.replace('@c.us', '').replace('@lid', '')
     except:
+        # Fallback simple
         return payload.get('from', '').replace('@c.us', '')
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V11 (Table Name Fix)", 200
+    return "Webhook V12 (Outgoing & Reply Fix)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -94,7 +103,9 @@ def recibir_mensaje():
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
-            if evento.get('event') != 'message': continue
+            # ### CAMBIO: Aceptar message.any para ver mensajes salientes
+            tipo_evento = evento.get('event')
+            if tipo_evento not in ['message', 'message.any']: continue
 
             session_name = evento.get('session', 'default')
             payload = evento.get('payload')
@@ -102,7 +113,7 @@ def recibir_mensaje():
             
             if 'status@broadcast' in str(payload.get('from')): continue
 
-            # 1. RESOLVER NÚMERO
+            # 1. RESOLVER NÚMERO (Usando la nueva lógica corregida)
             telefono_real = resolver_numero_real(payload, session_name)
             
             formatos = normalizar_telefono_maestro(telefono_real)
@@ -112,7 +123,7 @@ def recibir_mensaje():
                 telefono_db = "".join(filter(str.isdigit, telefono_real))
                 if len(telefono_db) < 5: continue
 
-            log_info(f"📩 [{session_name}] Procesando: {telefono_db}")
+            log_info(f"📩 [{session_name}] Procesando: {telefono_db} (Evento: {tipo_evento})")
 
             # 2. CONTENIDO
             body = payload.get('body', '')
@@ -124,15 +135,26 @@ def recibir_mensaje():
                 archivo_bytes = descargar_media_plus(media_url)
                 if archivo_bytes and not body: body = "📷 Archivo Multimedia"
 
-            # 3. REPLY
+            # 3. REPLY (MEJORADO)
             reply_id = None
             reply_content = None
+            
+            # Intento 1: replyTo directo
             raw_reply = payload.get('replyTo')
             if isinstance(raw_reply, dict):
                 reply_id = raw_reply.get('id')
                 reply_content = raw_reply.get('body')
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
+            
+            # Intento 2: Buscar en _data.quotedMsg si el contenido sigue vacío
+            if not reply_content:
+                quoted = payload.get('_data', {}).get('quotedMsg', {})
+                if quoted:
+                    reply_content = quoted.get('body') or quoted.get('caption')
+                    # Si no teníamos ID, tratamos de sacarlo de _data (estructura variable)
+                    if not reply_id: 
+                         reply_id = quoted.get('id') # A veces es un objeto, cuidado aquí
             
             # 4. GUARDAR
             try:
@@ -143,6 +165,7 @@ def recibir_mensaje():
                 tipo_msg = 'ENTRANTE'
                 if payload.get('fromMe'): tipo_msg = 'SALIENTE'
 
+                # Solo buscamos en Google si es entrante y no es muy largo (evitar grupos raros)
                 if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final and len(telefono_db) <= 13:
                      try:
                         datos_google = buscar_contacto_google(telefono_db)
@@ -153,9 +176,10 @@ def recibir_mensaje():
                 whatsapp_id = payload.get('id')
 
                 with engine.connect() as conn:
-                    # A) Clientes (CORREGIDO: Sin comillas en el nombre de la tabla)
+                    # A) Clientes
                     existe_cli = conn.execute(text("SELECT 1 FROM Clientes WHERE telefono=:t"), {"t": telefono_db}).scalar()
                     if not existe_cli:
+                        # Si es mensaje saliente (yo escribo a alguien nuevo), también creamos el cliente
                         conn.execute(text("""
                             INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                             VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
@@ -193,7 +217,7 @@ def recibir_mensaje():
                         })
                     
                     conn.commit()
-                    log_info(f"✅ [{session_name}] Guardado OK: {telefono_db}")
+                    log_info(f"✅ [{session_name}] Guardado OK: {telefono_db} ({tipo_msg})")
 
             except Exception as e:
                 log_error(f"🔥 Error DB [{session_name}]: {e}")
