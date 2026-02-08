@@ -71,6 +71,46 @@ def normalizar_telefono_maestro(entrada):
         "corto": local
     }
 
+def get_headers():
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY:
+        headers["X-Api-Key"] = WAHA_KEY
+    return headers
+
+def marcar_leido_waha(chat_id):
+    """Envía la orden a WhatsApp para que aparezcan los ticks azules"""
+    try:
+        url = f"{WAHA_URL}/api/default/chats/{chat_id}/messages/read"
+        requests.post(url, headers=get_headers(), json={})
+    except Exception as e:
+        print(f"Error marcando leido: {e}")
+
+def procesar_mensaje_sync(conn, msg, telefono):
+    """Guarda un mensaje de WAHA en la DB si no existe"""
+    wid = msg.get('id')
+    from_me = msg.get('fromMe', False)
+    body = msg.get('body', '')
+    timestamp = msg.get('timestamp')
+    
+    # Determinar tipo
+    tipo = 'SALIENTE' if from_me else 'ENTRANTE'
+    
+    # Verificar si existe
+    existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:w"), {"w": wid}).scalar()
+    
+    if not existe:
+        conn.execute(text("""
+            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id)
+            VALUES (:t, :tipo, :c, to_timestamp(:ts), :l, :wid)
+        """), {
+            "t": telefono,
+            "tipo": tipo,
+            "c": body,
+            "ts": timestamp,
+            "l": True, # Si ya está en historial, asumimos leído
+            "wid": wid
+        })
+
 # ==============================================================================
 # ENVÍO Y MEDIA
 # ==============================================================================
@@ -127,89 +167,37 @@ def subir_archivo_meta(archivo_bytes, mime_type):
 # ==============================================================================
 # SINCRONIZACIÓN (CAPTURA REPLY TEXT)
 # ==============================================================================
-def sincronizar_historial():
-    """
-    Descarga los últimos mensajes de cada chat en WAHA y los guarda en la DB local.
-    """
-    sessions = ['default', 'principal'] # Tus sesiones
-    total_guardados = 0
-    
-    headers = {}
-    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-
-    for session in sessions:
-        try:
-            # 1. Obtener lista de chats (limitado a 100 chats más recientes)
-            url_chats = f"{WAHA_URL}/api/{session}/chats?limit=100&sortBy=messageTimestamp"
-            r_chats = requests.get(url_chats, headers=headers)
-            
-            if r_chats.status_code != 200:
-                print(f"Error obteniendo chats de {session}: {r_chats.text}")
-                continue
-                
-            chats = r_chats.json()
-            
+def sincronizar_historial(limit=50):
+    """Descarga los últimos mensajes de cada chat activo en WAHA"""
+    try:
+        # 1. Obtener lista de chats desde WAHA
+        url_chats = f"{WAHA_URL}/api/default/chats?limit=20&sortBy=messageTimestamp"
+        r = requests.get(url_chats, headers=get_headers())
+        if r.status_code != 200:
+            return f"Error conectando a WAHA: {r.status_code}"
+        
+        chats = r.json()
+        total_msgs = 0
+        
+        with engine.connect() as conn:
             for chat in chats:
-                chat_id = chat.get('id') # ej: 51999...@c.us
-                if not chat_id or '@g.us' in chat_id: continue # Saltamos grupos si quieres
+                chat_id = chat['id']
+                telefono = chat_id.replace('@c.us', '')
                 
-                # Limpiar numero
-                telefono = chat_id.replace('@c.us', '').replace('@s.whatsapp.net', '')
-                
-                # 2. Obtener mensajes del chat (limitado a 50 por chat para no saturar)
-                url_msgs = f"{WAHA_URL}/api/{session}/chats/{chat_id}/messages?limit=50&downloadMedia=false"
-                r_msgs = requests.get(url_msgs, headers=headers)
-                
-                if r_msgs.status_code != 200: continue
-                
-                mensajes = r_msgs.json()
-                
-                # 3. Guardar en DB
-                with engine.connect() as conn:
-                    # Asegurar que el cliente existe
-                    conn.execute(text("""
-                        INSERT INTO "Clientes" (telefono, nombre_corto, estado, activo, fecha_registro)
-                        VALUES (:t, 'Importado', 'Sin empezar', TRUE, NOW())
-                        ON CONFLICT (telefono) DO NOTHING
-                    """), {"t": telefono})
-                    
+                # 2. Descargar mensajes de este chat
+                url_msgs = f"{WAHA_URL}/api/default/chats/{chat_id}/messages?limit={limit}"
+                r_msgs = requests.get(url_msgs, headers=get_headers())
+                if r_msgs.status_code == 200:
+                    mensajes = r_msgs.json()
                     for msg in mensajes:
-                        whatsapp_id = msg.get('id')
-                        # Verificar si ya existe para no duplicar
-                        existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:w"), 
-                                            {"w": whatsapp_id}).scalar()
+                        # Guardar en DB (Lógica simplificada de upsert)
+                        procesar_mensaje_sync(conn, msg, telefono)
+                        total_msgs += 1
                         
-                        if not existe:
-                            timestamp = msg.get('timestamp')
-                            fecha_msg = datetime.datetime.fromtimestamp(timestamp) if timestamp else datetime.datetime.now()
-                            
-                            es_mio = msg.get('fromMe', False)
-                            tipo = 'SALIENTE' if es_mio else 'ENTRANTE'
-                            contenido = msg.get('body', '')
-                            
-                            # Manejo básico de adjuntos en historial (sin descargar binario para ir rápido)
-                            has_media = msg.get('hasMedia', False)
-                            if has_media and not contenido:
-                                contenido = "📷 [Archivo Histórico]"
-
-                            conn.execute(text("""
-                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id)
-                                VALUES (:t, :tipo, :c, :f, :l, :w)
-                            """), {
-                                "t": telefono,
-                                "tipo": tipo,
-                                "c": contenido,
-                                "f": fecha_msg,
-                                "l": True, # Asumimos leido porque es historial
-                                "w": whatsapp_id
-                            })
-                            total_guardados += 1
-                    conn.commit()
-                    
-        except Exception as e:
-            print(f"Error sincronizando {session}: {e}")
-
-    return f"Sincronización completada. {total_guardados} mensajes nuevos importados."
+            conn.commit()
+        return f"Sincronización completa. {total_msgs} mensajes procesados."
+    except Exception as e:
+        return f"Error crítico: {e}"
 
 # ==============================================================================
 # GOOGLE
