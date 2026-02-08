@@ -105,32 +105,40 @@ def map_ack_status(ack_value):
     return 'pendiente'
 
 def procesar_mensaje_sync(conn, msg, telefono_db):
-    """Inserta o actualiza un mensaje en la BD"""
     try:
         wid = msg.get('id')
         from_me = msg.get('fromMe', False)
-        body = msg.get('body', '') or '' # Asegurar que no sea None
         
-        # --- FIX FECHAS (Timestamp) ---
-        # WAHA a veces devuelve ms (13 dígitos) y Postgres espera segundos (10 dígitos)
+        # --- EXTRACCIÓN ROBUSTA DE CONTENIDO ---
+        body = msg.get('body', '')
+        # Si el body está vacío, buscar en _data (común en mensajes multimedia o forwards)
+        if not body and '_data' in msg:
+            data = msg['_data']
+            if 'caption' in data: body = data['caption']
+            elif 'message' in data:
+                m = data['message']
+                if 'conversation' in m: body = m['conversation']
+                elif 'extendedTextMessage' in m: body = m['extendedTextMessage'].get('text', '')
+                elif 'imageMessage' in m: body = m['imageMessage'].get('caption', '📷 [Imagen]')
+        
+        # --- FIX TIMESTAMP ---
         timestamp = msg.get('timestamp')
         if timestamp and float(timestamp) > 9999999999:
              timestamp = float(timestamp) / 1000.0
 
-        # Estado del mensaje (ticks)
+        # --- ESTADO Y TIPO ---
         ack_raw = msg.get('ack', 0)
         estado_waha = map_ack_status(ack_raw) if from_me else None
-
         tipo = 'SALIENTE' if from_me else 'ENTRANTE'
         
-        # 1. Asegurar cliente (Upsert seguro)
+        # 1. Crear Cliente
         conn.execute(text("""
             INSERT INTO clientes (telefono, nombre_corto, estado, activo, fecha_registro)
             VALUES (:t, 'Whatsapp Sync', 'Sin empezar', TRUE, NOW())
             ON CONFLICT (telefono) DO NOTHING
         """), {"t": telefono_db})
 
-        # 2. Verificar existencia
+        # 2. Insertar Mensaje (Evitar duplicados)
         existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:w"), {"w": wid}).scalar()
         
         if not existe:
@@ -140,14 +148,14 @@ def procesar_mensaje_sync(conn, msg, telefono_db):
             """), {
                 "t": telefono_db,
                 "tipo": tipo,
-                "c": body,
+                "c": body or "[Archivo adjunto]",
                 "ts": timestamp,
-                "l": True, # Asumimos leído si ya está en historial
+                "l": True, 
                 "wid": wid,
                 "est": estado_waha
             })
         else:
-            # Si ya existe y es mío, actualizamos el estado (ticks)
+            # Actualizar estado (ticks) si es mensaje mío
             if from_me:
                 conn.execute(text("UPDATE mensajes SET estado_waha = :est WHERE whatsapp_id = :wid"), 
                              {"est": estado_waha, "wid": wid})
@@ -203,56 +211,48 @@ def subir_archivo_meta(archivo_bytes, mime_type):
     except Exception as e: return None, str(e)
 
 # ==============================================================================
-# SINCRONIZACIÓN MEJORADA (CORE FIX)
+# SINCRONIZACIÓN CORREGIDA (SESSION FIX)
 # ==============================================================================
-def sincronizar_historial(limit=200):
-    """
-    Descarga historial completo (enviados y recibidos).
-    Corrige problemas de URL de sesión y formatos de fecha.
-    """
+def sincronizar_historial(limit=100):
     try:
-        # 1. Obtener lista de chats (usando la variable WAHA_SESSION correcta)
+        # Usamos la sesión configurada (probablemente 'principal')
         url_chats = f"{WAHA_URL}/api/{WAHA_SESSION}/chats"
         params_chats = {"limit": 50, "sortBy": "messageTimestamp"}
         
         r = requests.get(url_chats, headers=get_headers(), params=params_chats)
         if r.status_code != 200:
-            return f"Error conectando a WAHA: {r.status_code} (Revisa WAHA_SESSION)"
+            return f"Error: WAHA respondió {r.status_code}. ¿La sesión '{WAHA_SESSION}' existe?"
         
         chats = r.json()
         total_msgs = 0
-        mensajes_guardados = 0
         
         with engine.connect() as conn:
             for chat in chats:
                 chat_id = chat.get('id', '')
-                
-                # Normalizar ID para DB (Quitar @c.us y limpiar)
                 norm = normalizar_telefono_maestro(chat_id)
                 if not norm: continue
+                
                 telefono_db = norm['db']
                 
-                # 2. Descargar mensajes del chat
-                # URL corregida: usa WAHA_SESSION en vez de 'default'
+                # Descarga de mensajes
                 url_msgs = f"{WAHA_URL}/api/{WAHA_SESSION}/chats/{chat_id}/messages"
                 params_msgs = {
                     "limit": limit,
-                    "downloadMedia": "true" 
+                    "downloadMedia": "false" # False para hacerlo rápido primero
                 }
                 
                 r_msgs = requests.get(url_msgs, headers=get_headers(), params=params_msgs)
                 if r_msgs.status_code == 200:
                     mensajes = r_msgs.json()
-                    # Procesar mensajes
                     for msg in reversed(mensajes):
                         procesar_mensaje_sync(conn, msg, telefono_db)
                         total_msgs += 1
             
             conn.commit()
             
-        return f"✅ Sincronización exitosa: {total_msgs} mensajes revisados."
+        return f"✅ Sync OK (Sesión: {WAHA_SESSION}) - {total_msgs} msgs."
     except Exception as e:
-        return f"Error crítico en Sync: {e}"
+        return f"Error crítico: {e}"
 
 # ==============================================================================
 # GOOGLE
