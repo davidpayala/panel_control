@@ -11,7 +11,7 @@ from database import engine
 from utils import (
     enviar_mensaje_media, enviar_mensaje_whatsapp, 
     normalizar_telefono_maestro, buscar_contacto_google, 
-    crear_en_google, sincronizar_historial
+    crear_en_google, sincronizar_historial,marcar_leido_waha
 )
 
 OPCIONES_TAGS = [
@@ -90,22 +90,22 @@ def render_chat():
         st.info("👈 Selecciona un chat del menú lateral para comenzar")
         return
 
+# views/chats.py (Dentro de render_chat, justo después de obtener telefono_actual)
+
     telefono_actual = st.session_state['chat_actual_telefono']
     
     # Obtener info del cliente seleccionado
     with engine.connect() as conn:
-        # CORRECCIÓN: 'clientes' en minúscula
         info_cliente = conn.execute(text("SELECT * FROM clientes WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
         
-        # Marcar leídos
+        # 1. Marcar leídos en TU base de datos
         conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
         conn.commit()
-
-    # Encabezado del chat
+    
+    # 2. NUEVO: Mandar señal a WhatsApp (Blue Ticks)
     if info_cliente:
-        st.subheader(f"Conversación con {info_cliente.nombre_corto}")
-    else:
-        st.subheader(f"Chat: {telefono_actual}")
+        # Usamos un thread o llamada directa para no bloquear UI
+        marcar_leido_waha(f"{telefono_actual}@c.us")
 
     # Cargar Mensajes
     query_msgs = """
@@ -149,13 +149,22 @@ def render_chat():
             if msg.get('archivo_data'):
                 html_archivo = f"<div style='margin-bottom:5px'>📎 <i>Archivo adjunto</i></div>"
 
+            # Lógica para mostrar ticks en mensajes salientes
+            icono_estado = ""
+            if es_mio:
+                estado = msg.get('estado_waha') # Asegúrate de leer esta columna en tu query_msgs
+                if estado == 'leido': icono_estado = "🔵 ✓✓"
+                elif estado == 'recibido': icono_estado = "☑️ ✓✓"
+                elif estado == 'enviado': icono_estado = "☑️ ✓"
+                else: icono_estado = "🕒"
+
             st.markdown(f"""
             <div class='chat-row {clase_row}'>
                 <div class='bubble {clase_bubble}'>
                     {html_reply}
                     {html_archivo}
                     {contenido}
-                    <div class='meta'>{hora}</div>
+                    <div class='meta'>{hora} {icono_estado}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)

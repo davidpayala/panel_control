@@ -22,10 +22,10 @@ def log_error(msg):
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE mensajes ALTER COLUMN telefono TYPE VARCHAR(50)"))
-            conn.execute(text("ALTER TABLE \"Clientes\" ALTER COLUMN telefono TYPE VARCHAR(50)"))
-            conn.execute(text("ALTER TABLE mensajes ALTER COLUMN whatsapp_id TYPE VARCHAR(100)"))
-    except: pass 
+            # ... tus parches anteriores ...
+            # NUEVO: Columna para estado del mensaje (ack)
+            conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
+    except: pass
 
 aplicar_parche_db()
 
@@ -105,13 +105,25 @@ def recibir_mensaje():
         for evento in eventos:
             # ### CAMBIO: Aceptar message.any para ver mensajes salientes
             tipo_evento = evento.get('event')
-            if tipo_evento not in ['message', 'message.any']: continue
-
-            session_name = evento.get('session', 'default')
-            payload = evento.get('payload')
-            if not payload: continue
-            
-            if 'status@broadcast' in str(payload.get('from')): continue
+            # NUEVO: Manejo de ACKs (Confirmaciones de lectura/entrega)
+            if tipo_evento == 'message.ack':
+                payload = evento.get('payload', {})
+                msg_id = payload.get('id')
+                ack_status = payload.get('ack') # 1: enviado, 2: recibido, 3: leido, etc.
+                
+                # Mapeo de estados de WAHA a texto legible
+                estado_map = {1: 'enviado', 2: 'recibido', 3: 'leido', 4: 'reproducido'}
+                nuevo_estado = estado_map.get(ack_status, 'pendiente')
+                
+                try:
+                    with engine.connect() as conn:
+                        conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), 
+                                    {"e": nuevo_estado, "w": msg_id})
+                        conn.commit()
+                        log_info(f"✅ ACK Actualizado: {msg_id} -> {nuevo_estado}")
+                except Exception as e:
+                    log_error(f"Error actualizando ACK: {e}")
+                continue # Saltar al siguiente evento
 
             # 1. RESOLVER NÚMERO (Usando la nueva lógica corregida)
             telefono_real = resolver_numero_real(payload, session_name)
