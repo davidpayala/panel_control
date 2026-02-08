@@ -15,12 +15,12 @@ def get_headers():
 
 def render_diagnostico():
     st.title("🕵️ Inspector de Mensajes (Diagnóstico)")
-    st.warning("Esta es una herramienta técnica para ver cómo WAHA entrega los números.")
+    st.warning("Herramienta para detectar el formato correcto del número de teléfono.")
 
     # 1. Configuración de búsqueda
     c1, c2 = st.columns(2)
     session = c1.selectbox("Sesión WAHA", ["principal", "default"])
-    chat_id = c2.text_input("ID de Chat específico (Opcional)", placeholder="Ej: 123456@g.us")
+    chat_id = c2.text_input("ID de Chat específico (Opcional)", placeholder="Ej: 51999...@c.us")
     
     limit = st.slider("Cantidad de mensajes a analizar", 1, 20, 5)
 
@@ -33,10 +33,11 @@ def render_diagnostico():
             try:
                 # Construir URL
                 if chat_id:
+                    # Si buscamos un chat específico
                     url = f"{WAHA_URL}/api/{session}/chats/{chat_id}/messages?limit={limit}"
                 else:
-                    # Traer chats recientes para sacar sus últimos mensajes
-                    url = f"{WAHA_URL}/api/{session}/chats?limit={limit}&sortBy=messageTimestamp"
+                    # CORRECCIÓN AQUÍ: Usamos 'conversationTimestamp' que es el válido
+                    url = f"{WAHA_URL}/api/{session}/chats?limit={limit}&sortBy=conversationTimestamp"
 
                 r = requests.get(url, headers=get_headers(), timeout=10)
                 
@@ -49,7 +50,7 @@ def render_diagnostico():
                 # Preparar lista de mensajes
                 mensajes = []
                 if chat_id:
-                    mensajes = reversed(data) # En chat específico vienen array directo
+                    mensajes = list(reversed(data)) # En chat específico vienen array directo
                 else:
                     # En lista de chats, sacamos el 'lastMessage'
                     for chat in data:
@@ -57,10 +58,17 @@ def render_diagnostico():
                             mensajes.append(chat.get('lastMessage'))
 
                 # MOSTRAR RESULTADOS
-                st.success("Datos obtenidos. Revisa los candidatos abajo 👇")
+                if not mensajes:
+                    st.info("No se encontraron mensajes recientes.")
+                    return
+
+                st.success(f"Se analizaron {len(mensajes)} mensajes. Revisa los candidatos abajo 👇")
                 
                 for i, msg in enumerate(mensajes):
-                    with st.expander(f"Mensaje #{i+1}: {msg.get('body', '[Sin texto]')[:40]}...", expanded=True):
+                    cuerpo = msg.get('body', '[Sin texto]') or '[Multimedia]'
+                    fecha = msg.get('timestamp', '---')
+                    
+                    with st.expander(f"Mensaje #{i+1} | {fecha} | {cuerpo[:40]}...", expanded=True):
                         
                         # CANDIDATOS DE NÚMERO
                         st.markdown("### 🎯 Candidatos de Número")
@@ -72,6 +80,10 @@ def render_diagnostico():
                         col1.metric("1. FROM", c_from if c_from else "Vacío")
                         col2.metric("2. PARTICIPANT", c_part if c_part else "Vacío")
                         col3.metric("3. REMOTE", c_remo if c_remo else "Vacío")
+
+                        # Alerta de Grupo
+                        if c_from and '@g.us' in c_from:
+                            st.warning("⚠️ Este mensaje viene de un GRUPO. El número real es el 'PARTICIPANT'.")
 
                         # RAW JSON (Para que yo pueda verlo)
                         st.caption("JSON Crudo (Copia esto si tienes dudas):")
