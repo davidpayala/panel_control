@@ -244,7 +244,8 @@ def sincronizar_historial(limit=100):
             try:
                 # 1. Obtener chats de la sesión actual
                 url_chats = f"{WAHA_URL}/api/{sesion}/chats"
-                params_chats = {"limit": 50, "sortBy": "messageTimestamp"}
+                # CORRECCIÓN: Eliminamos 'sortBy' porque causaba error 400
+                params_chats = {"limit": 50} 
                 
                 r = requests.get(url_chats, headers=get_headers(), params=params_chats)
                 
