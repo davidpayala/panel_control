@@ -19,12 +19,17 @@ WAHA_SESSION = os.getenv("WAHA_SESSION", "default")
 WAHA_KEY = os.getenv("WAHA_KEY") 
 
 # ==============================================================================
-# 🏆 NORMALIZACIÓN BLINDADA (Internacionales OK)
+# 🏆 NORMALIZACIÓN BLINDADA
 # ==============================================================================
 def normalizar_telefono_maestro(entrada):
+    """
+    Convierte cualquier formato de teléfono a un estándar DB (solo números).
+    Maneja diccionarios de WAHA, cadenas con +51, etc.
+    """
     if not entrada: return None
     raw_id = ""
 
+    # 1. Extraer el ID si es un objeto (payload de WAHA)
     if isinstance(entrada, dict):
         if entrada.get('fromMe', False):
             raw_id = entrada.get('to', '')
@@ -38,25 +43,26 @@ def normalizar_telefono_maestro(entrada):
     else:
         raw_id = str(entrada)
 
-    # Filtros de seguridad WAHA
+    # 2. Filtros de seguridad (ignorar grupos, estados, newsletters)
     if 'status@broadcast' in raw_id: return None
     if '@g.us' in raw_id: return None
     if '@newsletter' in raw_id: return None
     if '@lid' in raw_id: return None
 
+    # 3. Limpieza de caracteres
     cadena_limpia = raw_id.split('@')[0] if '@' in raw_id else raw_id
     solo_numeros = "".join(filter(str.isdigit, cadena_limpia))
     
     if not solo_numeros: return None
     
-    # Validaciones de longitud
+    # 4. Validaciones de longitud básica
     if len(solo_numeros) > 15: return None
     if len(solo_numeros) < 7: return None
 
     full = solo_numeros
     local = solo_numeros
     
-    # Lógica Perú
+    # 5. Lógica específica para Perú (ajustar según país si es necesario)
     if len(solo_numeros) == 9:
         full = f"51{solo_numeros}"
         local = solo_numeros
@@ -65,11 +71,12 @@ def normalizar_telefono_maestro(entrada):
         local = solo_numeros[2:]
     
     return {
-        "db": full,
-        "waha": f"{full}@c.us",
+        "db": full,           # Para Base de Datos (ej: 51999888777)
+        "waha": f"{full}@c.us", # Para API WAHA
         "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}" if len(local)==9 else f"+{full}",
         "corto": local
     }
+
 
 def get_headers():
     headers = {"Content-Type": "application/json"}
@@ -78,65 +85,88 @@ def get_headers():
     return headers
 
 def marcar_chat_como_leido_waha(chat_id):
-    """Envía la orden a WhatsApp para que aparezcan los ticks azules"""
+    """Envía la orden a WhatsApp para poner los ticks azules"""
     try:
-        url = f"{WAHA_URL}/api/default/chats/{chat_id}/messages/read"
+        url = f"{WAHA_URL}/api/{WAHA_SESSION}/chats/{chat_id}/messages/read"
         requests.post(url, headers=get_headers(), json={})
-    except Exception as e:
-        print(f"Error marcando leido: {e}")
+    except Exception:
+        pass
 
 
-# En utils.py, reemplaza la función 'procesar_mensaje_sync' con esto:
+# ==============================================================================
+# PROCESAMIENTO DE MENSAJES (SYNC)
+# ==============================================================================
+def map_ack_status(ack_value):
+    """Convierte el código numérico de ACK de WhatsApp a texto"""
+    s_ack = str(ack_value).upper()
+    if s_ack in ['3', '4', 'READ', 'PLAYED']: return 'leido'     # Azul
+    if s_ack in ['2', 'RECEIVED', 'DELIVERED']: return 'recibido' # Gris doble
+    if s_ack in ['1', 'SENT']: return 'enviado'  # Gris simple
+    return 'pendiente'
 
-def procesar_mensaje_sync(conn, msg, telefono):
-    """Guarda un mensaje de WAHA en la DB y crea el cliente si no existe"""
-    wid = msg.get('id')
-    from_me = msg.get('fromMe', False)
-    body = msg.get('body', '')
-    timestamp = msg.get('timestamp')
-    
-    # Determinar tipo
-    tipo = 'SALIENTE' if from_me else 'ENTRANTE'
-    
-    # 1. IMPORTANTE: Asegurar que el cliente existe en la tabla Clientes
-    # Si no lo creamos aquí, no saldrá en la lista de chats.
-    conn.execute(text("""
-        INSERT INTO clientes (telefono, nombre_corto, estado, activo, fecha_registro)
-        VALUES (:t, 'Whatsapp', 'Sin empezar', TRUE, NOW())
-        ON CONFLICT (telefono) DO NOTHING
-    """), {"t": telefono})
-
-    # 2. Verificar si existe el mensaje
-    existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:w"), {"w": wid}).scalar()
-    
-    if not existe:
-        conn.execute(text("""
-            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id)
-            VALUES (:t, :tipo, :c, to_timestamp(:ts), :l, :wid)
-        """), {
-            "t": telefono,
-            "tipo": tipo,
-            "c": body,
-            "ts": timestamp,
-            "l": True, # Si ya está en historial, asumimos leído
-            "wid": wid
-        })
+def procesar_mensaje_sync(conn, msg, telefono_db):
+    """Inserta o actualiza un mensaje en la BD"""
+    try:
+        wid = msg.get('id')
+        from_me = msg.get('fromMe', False)
+        body = msg.get('body', '') or '' # Asegurar que no sea None
         
+        # --- FIX FECHAS (Timestamp) ---
+        # WAHA a veces devuelve ms (13 dígitos) y Postgres espera segundos (10 dígitos)
+        timestamp = msg.get('timestamp')
+        if timestamp and float(timestamp) > 9999999999:
+             timestamp = float(timestamp) / 1000.0
+
+        # Estado del mensaje (ticks)
+        ack_raw = msg.get('ack', 0)
+        estado_waha = map_ack_status(ack_raw) if from_me else None
+
+        tipo = 'SALIENTE' if from_me else 'ENTRANTE'
+        
+        # 1. Asegurar cliente (Upsert seguro)
+        conn.execute(text("""
+            INSERT INTO clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+            VALUES (:t, 'Whatsapp Sync', 'Sin empezar', TRUE, NOW())
+            ON CONFLICT (telefono) DO NOTHING
+        """), {"t": telefono_db})
+
+        # 2. Verificar existencia
+        existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:w"), {"w": wid}).scalar()
+        
+        if not existe:
+            conn.execute(text("""
+                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id, estado_waha)
+                VALUES (:t, :tipo, :c, to_timestamp(:ts), :l, :wid, :est)
+            """), {
+                "t": telefono_db,
+                "tipo": tipo,
+                "c": body,
+                "ts": timestamp,
+                "l": True, # Asumimos leído si ya está en historial
+                "wid": wid,
+                "est": estado_waha
+            })
+        else:
+            # Si ya existe y es mío, actualizamos el estado (ticks)
+            if from_me:
+                conn.execute(text("UPDATE mensajes SET estado_waha = :est WHERE whatsapp_id = :wid"), 
+                             {"est": estado_waha, "wid": wid})
+                
+    except Exception as e:
+        print(f"Error procesando msg {msg.get('id')}: {e}")
+
 # ==============================================================================
 # ENVÍO Y MEDIA
 # ==============================================================================
 def enviar_mensaje_whatsapp(numero, texto):
-    if not WAHA_URL: return False, "⚠️ Falta WAHA_URL"
+    if not WAHA_URL: return False, "Falta WAHA_URL"
     norm = normalizar_telefono_maestro(numero)
-    if not norm: return False, "❌ Número inválido"
+    if not norm: return False, "Número inválido"
     
     url = f"{WAHA_URL}/api/sendText"
-    headers = {"Content-Type": "application/json"}
-    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY 
-    
     payload = {"session": WAHA_SESSION, "chatId": norm['waha'], "text": texto}
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        r = requests.post(url, headers=get_headers(), json=payload, timeout=10)
         if r.status_code in [200, 201]: return True, r.json()
         return False, f"WAHA {r.status_code}: {r.text}"
     except Exception as e: return False, str(e)
@@ -160,10 +190,7 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
             },
             "caption": caption
         }
-        headers = {"Content-Type": "application/json"}
-        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response = requests.post(url, json=payload, headers=get_headers(), timeout=30)
         if response.status_code == 201: return True, response.json()
         return False, f"Error {response.status_code}: {response.text}"
     except Exception as e: return False, str(e)
@@ -176,52 +203,54 @@ def subir_archivo_meta(archivo_bytes, mime_type):
     except Exception as e: return None, str(e)
 
 # ==============================================================================
-# SINCRONIZACIÓN MEJORADA
+# SINCRONIZACIÓN MEJORADA (CORE FIX)
 # ==============================================================================
-def sincronizar_historial(limit=100):
+def sincronizar_historial(limit=200):
     """
-    Descarga los últimos mensajes (enviados y recibidos) de los chats activos.
-    Se aumentó el límite y se forza la descarga de media.
+    Descarga historial completo (enviados y recibidos).
+    Corrige problemas de URL de sesión y formatos de fecha.
     """
     try:
-        # s1. Obtener lista de chats ordenados por fecha de mensaje
-        url_chats = f"{WAHA_URL}/api/default/chats"
-        params_chats = {"limit": 30, "sortBy": "messageTimestamp"}
+        # 1. Obtener lista de chats (usando la variable WAHA_SESSION correcta)
+        url_chats = f"{WAHA_URL}/api/{WAHA_SESSION}/chats"
+        params_chats = {"limit": 50, "sortBy": "messageTimestamp"}
         
         r = requests.get(url_chats, headers=get_headers(), params=params_chats)
         if r.status_code != 200:
-            return f"Error conectando a WAHA: {r.status_code}"
+            return f"Error conectando a WAHA: {r.status_code} (Revisa WAHA_SESSION)"
         
         chats = r.json()
         total_msgs = 0
+        mensajes_guardados = 0
         
         with engine.connect() as conn:
             for chat in chats:
-                chat_id = chat['id']
-                # Ignorar grupos y canales
-                if '@g.us' in chat_id or '@newsletter' in chat_id: continue
+                chat_id = chat.get('id', '')
                 
-                telefono = chat_id.replace('@c.us', '')
+                # Normalizar ID para DB (Quitar @c.us y limpiar)
+                norm = normalizar_telefono_maestro(chat_id)
+                if not norm: continue
+                telefono_db = norm['db']
                 
-                # 2. Descargar mensajes (Enviados y Recibidos)
-                # WAHA trae ambos por defecto, pero aumentamos el límite y pedimos media
-                url_msgs = f"{WAHA_URL}/api/default/chats/{chat_id}/messages"
+                # 2. Descargar mensajes del chat
+                # URL corregida: usa WAHA_SESSION en vez de 'default'
+                url_msgs = f"{WAHA_URL}/api/{WAHA_SESSION}/chats/{chat_id}/messages"
                 params_msgs = {
                     "limit": limit,
-                    "fromMe": "true",
-                    "downloadMedia": "true" # Intenta descargar fotos/audios si los hay
+                    "downloadMedia": "true" 
                 }
                 
                 r_msgs = requests.get(url_msgs, headers=get_headers(), params=params_msgs)
                 if r_msgs.status_code == 200:
                     mensajes = r_msgs.json()
-                    # Procesamos desde el más antiguo al más nuevo para mantener orden lógico
+                    # Procesar mensajes
                     for msg in reversed(mensajes):
-                        procesar_mensaje_sync(conn, msg, telefono)
+                        procesar_mensaje_sync(conn, msg, telefono_db)
                         total_msgs += 1
-                        
+            
             conn.commit()
-        return f"✅ Sync completado: {total_msgs} mensajes procesados."
+            
+        return f"✅ Sincronización exitosa: {total_msgs} mensajes revisados."
     except Exception as e:
         return f"Error crítico en Sync: {e}"
 
