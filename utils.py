@@ -208,6 +208,7 @@ def sincronizar_historial(limit=100):
                 url_msgs = f"{WAHA_URL}/api/default/chats/{chat_id}/messages"
                 params_msgs = {
                     "limit": limit,
+                    "fromMe": "true",
                     "downloadMedia": "true" # Intenta descargar fotos/audios si los hay
                 }
                 
