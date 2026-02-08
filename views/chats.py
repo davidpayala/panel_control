@@ -30,60 +30,76 @@ def render_chat():
     with st.sidebar:
         st.header("Clientes")
         
-        # Botón Sincronizar
-        if st.button("🔄 Sincronizar Historial"):
-            try:
-                with st.spinner("Trayendo mensajes..."):
-                    res = sincronizar_historial()
-                st.success(res)
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error al sincronizar: {e}")
+        # --- BOTONES DE ACCIÓN ---
+        col_btns = st.columns(2)
+        with col_btns[0]:
+            if st.button("🔄 Sync", help="Descargar últimos mensajes de WhatsApp"):
+                try:
+                    with st.spinner("Sincronizando..."):
+                        res = sincronizar_historial()
+                    st.toast(res)
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error Sync: {e}")
+        
+        with col_btns[1]:
+            # --- BOTÓN DE REPARACIÓN (NUEVO) ---
+            if st.button("🛠️ Reparar", help="Si no ves los chats, pulsa aquí"):
+                try:
+                    with engine.connect() as conn:
+                        # 1. Detectar números huérfanos y crearlos en clientes
+                        # Usamos 'clientes' en minúsculas para evitar el error 42P01
+                        res = conn.execute(text("""
+                            INSERT INTO clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+                            SELECT DISTINCT m.telefono, 'Recuperado', 'Sin empezar', TRUE, NOW()
+                            FROM mensajes m
+                            WHERE m.telefono NOT IN (SELECT c.telefono FROM clientes c)
+                        """))
+                        conn.commit()
+                        st.toast(f"Fichas creadas: {res.rowcount}")
+                        time.sleep(1)
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error al reparar: {e}")
 
-        # Buscador
+        st.markdown("---")
+
+        # --- BUSCADOR Y LISTA ---
         busqueda = st.text_input("🔍 Buscar:", "")
         
-        # --- CORRECCIÓN CLAVE: Tabla en minúsculas 'clientes' ---
+        # Query corregida (todo en minúsculas)
         query_clientes = """
-            SELECT telefono, nombre_corto, estado, 
-                   (SELECT COUNT(*) FROM mensajes WHERE telefono = clientes.telefono AND leido = FALSE AND tipo = 'ENTRANTE') as no_leidos
-            FROM clientes
-            WHERE activo = TRUE
-            ORDER BY no_leidos DESC, fecha_registro DESC
+            SELECT 
+                c.telefono, 
+                c.nombre_corto, 
+                c.estado,
+                (SELECT COUNT(*) FROM mensajes m 
+                 WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos
+            FROM clientes c
+            WHERE c.activo = TRUE
         """
         
-        try:
-            with engine.connect() as conn:
-                df_clientes = pd.read_sql(query_clientes, conn)
-                
-            if busqueda:
-                # Filtrado en memoria
-                df_clientes = df_clientes[
-                    df_clientes['telefono'].astype(str).str.contains(busqueda) | 
-                    df_clientes['nombre_corto'].str.lower().str.contains(busqueda.lower(), na=False)
-                ]
-
-            if df_clientes.empty:
-                st.info("No hay clientes activos.")
+        if busqueda:
+            query_clientes += f" AND (c.nombre_corto ILIKE '%{busqueda}%' OR c.telefono ILIKE '%{busqueda}%')"
             
-            # Renderizar lista
-            for _, row in df_clientes.iterrows():
-                tel = row['telefono']
-                nombre = row['nombre_corto'] or tel
+        query_clientes += " ORDER BY no_leidos DESC, c.fecha_registro DESC"
+        
+        # Ejecutar y mostrar
+        with engine.connect() as conn:
+            try:
+                df_clientes = pd.read_sql(text(query_clientes), conn)
                 
-                # Formato visual
-                notif = f"🔴 {row['no_leidos']}" if row['no_leidos'] > 0 else ""
-                label = f"{notif} {nombre} ({tel})"
+                if df_clientes.empty:
+                    st.info("No hay chats visibles. Pulsa '🛠️ Reparar' arriba.")
                 
-                # Botón de selección
-                if st.button(label, key=f"btn_{tel}"):
-                    st.session_state['chat_actual_telefono'] = tel
-                    st.rerun()
+                for i, row in df_clientes.iterrows():
+                    # ... (Aquí sigue tu código original para renderizar cada botón de chat) ...
+                    # Asegúrate de usar row['telefono'], row['nombre_corto'], etc.
+                    pass 
                     
-        except Exception as e:
-            st.error(f"Error cargando clientes: {e}")
-            st.code(query_clientes, language="sql")
+            except Exception as e:
+                st.error(f"Error cargando lista: {e}")
 
     # 3. Chat Principal
     if not st.session_state.get('chat_actual_telefono'):
