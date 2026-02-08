@@ -12,7 +12,7 @@ from database import engine
 import utils 
 
 # Importar las vistas
-from views import ventas, compras, inventario, clientes, seguimiento, catalogo, facturacion, chats, campanas
+from views import ventas, compras, inventario, clientes, seguimiento, catalogo, facturacion, chats, campanas, diagnostico
 
 # Cargar variables
 load_dotenv()
@@ -148,7 +148,7 @@ def main():
         
         OPCIONES_MENU = [
             "VENTA", "COMPRAS", "INVENTARIO", "CLIENTES", 
-            "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS"
+            "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO"
         ]
 
         if "indice_menu" not in st.session_state:
@@ -160,7 +160,7 @@ def main():
                 "INVENTARIO": "🔎 Inventario", "CLIENTES": "👤 Clientes",
                 "SEGUIMIENTO": "📆 Seguimiento", "CATALOGO": "🔧 Catálogo",
                 "FACTURACION": "💰 Facturación", "CHAT": texto_dinamico_chat,
-                "CAMPANAS": "📢 Campañas"
+                "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico"
             }
             return mapeo.get(opcion, opcion)
 
@@ -192,6 +192,6 @@ def main():
     elif seleccion_interna == "FACTURACION": facturacion.render_facturacion()
     elif seleccion_interna == "CHAT": chats.render_chat()
     elif seleccion_interna == "CAMPANAS": campanas.render_campanas()
-
+    elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico() # <--- AGREGADO
 if __name__ == "__main__":
     main()
