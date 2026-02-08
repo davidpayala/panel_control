@@ -100,7 +100,7 @@ def procesar_mensaje_sync(conn, msg, telefono):
     # 1. IMPORTANTE: Asegurar que el cliente existe en la tabla Clientes
     # Si no lo creamos aquí, no saldrá en la lista de chats.
     conn.execute(text("""
-        INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+        INSERT INTO clientes (telefono, nombre_corto, estado, activo, fecha_registro)
         VALUES (:t, 'Whatsapp', 'Sin empezar', TRUE, NOW())
         ON CONFLICT (telefono) DO NOTHING
     """), {"t": telefono})
