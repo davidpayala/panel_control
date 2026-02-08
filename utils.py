@@ -85,6 +85,7 @@ def marcar_chat_como_leido_waha(chat_id):
     except Exception as e:
         print(f"Error marcando leido: {e}")
 
+
 # En utils.py, reemplaza la función 'procesar_mensaje_sync' con esto:
 
 def procesar_mensaje_sync(conn, msg, telefono):
@@ -175,14 +176,19 @@ def subir_archivo_meta(archivo_bytes, mime_type):
     except Exception as e: return None, str(e)
 
 # ==============================================================================
-# SINCRONIZACIÓN (CAPTURA REPLY TEXT)
+# SINCRONIZACIÓN MEJORADA
 # ==============================================================================
-def sincronizar_historial(limit=50):
-    """Descarga los últimos mensajes de cada chat activo en WAHA"""
+def sincronizar_historial(limit=100):
+    """
+    Descarga los últimos mensajes (enviados y recibidos) de los chats activos.
+    Se aumentó el límite y se forza la descarga de media.
+    """
     try:
-        # 1. Obtener lista de chats desde WAHA
-        url_chats = f"{WAHA_URL}/api/default/chats?limit=20&sortBy=messageTimestamp"
-        r = requests.get(url_chats, headers=get_headers())
+        # s1. Obtener lista de chats ordenados por fecha de mensaje
+        url_chats = f"{WAHA_URL}/api/default/chats"
+        params_chats = {"limit": 30, "sortBy": "messageTimestamp"}
+        
+        r = requests.get(url_chats, headers=get_headers(), params=params_chats)
         if r.status_code != 200:
             return f"Error conectando a WAHA: {r.status_code}"
         
@@ -192,22 +198,31 @@ def sincronizar_historial(limit=50):
         with engine.connect() as conn:
             for chat in chats:
                 chat_id = chat['id']
+                # Ignorar grupos y canales
+                if '@g.us' in chat_id or '@newsletter' in chat_id: continue
+                
                 telefono = chat_id.replace('@c.us', '')
                 
-                # 2. Descargar mensajes de este chat
-                url_msgs = f"{WAHA_URL}/api/default/chats/{chat_id}/messages?limit={limit}"
-                r_msgs = requests.get(url_msgs, headers=get_headers())
+                # 2. Descargar mensajes (Enviados y Recibidos)
+                # WAHA trae ambos por defecto, pero aumentamos el límite y pedimos media
+                url_msgs = f"{WAHA_URL}/api/default/chats/{chat_id}/messages"
+                params_msgs = {
+                    "limit": limit,
+                    "downloadMedia": "true" # Intenta descargar fotos/audios si los hay
+                }
+                
+                r_msgs = requests.get(url_msgs, headers=get_headers(), params=params_msgs)
                 if r_msgs.status_code == 200:
                     mensajes = r_msgs.json()
-                    for msg in mensajes:
-                        # Guardar en DB (Lógica simplificada de upsert)
+                    # Procesamos desde el más antiguo al más nuevo para mantener orden lógico
+                    for msg in reversed(mensajes):
                         procesar_mensaje_sync(conn, msg, telefono)
                         total_msgs += 1
                         
             conn.commit()
-        return f"Sincronización completa. {total_msgs} mensajes procesados."
+        return f"✅ Sync completado: {total_msgs} mensajes procesados."
     except Exception as e:
-        return f"Error crítico: {e}"
+        return f"Error crítico en Sync: {e}"
 
 # ==============================================================================
 # GOOGLE
