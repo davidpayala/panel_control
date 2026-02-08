@@ -21,24 +21,22 @@ load_dotenv()
 st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
 
 # ==========================================
-# LIMPIEZA Y MIGRACIÓN (CORREGIDA FK)
+# LIMPIEZA Y MIGRACIÓN (Mantenimiento DB)
 # ==========================================
 def ejecutar_migraciones():
     try:
         with engine.connect() as conn:
-            print("🧹 Iniciando Mantenimiento Inteligente de DB...")
-
-            # --- PASO 0: UNIFICACIÓN DE DATOS (SOLUCIÓN AL ERROR FK) ---
-            # ... dentro de ejecutar_migraciones() ...
+            # --- VALIDACIONES BÁSICAS Y COLUMNAS ---
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS etiquetas TEXT DEFAULT '';")) 
-            
-            # 👇 AGREGA ESTA LÍNEA 👇
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_ia TEXT DEFAULT '';"))
-            # 👆 ------------------ 👆
-
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS codigo_contacto TEXT;"))
-# ...
-            # Creamos una tabla temporal para saber quién es el duplicado y quién el original
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_corto TEXT;"))
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS medio_contacto TEXT DEFAULT 'WhatsApp';"))
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS fecha_seguimiento DATE;"))
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id TEXT;"))
+            
+            # --- LOGICA DE UNIFICACIÓN (Tu código nuevo para arreglar FK) ---
+            # Crear tabla temporal para detectar duplicados
             conn.execute(text("""
                 CREATE TEMP TABLE IF NOT EXISTS Temp_Unificacion AS
                 SELECT 
@@ -50,8 +48,7 @@ def ejecutar_migraciones():
                 FROM Clientes;
             """))
 
-            # 1. MOVER DIRECCIONES (Esto arregla tu error actual)
-            # Pasamos las direcciones del cliente que se va a borrar al que se queda
+            # 1. Mover Direcciones
             conn.execute(text("""
                 UPDATE Direcciones 
                 SET id_cliente = t.id_conservar
@@ -60,7 +57,7 @@ def ejecutar_migraciones():
                 AND t.id_eliminar != t.id_conservar;
             """))
 
-            # 2. MOVER MENSAJES (Para no perder historial)
+            # 2. Mover Mensajes
             conn.execute(text("""
                 UPDATE mensajes 
                 SET id_cliente = t.id_conservar
@@ -69,8 +66,7 @@ def ejecutar_migraciones():
                 AND t.id_eliminar != t.id_conservar;
             """))
             
-            # 3. MOVER VENTAS (Si existen)
-            # Nota: Usamos un bloque try/catch en SQL por si la tabla Ventas no existe aun
+            # 3. Mover Ventas (si existe la tabla)
             try:
                 conn.execute(text("""
                     UPDATE Ventas 
@@ -79,50 +75,23 @@ def ejecutar_migraciones():
                     WHERE Ventas.id_cliente = t.id_eliminar 
                     AND t.id_eliminar != t.id_conservar;
                 """))
-            except:
-                pass 
+            except: pass 
 
-            # 4. AHORA SÍ: BORRAR DUPLICADOS
-            # Como ya no tienen hijos (direcciones/mensajes), se pueden borrar sin error
-            print("🗑️ Eliminando duplicados vacíos...")
+            # 4. Eliminar duplicados vacíos
             conn.execute(text("""
                 DELETE FROM Clientes
                 WHERE id_cliente IN (
                     SELECT id_eliminar FROM Temp_Unificacion WHERE id_eliminar != id_conservar
                 );
             """))
-            
-            # Limpiamos la tabla temporal
             conn.execute(text("DROP TABLE IF EXISTS Temp_Unificacion;"))
 
-            # --- PASO 1: LIMPIEZA DE CARACTERES ---
-            print("✨ Limpiando formatos...")
+            # --- LIMPIEZA DE FORMATOS ---
             conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, ' ', '')"))
             conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '-', '')"))
             conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '+', '')"))
             
-            conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, ' ', '')"))
-            conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, '-', '')"))
-            conn.execute(text("UPDATE mensajes SET telefono = REPLACE(telefono, '+', '')"))
-
-            # --- PASO 2: FORMATO PERÚ (51) ---
-            # Prevenir duplicados que se generen al agregar 51
-            conn.execute(text("""
-                DELETE FROM Clientes 
-                WHERE LENGTH(telefono) = 9 
-                AND ('51' || telefono) IN (SELECT telefono FROM Clientes);
-            """))
-            
-            conn.execute(text("UPDATE Clientes SET telefono = '51' || telefono WHERE LENGTH(telefono) = 9"))
-            conn.execute(text("UPDATE mensajes SET telefono = '51' || telefono WHERE LENGTH(telefono) = 9"))
-            
-            # --- PASO 3: ESTRUCTURA ---
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_corto TEXT;"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS medio_contacto TEXT DEFAULT 'WhatsApp';"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS codigo_contacto TEXT;"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS fecha_seguimiento DATE;"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id TEXT;"))
-            
+            # Crear tabla Direcciones si no existe
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS Direcciones (
                     id_direccion SERIAL PRIMARY KEY,
@@ -143,16 +112,14 @@ def ejecutar_migraciones():
                 );
             """))
             conn.commit()
-            print("✅ BASE DE DATOS OPTIMIZADA Y LISTA.")
             
     except Exception as e:
-        print(f"⚠️ Nota DB (No crítico si la app inicia): {e}")
+        print(f"⚠️ Nota Mantenimiento DB: {e}")
 
-# ENVOLVER LA FUNCIÓN EN CACHÉ
 @st.cache_resource
 def iniciar_sistema_db():
-    print("🚀 Iniciando sistema y validando base de datos...")
-    ejecutar_migraciones() # Tu función original
+    print("🚀 Iniciando sistema...")
+    ejecutar_migraciones()
     return True
 
 # LLAMAR A LA FUNCIÓN CON CACHÉ
@@ -163,7 +130,7 @@ def main():
     if 'carrito' not in st.session_state:
         st.session_state.carrito = []
 
-    # Notificaciones
+    # Contador de No Leídos
     try:
         with engine.connect() as conn:
             n_no_leidos = conn.execute(text(
@@ -174,7 +141,7 @@ def main():
 
     texto_dinamico_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
 
-    # --- BARRA LATERAL ---
+    # --- BARRA LATERAL (VERSIÓN CORREGIDA - SIN KEY) ---
     with st.sidebar:
         st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
         st.title("Menú K&M")
@@ -187,13 +154,6 @@ def main():
         if "indice_menu" not in st.session_state:
             st.session_state.indice_menu = 0
 
-        def actualizar_indice():
-            try:
-                opcion = st.session_state.radio_navegacion
-                st.session_state.indice_menu = OPCIONES_MENU.index(opcion)
-            except:
-                st.session_state.indice_menu = 0
-
         def formatear_menu(opcion):
             mapeo = {
                 "VENTA": "🛒 Venta (POS)", "COMPRAS": "📦 Compras", 
@@ -204,17 +164,22 @@ def main():
             }
             return mapeo.get(opcion, opcion)
 
+        # Usamos index puro, sin key, para evitar el reinicio
         seleccion_interna = st.radio(
-            "Ir a:", OPCIONES_MENU,
+            "Ir a:", 
+            OPCIONES_MENU,
             index=st.session_state.indice_menu,
-            format_func=formatear_menu,
-            key="radio_navegacion",
-            on_change=actualizar_indice
+            format_func=formatear_menu
         )
-        st.divider()
-        st.caption("Sistema v2.4 - FK Fix")
+        
+        # Actualizamos el estado manualmente
+        if seleccion_interna in OPCIONES_MENU:
+            st.session_state.indice_menu = OPCIONES_MENU.index(seleccion_interna)
 
-    # --- RENDERIZADO ---
+        st.divider()
+        st.caption("Sistema v2.6 - DB & Nav Fix")
+
+    # --- RENDERIZADO DE VISTAS ---
     st.title(f" {formatear_menu(seleccion_interna)}") 
     st.markdown("---")
 
