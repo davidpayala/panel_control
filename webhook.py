@@ -149,6 +149,16 @@ def recibir_mensaje():
             # Solo procesamos mensajes creados o upserts
             if tipo_evento not in ['message', 'message.any', 'message.created']:
                 continue
+            # ==================================================================
+            # 🛑 FILTRO ANTI-ESTADOS (STORIES)
+            # ==================================================================
+            # Si el mensaje proviene de 'status@broadcast', es una historia.
+            # Lo ignoramos INMEDIATAMENTE antes de extraer números.
+            if payload.get('from') == 'status@broadcast':
+                # Opcional: Descomentar si quieres ver en logs que se ignoró
+                # log_info(f"🙈 [{session_name}] Estado/Historia ignorada")
+                continue
+            # ==================================================================
 
             # 4. RESOLVER NÚMERO
             telefono_real = resolver_numero_real(payload, session_name)
