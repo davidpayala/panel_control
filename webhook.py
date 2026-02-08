@@ -51,46 +51,67 @@ def descargar_media_plus(media_url):
     except: return None
 
 def resolver_numero_real(payload, session):
+    """
+    Estrategia robusta para extraer el teléfono real del remitente.
+    Basado en: https://waha.devlike.pro/docs/how-to/receive-messages/
+    """
     try:
-        # Detectar dirección del mensaje
-        if payload.get('fromMe'):
-            raw_target = payload.get('to', '')
+        # 1. Determinar dirección (Saliente vs Entrante)
+        from_me = payload.get('fromMe', False)
+        raw_target = None
+        
+        if from_me:
+            # Si lo envié yo, el destinatario está en 'to'
+            raw_target = payload.get('to')
         else:
-            raw_target = payload.get('from', '')
-            
-        _data = payload.get('_data') or {}
+            # Si es entrante, WAHA puede poner el ID en 'participant' (grupos) o 'from' (privado)
+            # 'participant' tiene prioridad si existe, porque identifica al usuario específico
+            if payload.get('participant'):
+                raw_target = payload.get('participant')
+            else:
+                raw_target = payload.get('from')
         
-        # Limpieza básica
-        if '@c.us' in raw_target and not '@lid' in raw_target:
-             return raw_target.replace('@c.us', '')
+        # 2. Fallback a datos internos (_data) si falla lo estándar
+        if not raw_target:
+            _data = payload.get('_data') or {}
+            raw_target = _data.get('id', {}).get('remote') or _data.get('participant')
 
-        candidate = _data.get('id', {}).get('remote', '')
-        if '@s.whatsapp.net' in candidate: 
-            return candidate.replace('@s.whatsapp.net', '')
-        
-        candidate_user = _data.get('id', {}).get('user', '')
-        if candidate_user and candidate_user.isdigit() and len(candidate_user) < 16:
-            return candidate_user
+        if not raw_target: return None
 
-        # Lógica especial para LIDs (Canales/Privacidad)
+        # 3. Lógica Especial: LIDs (Identificadores ocultos de WhatsApp)
         if '@lid' in raw_target and WAHA_URL:
-            lid_clean = raw_target
-            url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
-            headers = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
+            # Intentamos resolver el LID al número real consultando a WAHA
             try:
-                r = requests.get(url_api, headers=headers, timeout=5)
+                lid_clean = raw_target
+                url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
+                headers = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
+                r = requests.get(url_api, headers=headers, timeout=3)
                 if r.status_code == 200:
-                    pn = r.json().get('pn')
-                    if pn: return pn.replace('@c.us', '').replace('@s.whatsapp.net', '')
-            except: pass
+                    data_lid = r.json()
+                    # El 'pn' (Phone Number) es lo que buscamos
+                    if 'pn' in data_lid:
+                        raw_target = data_lid['pn']
+            except: 
+                pass # Si falla, seguimos con lo que tenemos
 
-        return raw_target.replace('@c.us', '').replace('@lid', '')
-    except:
+        # 4. Limpieza final de dominios
+        # Quitamos @c.us, @s.whatsapp.net, @g.us, etc.
+        numero_limpio = raw_target
+        for sufijo in ['@c.us', '@s.whatsapp.net', '@g.us', '@lid', '@broadcast']:
+            numero_limpio = numero_limpio.replace(sufijo, '')
+        
+        # Aseguramos que solo queden números
+        if '@' in numero_limpio: numero_limpio = numero_limpio.split('@')[0]
+        
+        return numero_limpio
+
+    except Exception as e:
+        log_error(f"Error resolviendo numero: {e}")
         return payload.get('from', '').replace('@c.us', '')
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V13 (Multi-Session Fixed)", 200
+    return "Webhook V14 (Phone Fix)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -139,7 +160,7 @@ def recibir_mensaje():
                 telefono_db = "".join(filter(str.isdigit, telefono_real))
                 if len(telefono_db) < 5: continue
 
-            log_info(f"📩 [{session_name}] Procesando msg de: {telefono_db}")
+            log_info(f"📩 [{session_name}] Msg de: {telefono_db} (Raw: {telefono_real})")
 
             # 5. CONTENIDO
             body = payload.get('body', '')
@@ -175,11 +196,10 @@ def recibir_mensaje():
                 push_name = _data.get('notifyName')
                 nombre_final = push_name or "Cliente Nuevo"
                 
-                tipo_msg = 'ENTRANTE'
-                if payload.get('fromMe'): tipo_msg = 'SALIENTE'
+                tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
 
-                # Buscar en Google si es nuevo
-                if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final and len(telefono_db) <= 13:
+                # Auto-Identificación con Google Contacts (Solo entrantes desconocidos)
+                if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final:
                      try:
                         datos_google = buscar_contacto_google(telefono_db)
                         if datos_google and datos_google['encontrado']:
@@ -189,7 +209,7 @@ def recibir_mensaje():
                 whatsapp_id = payload.get('id')
 
                 with engine.connect() as conn:
-                    # A) Tabla Clientes
+                    # Upsert Cliente
                     existe_cli = conn.execute(text("SELECT 1 FROM Clientes WHERE telefono=:t"), {"t": telefono_db}).scalar()
                     if not existe_cli:
                         conn.execute(text("""
@@ -199,11 +219,10 @@ def recibir_mensaje():
                     else:
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
 
-                    # B) Tabla Mensajes
+                    # Upsert Mensaje
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if existe_msg:
-                        # Si ya existe, actualizamos datos que pudieron llegar tarde (como el archivo)
                         conn.execute(text("""
                             UPDATE mensajes SET 
                                 reply_to_id = :rid,
@@ -231,7 +250,7 @@ def recibir_mensaje():
                         })
                     
                     conn.commit()
-                    log_info(f"✅ [{session_name}] DB Guardada: {telefono_db}")
+                    log_info(f"✅ [{session_name}] Guardado: {telefono_db}")
 
             except Exception as e:
                 log_error(f"🔥 Error DB [{session_name}]: {e}")
@@ -239,7 +258,7 @@ def recibir_mensaje():
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        log_error(f"🔥 Error General Webhook: {e}")
+        log_error(f"🔥 Error General: {e}")
         return jsonify({"status": "error"}), 500
 
 if __name__ == '__main__':
