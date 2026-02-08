@@ -85,8 +85,10 @@ def marcar_leido_waha(chat_id):
     except Exception as e:
         print(f"Error marcando leido: {e}")
 
+# En utils.py, reemplaza la función 'procesar_mensaje_sync' con esto:
+
 def procesar_mensaje_sync(conn, msg, telefono):
-    """Guarda un mensaje de WAHA en la DB si no existe"""
+    """Guarda un mensaje de WAHA en la DB y crea el cliente si no existe"""
     wid = msg.get('id')
     from_me = msg.get('fromMe', False)
     body = msg.get('body', '')
@@ -95,7 +97,15 @@ def procesar_mensaje_sync(conn, msg, telefono):
     # Determinar tipo
     tipo = 'SALIENTE' if from_me else 'ENTRANTE'
     
-    # Verificar si existe
+    # 1. IMPORTANTE: Asegurar que el cliente existe en la tabla Clientes
+    # Si no lo creamos aquí, no saldrá en la lista de chats.
+    conn.execute(text("""
+        INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+        VALUES (:t, 'Whatsapp', 'Sin empezar', TRUE, NOW())
+        ON CONFLICT (telefono) DO NOTHING
+    """), {"t": telefono})
+
+    # 2. Verificar si existe el mensaje
     existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:w"), {"w": wid}).scalar()
     
     if not existe:
@@ -110,7 +120,7 @@ def procesar_mensaje_sync(conn, msg, telefono):
             "l": True, # Si ya está en historial, asumimos leído
             "wid": wid
         })
-
+        
 # ==============================================================================
 # ENVÍO Y MEDIA
 # ==============================================================================
