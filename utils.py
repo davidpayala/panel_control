@@ -17,7 +17,9 @@ from streamlit_autorefresh import st_autorefresh
 WAHA_URL = os.getenv("WAHA_URL") 
 WAHA_SESSION = os.getenv("WAHA_SESSION", "default") 
 WAHA_KEY = os.getenv("WAHA_KEY") 
-
+# Definimos las sesiones que existen en tu sistema
+# Puedes agregar más a esta lista si creas nuevas en el futuro
+SESIONES_ACTIVAS = ["principal", "default"]
 # ==============================================================================
 # 🏆 NORMALIZACIÓN BLINDADA
 # ==============================================================================
@@ -80,28 +82,25 @@ def normalizar_telefono_maestro(entrada):
 
 def get_headers():
     headers = {"Content-Type": "application/json"}
-    if WAHA_KEY:
-        headers["X-Api-Key"] = WAHA_KEY
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
     return headers
 
 def marcar_chat_como_leido_waha(chat_id):
-    """Envía la orden a WhatsApp para poner los ticks azules"""
-    try:
-        url = f"{WAHA_URL}/api/{WAHA_SESSION}/chats/{chat_id}/messages/read"
-        requests.post(url, headers=get_headers(), json={})
-    except Exception:
-        pass
-
+    """Intenta marcar como leído en todas las sesiones posibles"""
+    for sesion in SESIONES_ACTIVAS:
+        try:
+            url = f"{WAHA_URL}/api/{sesion}/chats/{chat_id}/messages/read"
+            requests.post(url, headers=get_headers(), json={}, timeout=2)
+        except: pass
 
 # ==============================================================================
 # PROCESAMIENTO DE MENSAJES (SYNC)
 # ==============================================================================
 def map_ack_status(ack_value):
-    """Convierte el código numérico de ACK de WhatsApp a texto"""
     s_ack = str(ack_value).upper()
-    if s_ack in ['3', '4', 'READ', 'PLAYED']: return 'leido'     # Azul
-    if s_ack in ['2', 'RECEIVED', 'DELIVERED']: return 'recibido' # Gris doble
-    if s_ack in ['1', 'SENT']: return 'enviado'  # Gris simple
+    if s_ack in ['3', '4', 'READ', 'PLAYED']: return 'leido'
+    if s_ack in ['2', 'RECEIVED', 'DELIVERED']: return 'recibido'
+    if s_ack in ['1', 'SENT']: return 'enviado'
     return 'pendiente'
 
 def procesar_mensaje_sync(conn, msg, telefono_db):
@@ -109,9 +108,8 @@ def procesar_mensaje_sync(conn, msg, telefono_db):
         wid = msg.get('id')
         from_me = msg.get('fromMe', False)
         
-        # --- EXTRACCIÓN ROBUSTA DE CONTENIDO ---
+        # Extracción de contenido
         body = msg.get('body', '')
-        # Si el body está vacío, buscar en _data (común en mensajes multimedia o forwards)
         if not body and '_data' in msg:
             data = msg['_data']
             if 'caption' in data: body = data['caption']
@@ -121,12 +119,11 @@ def procesar_mensaje_sync(conn, msg, telefono_db):
                 elif 'extendedTextMessage' in m: body = m['extendedTextMessage'].get('text', '')
                 elif 'imageMessage' in m: body = m['imageMessage'].get('caption', '📷 [Imagen]')
         
-        # --- FIX TIMESTAMP ---
+        # Timestamp Fix
         timestamp = msg.get('timestamp')
         if timestamp and float(timestamp) > 9999999999:
              timestamp = float(timestamp) / 1000.0
 
-        # --- ESTADO Y TIPO ---
         ack_raw = msg.get('ack', 0)
         estado_waha = map_ack_status(ack_raw) if from_me else None
         tipo = 'SALIENTE' if from_me else 'ENTRANTE'
@@ -138,7 +135,7 @@ def procesar_mensaje_sync(conn, msg, telefono_db):
             ON CONFLICT (telefono) DO NOTHING
         """), {"t": telefono_db})
 
-        # 2. Insertar Mensaje (Evitar duplicados)
+        # 2. Insertar Mensaje
         existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:w"), {"w": wid}).scalar()
         
         if not existe:
@@ -148,14 +145,13 @@ def procesar_mensaje_sync(conn, msg, telefono_db):
             """), {
                 "t": telefono_db,
                 "tipo": tipo,
-                "c": body or "[Archivo adjunto]",
+                "c": body or "[Adjunto]",
                 "ts": timestamp,
                 "l": True, 
                 "wid": wid,
                 "est": estado_waha
             })
         else:
-            # Actualizar estado (ticks) si es mensaje mío
             if from_me:
                 conn.execute(text("UPDATE mensajes SET estado_waha = :est WHERE whatsapp_id = :wid"), 
                              {"est": estado_waha, "wid": wid})
@@ -164,17 +160,43 @@ def procesar_mensaje_sync(conn, msg, telefono_db):
         print(f"Error procesando msg {msg.get('id')}: {e}")
 
 # ==============================================================================
-# ENVÍO Y MEDIA
+# ENVÍO Y MEDIA (MULTI-SESIÓN INTELIGENTE)
 # ==============================================================================
+def verificar_sesion_chat(chat_id_waha):
+    """Descubre en qué sesión existe este chat"""
+    for sesion in SESIONES_ACTIVAS:
+        try:
+            url = f"{WAHA_URL}/api/{sesion}/contacts/check-exists"
+            r = requests.post(url, headers=get_headers(), json={"phone": chat_id_waha}, timeout=3)
+            if r.status_code == 200 and r.json().get('exists', False):
+                return sesion
+        except: continue
+    return "principal" # Fallback por defecto
+
 def enviar_mensaje_whatsapp(numero, texto):
     if not WAHA_URL: return False, "Falta WAHA_URL"
     norm = normalizar_telefono_maestro(numero)
     if not norm: return False, "Número inválido"
     
-    url = f"{WAHA_URL}/api/sendText"
-    payload = {"session": WAHA_SESSION, "chatId": norm['waha'], "text": texto}
+    # Intentamos primero con la sesión por defecto 'principal' para rapidez
+    # Si quisieras exactitud total, descomenta la línea de abajo (pero es más lento):
+    # sesion_a_usar = verificar_sesion_chat(norm['waha'])
+    sesion_a_usar = "principal" 
+
+    url = f"{WAHA_URL}/api/{sesion_a_usar}/sendText"
+    payload = {"chatId": norm['waha'], "text": texto}
+    
     try:
         r = requests.post(url, headers=get_headers(), json=payload, timeout=10)
+        
+        # Si falla (ej: 404 sesión no encontrada o chat no existe), probamos la otra sesión
+        if r.status_code != 200 or "error" in r.text.lower():
+            sesion_backup = "default" if sesion_a_usar == "principal" else "principal"
+            url_bk = f"{WAHA_URL}/api/{sesion_backup}/sendText"
+            r2 = requests.post(url_bk, headers=get_headers(), json=payload, timeout=10)
+            if r2.status_code in [200, 201]:
+                return True, r2.json()
+                
         if r.status_code in [200, 201]: return True, r.json()
         return False, f"WAHA {r.status_code}: {r.text}"
     except Exception as e: return False, str(e)
@@ -186,73 +208,79 @@ def enviar_mensaje_media(telefono, archivo_bytes, mime_type, caption, filename):
 
         media_b64 = base64.b64encode(archivo_bytes).decode('utf-8')
         data_uri = f"data:{mime_type};base64,{media_b64}"
-
-        url = f"{WAHA_URL}/api/sendImage"
-        payload = {
-            "session": WAHA_SESSION,
-            "chatId": norm['waha'],
-            "file": {
-                "mimetype": mime_type,
-                "filename": filename,
-                "url": data_uri
-            },
-            "caption": caption
-        }
-        response = requests.post(url, json=payload, headers=get_headers(), timeout=30)
-        if response.status_code == 201: return True, response.json()
-        return False, f"Error {response.status_code}: {response.text}"
+        
+        # Probamos primero principal, luego default
+        sesiones_orden = ["principal", "default"]
+        
+        last_error = ""
+        for sesion in sesiones_orden:
+            url = f"{WAHA_URL}/api/{sesion}/sendImage"
+            payload = {
+                "chatId": norm['waha'],
+                "file": {"mimetype": mime_type, "filename": filename, "url": data_uri},
+                "caption": caption
+            }
+            try:
+                response = requests.post(url, json=payload, headers=get_headers(), timeout=30)
+                if response.status_code == 201: 
+                    return True, response.json()
+                last_error = f"{sesion}: {response.text}"
+            except Exception as e:
+                last_error = str(e)
+                
+        return False, f"Fallo en ambas sesiones. {last_error}"
     except Exception as e: return False, str(e)
 
-def subir_archivo_meta(archivo_bytes, mime_type):
-    # Función auxiliar para compatibilidad
-    try:
-        b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
-        return f"data:{mime_type};base64,{b64_data}", None
-    except Exception as e: return None, str(e)
-
 # ==============================================================================
-# SINCRONIZACIÓN CORREGIDA (SESSION FIX)
+# SINCRONIZACIÓN MULTI-SESIÓN (BARRIDO COMPLETO)
 # ==============================================================================
 def sincronizar_historial(limit=100):
-    try:
-        # Usamos la sesión configurada (probablemente 'principal')
-        url_chats = f"{WAHA_URL}/api/{WAHA_SESSION}/chats"
-        params_chats = {"limit": 50, "sortBy": "messageTimestamp"}
-        
-        r = requests.get(url_chats, headers=get_headers(), params=params_chats)
-        if r.status_code != 200:
-            return f"Error: WAHA respondió {r.status_code}. ¿La sesión '{WAHA_SESSION}' existe?"
-        
-        chats = r.json()
-        total_msgs = 0
-        
-        with engine.connect() as conn:
-            for chat in chats:
-                chat_id = chat.get('id', '')
-                norm = normalizar_telefono_maestro(chat_id)
-                if not norm: continue
+    reporte = []
+    total_global = 0
+    
+    with engine.connect() as conn:
+        # BUCLE PRINCIPAL: REVISA CADA SESIÓN
+        for sesion in SESIONES_ACTIVAS:
+            try:
+                # 1. Obtener chats de la sesión actual
+                url_chats = f"{WAHA_URL}/api/{sesion}/chats"
+                params_chats = {"limit": 50, "sortBy": "messageTimestamp"}
                 
-                telefono_db = norm['db']
+                r = requests.get(url_chats, headers=get_headers(), params=params_chats)
                 
-                # Descarga de mensajes
-                url_msgs = f"{WAHA_URL}/api/{WAHA_SESSION}/chats/{chat_id}/messages"
-                params_msgs = {
-                    "limit": limit,
-                    "downloadMedia": "false" # False para hacerlo rápido primero
-                }
+                if r.status_code != 200:
+                    reporte.append(f"⚠️ {sesion}: Error {r.status_code}")
+                    continue
                 
-                r_msgs = requests.get(url_msgs, headers=get_headers(), params=params_msgs)
-                if r_msgs.status_code == 200:
-                    mensajes = r_msgs.json()
-                    for msg in reversed(mensajes):
-                        procesar_mensaje_sync(conn, msg, telefono_db)
-                        total_msgs += 1
+                chats = r.json()
+                msgs_sesion = 0
+                
+                for chat in chats:
+                    chat_id = chat.get('id', '')
+                    norm = normalizar_telefono_maestro(chat_id)
+                    if not norm: continue
+                    telefono_db = norm['db']
+                    
+                    # 2. Descargar mensajes
+                    url_msgs = f"{WAHA_URL}/api/{sesion}/chats/{chat_id}/messages"
+                    params_msgs = { "limit": limit, "downloadMedia": "false" }
+                    
+                    r_m = requests.get(url_msgs, headers=get_headers(), params=params_msgs)
+                    if r_m.status_code == 200:
+                        mensajes = r_m.json()
+                        for msg in reversed(mensajes):
+                            procesar_mensaje_sync(conn, msg, telefono_db)
+                            msgs_sesion += 1
+                
+                total_global += msgs_sesion
+                reporte.append(f"✅ {sesion}: {msgs_sesion} msgs")
+                
+            except Exception as e:
+                reporte.append(f"❌ {sesion}: Error {str(e)}")
+        
+        conn.commit()
             
-            conn.commit()
-            
-        return f"✅ Sync OK (Sesión: {WAHA_SESSION}) - {total_msgs} msgs."
-    except Exception as e:
-        return f"Error crítico: {e}"
+    return f"Sync Finalizado | Total: {total_global} | Detalle: {', '.join(reporte)}"
 
 # ==============================================================================
 # GOOGLE
@@ -353,18 +381,14 @@ def generar_nombre_ia(alias, nombre_real):
     return ""
 
 def verificar_numero_waha(telefono):
-    try:
-        norm = normalizar_telefono_maestro(telefono)
-        if not norm: return False 
-
-        url = f"{WAHA_URL}/api/contacts/check-exists"
-        payload = {"phone": norm['waha']}
-        headers = {"Content-Type": "application/json"}
-        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-
-        resp = requests.post(url, json=payload, headers=headers, timeout=10)
-        
-        if resp.status_code == 200:
-            return resp.json().get("exists", False)
-        return None
-    except Exception: return None
+    """Verifica en todas las sesiones si existe el número"""
+    for sesion in SESIONES_ACTIVAS:
+        try:
+            norm = normalizar_telefono_maestro(telefono)
+            if not norm: continue
+            url = f"{WAHA_URL}/api/{sesion}/contacts/check-exists"
+            resp = requests.post(url, json={"phone": norm['waha']}, headers=get_headers(), timeout=5)
+            if resp.status_code == 200 and resp.json().get("exists", False):
+                return True
+        except: continue
+    return None
