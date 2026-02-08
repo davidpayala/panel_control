@@ -52,9 +52,7 @@ def descargar_media_plus(media_url):
 
 def resolver_numero_real(payload, session):
     try:
-        # ### CAMBIO CRÍTICO: Detectar dirección del mensaje
-        # Si fromMe es True (Saliente), el contacto es 'to'.
-        # Si fromMe es False (Entrante), el contacto es 'from'.
+        # Detectar dirección del mensaje
         if payload.get('fromMe'):
             raw_target = payload.get('to', '')
         else:
@@ -62,7 +60,7 @@ def resolver_numero_real(payload, session):
             
         _data = payload.get('_data') or {}
         
-        # Usamos raw_target en lugar de raw_from para la lógica
+        # Limpieza básica
         if '@c.us' in raw_target and not '@lid' in raw_target:
              return raw_target.replace('@c.us', '')
 
@@ -74,6 +72,7 @@ def resolver_numero_real(payload, session):
         if candidate_user and candidate_user.isdigit() and len(candidate_user) < 16:
             return candidate_user
 
+        # Lógica especial para LIDs (Canales/Privacidad)
         if '@lid' in raw_target and WAHA_URL:
             lid_clean = raw_target
             url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
@@ -87,12 +86,11 @@ def resolver_numero_real(payload, session):
 
         return raw_target.replace('@c.us', '').replace('@lid', '')
     except:
-        # Fallback simple
         return payload.get('from', '').replace('@c.us', '')
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V12 (Outgoing & Reply Fix)", 200
+    return "Webhook V13 (Multi-Session Fixed)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -103,15 +101,16 @@ def recibir_mensaje():
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
-            # ### CAMBIO: Aceptar message.any para ver mensajes salientes
+            # 1. EXTRACCIÓN SEGURA DE DATOS (CORRECCIÓN CRÍTICA)
             tipo_evento = evento.get('event')
-            # NUEVO: Manejo de ACKs (Confirmaciones de lectura/entrega)
+            session_name = evento.get('session', 'default') # Extraemos la sesión
+            payload = evento.get('payload', {})             # Definimos payload aquí para todos
+
+            # 2. MANEJO DE ACKs (Confirmaciones)
             if tipo_evento == 'message.ack':
-                payload = evento.get('payload', {})
                 msg_id = payload.get('id')
-                ack_status = payload.get('ack') # 1: enviado, 2: recibido, 3: leido, etc.
+                ack_status = payload.get('ack') 
                 
-                # Mapeo de estados de WAHA a texto legible
                 estado_map = {1: 'enviado', 2: 'recibido', 3: 'leido', 4: 'reproducido'}
                 nuevo_estado = estado_map.get(ack_status, 'pendiente')
                 
@@ -120,12 +119,17 @@ def recibir_mensaje():
                         conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), 
                                     {"e": nuevo_estado, "w": msg_id})
                         conn.commit()
-                        log_info(f"✅ ACK Actualizado: {msg_id} -> {nuevo_estado}")
+                        log_info(f"✅ ACK [{session_name}]: {msg_id} -> {nuevo_estado}")
                 except Exception as e:
-                    log_error(f"Error actualizando ACK: {e}")
-                continue # Saltar al siguiente evento
+                    log_error(f"Error ACK: {e}")
+                continue 
 
-            # 1. RESOLVER NÚMERO (Usando la nueva lógica corregida)
+            # 3. FILTRO DE EVENTOS
+            # Solo procesamos mensajes creados o upserts
+            if tipo_evento not in ['message', 'message.any', 'message.created']:
+                continue
+
+            # 4. RESOLVER NÚMERO
             telefono_real = resolver_numero_real(payload, session_name)
             
             formatos = normalizar_telefono_maestro(telefono_real)
@@ -135,9 +139,9 @@ def recibir_mensaje():
                 telefono_db = "".join(filter(str.isdigit, telefono_real))
                 if len(telefono_db) < 5: continue
 
-            log_info(f"📩 [{session_name}] Procesando: {telefono_db} (Evento: {tipo_evento})")
+            log_info(f"📩 [{session_name}] Procesando msg de: {telefono_db}")
 
-            # 2. CONTENIDO
+            # 5. CONTENIDO
             body = payload.get('body', '')
             media_obj = payload.get('media') or {} 
             media_url = payload.get('mediaUrl') or media_obj.get('url')
@@ -147,11 +151,10 @@ def recibir_mensaje():
                 archivo_bytes = descargar_media_plus(media_url)
                 if archivo_bytes and not body: body = "📷 Archivo Multimedia"
 
-            # 3. REPLY (MEJORADO)
+            # 6. REPLY (Respuestas citadas)
             reply_id = None
             reply_content = None
             
-            # Intento 1: replyTo directo
             raw_reply = payload.get('replyTo')
             if isinstance(raw_reply, dict):
                 reply_id = raw_reply.get('id')
@@ -159,16 +162,14 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
             
-            # Intento 2: Buscar en _data.quotedMsg si el contenido sigue vacío
             if not reply_content:
                 quoted = payload.get('_data', {}).get('quotedMsg', {})
                 if quoted:
                     reply_content = quoted.get('body') or quoted.get('caption')
-                    # Si no teníamos ID, tratamos de sacarlo de _data (estructura variable)
                     if not reply_id: 
-                         reply_id = quoted.get('id') # A veces es un objeto, cuidado aquí
+                         reply_id = quoted.get('id')
             
-            # 4. GUARDAR
+            # 7. GUARDAR EN DB
             try:
                 _data = payload.get('_data') or {}
                 push_name = _data.get('notifyName')
@@ -177,7 +178,7 @@ def recibir_mensaje():
                 tipo_msg = 'ENTRANTE'
                 if payload.get('fromMe'): tipo_msg = 'SALIENTE'
 
-                # Solo buscamos en Google si es entrante y no es muy largo (evitar grupos raros)
+                # Buscar en Google si es nuevo
                 if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final and len(telefono_db) <= 13:
                      try:
                         datos_google = buscar_contacto_google(telefono_db)
@@ -188,10 +189,9 @@ def recibir_mensaje():
                 whatsapp_id = payload.get('id')
 
                 with engine.connect() as conn:
-                    # A) Clientes
+                    # A) Tabla Clientes
                     existe_cli = conn.execute(text("SELECT 1 FROM Clientes WHERE telefono=:t"), {"t": telefono_db}).scalar()
                     if not existe_cli:
-                        # Si es mensaje saliente (yo escribo a alguien nuevo), también creamos el cliente
                         conn.execute(text("""
                             INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                             VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
@@ -199,10 +199,11 @@ def recibir_mensaje():
                     else:
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
 
-                    # B) Mensajes
+                    # B) Tabla Mensajes
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if existe_msg:
+                        # Si ya existe, actualizamos datos que pudieron llegar tarde (como el archivo)
                         conn.execute(text("""
                             UPDATE mensajes SET 
                                 reply_to_id = :rid,
@@ -214,9 +215,9 @@ def recibir_mensaje():
                         conn.execute(text("""
                             INSERT INTO mensajes (
                                 telefono, tipo, contenido, fecha, leido, archivo_data, 
-                                whatsapp_id, reply_to_id, reply_content
+                                whatsapp_id, reply_to_id, reply_content, estado_waha
                             )
-                            VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody)
+                            VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est)
                         """), {
                             "t": telefono_db, 
                             "tipo": tipo_msg, 
@@ -225,11 +226,12 @@ def recibir_mensaje():
                             "d": archivo_bytes,
                             "wid": whatsapp_id,
                             "rid": reply_id,
-                            "rbody": reply_content
+                            "rbody": reply_content,
+                            "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado'
                         })
                     
                     conn.commit()
-                    log_info(f"✅ [{session_name}] Guardado OK: {telefono_db} ({tipo_msg})")
+                    log_info(f"✅ [{session_name}] DB Guardada: {telefono_db}")
 
             except Exception as e:
                 log_error(f"🔥 Error DB [{session_name}]: {e}")
@@ -237,7 +239,7 @@ def recibir_mensaje():
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        log_error(f"🔥 Error Webhook: {e}")
+        log_error(f"🔥 Error General Webhook: {e}")
         return jsonify({"status": "error"}), 500
 
 if __name__ == '__main__':
