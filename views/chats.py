@@ -84,8 +84,11 @@ def render_chat():
         try:
             with engine.connect() as conn:
                 tabla = get_table_name(conn)
+                
+                # Input de búsqueda
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
+                # Consulta base
                 query = f"""
                     SELECT 
                         c.telefono, 
@@ -97,13 +100,30 @@ def render_chat():
                     WHERE c.activo = TRUE
                 """
                 
+            # --- LÓGICA DE BÚSQUEDA MEJORADA ---
                 if busqueda:
-                    query += f" AND (COALESCE(c.telefono,'') ILIKE '%{busqueda}%' OR COALESCE(c.nombre_corto,'') ILIKE '%{busqueda}%')"
+                    # 1. Limpiamos el input para dejar solo números (para buscar por teléfono)
+                    # Ejemplo: "+51 981 101" -> "51981101"
+                    busqueda_limpia = "".join(filter(str.isdigit, busqueda))
+                    
+                    filtro = " AND ("
+                    # Siempre buscamos por nombre con el texto original
+                    filtro += f"COALESCE(c.nombre_corto,'') ILIKE '%{busqueda}%'"
+                    
+                    # Si logramos extraer números, buscamos también en el teléfono
+                    if busqueda_limpia:
+                        filtro += f" OR c.telefono ILIKE '%{busqueda_limpia}%'"
+                    # Si no hay números (solo texto), buscamos en teléfono tal cual por si acaso
+                    else:
+                        filtro += f" OR c.telefono ILIKE '%{busqueda}%'"
+                    
+                    filtro += ")"
+                    query += filtro
                 
                 query += " ORDER BY no_leidos DESC, c.id_cliente DESC LIMIT 50"
                 df_clientes = pd.read_sql(text(query), conn)
-
-            # Contenedor con scroll para la lista de chats (altura fija)
+                
+# Contenedor con scroll para la lista de chats (altura fija)
             with st.container(height=600):
                 if df_clientes.empty:
                     st.info("No hay chats.")
