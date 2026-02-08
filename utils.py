@@ -77,7 +77,7 @@ def get_headers():
         headers["X-Api-Key"] = WAHA_KEY
     return headers
 
-def marcar_leido_waha(chat_id):
+def marcar_chat_como_leido_waha(chat_id):
     """Envía la orden a WhatsApp para que aparezcan los ticks azules"""
     try:
         url = f"{WAHA_URL}/api/default/chats/{chat_id}/messages/read"
