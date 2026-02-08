@@ -5,7 +5,6 @@ import time
 from database import engine 
 
 # --- GESTIÓN DE IMPORTACIONES ROBUSTA ---
-# Mantenemos este bloque de seguridad para evitar que la app se rompa si falla utils
 try:
     from utils import (
         enviar_mensaje_media, 
@@ -15,7 +14,6 @@ try:
         marcar_chat_como_leido_waha as marcar_leido_waha 
     )
 except ImportError:
-    # Si falla la importación, usamos funciones vacías para que la interfaz cargue igual
     def enviar_mensaje_media(*args): return False, "Error import"
     def enviar_mensaje_whatsapp(*args): return False, "Error import"
     def normalizar_telefono_maestro(*args): return None
@@ -23,7 +21,6 @@ except ImportError:
     def marcar_leido_waha(*args): pass
 
 def get_table_name(conn):
-    """Detecta el nombre correcto de la tabla (clientes vs Clientes)"""
     try:
         conn.execute(text("SELECT 1 FROM clientes LIMIT 1"))
         return "clientes"
@@ -31,25 +28,29 @@ def get_table_name(conn):
         return "\"Clientes\""
 
 def render_chat():
+    # Título principal (ocupa todo el ancho)
     st.title("💬 Chat Center")
 
-    # Inicializar variable de sesión para el chat seleccionado
+    # Inicializar estado
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
     telefono_actual = st.session_state['chat_actual_telefono']
 
+    # --- LAYOUT DE DOS COLUMNAS ---
+    # col_lista (izquierda): 35% del ancho
+    # col_chat (derecha): 65% del ancho
+    col_lista, col_chat = st.columns([35, 65])
+
     # ==========================================
-    # 1. BARRA LATERAL (Bandeja de Entrada)
+    # COLUMNA IZQUIERDA: LISTA DE CHATS
     # ==========================================
-    with st.sidebar:
-        st.header("Bandeja de Entrada")
+    with col_lista:
+        st.subheader("Bandeja")
         
         # --- Botones de Acción (Sync y Fix) ---
-        col1, col2 = st.columns(2)
-        
-        # Botón Sincronizar
-        if col1.button("🔄 Sync", use_container_width=True, help="Descargar mensajes nuevos de WAHA"):
+        c1, c2 = st.columns(2)
+        if c1.button("🔄 Sync", use_container_width=True, help="Descargar mensajes"):
             with st.spinner("Sincronizando..."):
                 try:
                     res = sincronizar_historial()
@@ -59,12 +60,10 @@ def render_chat():
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-        # Botón Reparar (Fix)
-        if col2.button("🛠️ Fix", use_container_width=True, help="Si un chat no aparece, usa este botón"):
+        if c2.button("🛠️ Fix", use_container_width=True, help="Reparar lista"):
             try:
                 with engine.connect() as conn:
                     tabla = get_table_name(conn)
-                    # Inserta en clientes los teléfonos que existen en mensajes pero no en clientes
                     sql_fix = f"""
                         INSERT INTO {tabla} (telefono, nombre_corto, estado, activo, fecha_registro)
                         SELECT DISTINCT m.telefono, 'Recuperado', 'Sin empezar', TRUE, NOW()
@@ -73,26 +72,20 @@ def render_chat():
                     """
                     res = conn.execute(text(sql_fix))
                     conn.commit()
-                    if res.rowcount > 0:
-                        st.success(f"✅ {res.rowcount} chats recuperados")
-                        time.sleep(1.5)
-                        st.rerun()
-                    else:
-                        st.toast("Base de datos en orden", icon="👍")
+                    st.success(f"Recuperados: {res.rowcount}")
+                    time.sleep(1)
+                    st.rerun()
             except Exception as e:
                 st.error(f"Error Fix: {e}")
 
         st.divider()
 
-        # --- Lista de Chats ---
+        # --- Buscador y Lista ---
         try:
             with engine.connect() as conn:
                 tabla = get_table_name(conn)
+                busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # Buscador
-                busqueda = st.text_input("🔍 Buscar chat:", placeholder="Nombre o teléfono...")
-                
-                # Query Segura (usa COALESCE para evitar errores con nulos)
                 query = f"""
                     SELECT 
                         c.telefono, 
@@ -107,125 +100,114 @@ def render_chat():
                 if busqueda:
                     query += f" AND (COALESCE(c.telefono,'') ILIKE '%{busqueda}%' OR COALESCE(c.nombre_corto,'') ILIKE '%{busqueda}%')"
                 
-                # Ordenar: Primero con mensajes no leídos, luego por ID reciente
                 query += " ORDER BY no_leidos DESC, c.id_cliente DESC LIMIT 50"
-                
                 df_clientes = pd.read_sql(text(query), conn)
 
-            if df_clientes.empty:
-                st.info("No se encontraron chats.")
-            else:
-                st.caption(f"Mostrando {len(df_clientes)} chats")
-                
-                for _, row in df_clientes.iterrows():
-                    t_row = row['telefono']
-                    n_row = row['nombre']
-                    c_leidos = row['no_leidos']
-                    
-                    # Diseño del botón
-                    icono = "🔴" if c_leidos > 0 else "👤"
-                    label = f"{icono} {n_row}"
-                    if c_leidos > 0:
-                        label += f" ({c_leidos})"
-                    
-                    # Estilo visual: Primary si es el actual, Secondary si no
-                    tipo_btn = "primary" if telefono_actual == t_row else "secondary"
-                    
-                    if st.button(label, key=f"chat_list_{t_row}", use_container_width=True, type=tipo_btn):
-                        st.session_state['chat_actual_telefono'] = t_row
-                        st.rerun()
+            # Contenedor con scroll para la lista de chats (altura fija)
+            with st.container(height=600):
+                if df_clientes.empty:
+                    st.info("No hay chats.")
+                else:
+                    for _, row in df_clientes.iterrows():
+                        t_row = row['telefono']
+                        n_row = row['nombre']
+                        c_leidos = row['no_leidos']
+                        
+                        icono = "🔴" if c_leidos > 0 else "👤"
+                        label = f"{icono} {n_row}"
+                        if c_leidos > 0: label += f" ({c_leidos})"
+                        
+                        # Estilo del botón
+                        tipo = "primary" if telefono_actual == t_row else "secondary"
+                        
+                        if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo):
+                            st.session_state['chat_actual_telefono'] = t_row
+                            st.rerun()
 
         except Exception as e:
-            st.error("⚠️ Error cargando la lista")
-            st.caption(str(e)) # Muestra el error pequeño por si acaso
+            st.error("Error lista")
+            st.code(e)
 
     # ==========================================
-    # 2. ÁREA PRINCIPAL DE CHAT
+    # COLUMNA DERECHA: CONVERSACIÓN
     # ==========================================
-    if not telefono_actual:
-        st.info("👈 Selecciona un chat del menú lateral para ver la conversación.")
-        return
+    with col_chat:
+        if not telefono_actual:
+            st.info("👈 Selecciona un chat de la izquierda.")
+            st.image("https://cdn-icons-png.flaticon.com/512/1041/1041916.png", width=150) # Icono placeholder
+        else:
+            try:
+                # Marcar leído Waha (silencioso)
+                try: marcar_leido_waha(f"{telefono_actual}@c.us")
+                except: pass
 
-    # Lógica del Chat Activo
-    try:
-        # Intentar marcar tick azul en WhatsApp (si falla no importa)
-        try: marcar_leido_waha(f"{telefono_actual}@c.us")
-        except: pass
+                with engine.connect() as conn:
+                    tabla = get_table_name(conn)
+                    # Marcar leído local
+                    conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
+                    conn.commit()
+                    
+                    # Info cliente
+                    info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
+                    nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
+                    
+                    # Mensajes
+                    msgs = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha ASC"), conn, params={"t": telefono_actual})
 
-        with engine.connect() as conn:
-            tabla = get_table_name(conn)
-            
-            # 1. Marcar como leídos en local
-            conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
-            conn.commit()
-            
-            # 2. Obtener info del cliente
-            info_cli = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
-            nombre_chat = info_cli.nombre_corto if info_cli and info_cli.nombre_corto else telefono_actual
-            
-            # 3. Cargar historial de mensajes
-            df_msgs = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono = :t ORDER BY fecha ASC"), conn, params={"t": telefono_actual})
-
-        # Cabecera
-        st.subheader(f"Conversación con {nombre_chat}")
-        st.caption(f"📱 {telefono_actual}")
-        
-        # Contenedor de mensajes con scroll
-        chat_container = st.container(height=500)
-        with chat_container:
-            if df_msgs.empty:
-                st.caption("No hay historial de mensajes.")
-            
-            # Estilos CSS para burbujas de chat
-            st.markdown("""
-            <style>
-                .msg-row { display: flex; margin-bottom: 5px; }
-                .msg-row-mio { justify-content: flex-end; }
-                .msg-row-otro { justify-content: flex-start; }
-                .msg-bubble { max-width: 80%; padding: 8px 12px; border-radius: 12px; font-size: 15px; position: relative; }
-                .bubble-mio { background-color: #dcf8c6; color: black; border-top-right-radius: 0; }
-                .bubble-otro { background-color: #f0f0f0; color: black; border-top-left-radius: 0; border: 1px solid #ddd; }
-                .msg-meta { font-size: 10px; color: #666; text-align: right; margin-top: 2px; }
-            </style>
-            """, unsafe_allow_html=True)
-
-            for _, msg in df_msgs.iterrows():
-                es_mio = (msg['tipo'] == 'SALIENTE')
-                txt = msg['contenido']
-                hora = msg['fecha'].strftime("%H:%M") if msg['fecha'] else ""
+                # Cabecera Chat
+                st.subheader(f"👤 {nombre}")
+                st.caption(f"📱 {telefono_actual}")
                 
-                clase_row = "msg-row-mio" if es_mio else "msg-row-otro"
-                clase_bbl = "bubble-mio" if es_mio else "bubble-otro"
-                
-                st.markdown(f"""
-                <div class='msg-row {clase_row}'>
-                    <div class='msg-bubble {clase_bbl}'>
-                        <div>{txt}</div>
-                        <div class='msg-meta'>{hora}</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                # --- AREA DE MENSAJES ---
+                with st.container(height=550):
+                    if msgs.empty:
+                        st.caption("Inicio de la conversación.")
+                    
+                    # CSS Burbujas
+                    st.markdown("""
+                    <style>
+                        .msg-row { display: flex; margin-bottom: 5px; }
+                        .msg-mio { justify-content: flex-end; }
+                        .msg-otro { justify-content: flex-start; }
+                        .bubble { padding: 10px 14px; border-radius: 15px; font-size: 15px; max-width: 80%; }
+                        .b-mio { background-color: #dcf8c6; color: black; border-top-right-radius: 0; }
+                        .b-otro { background-color: #f2f2f2; color: black; border-top-left-radius: 0; border: 1px solid #ddd; }
+                        .meta { font-size: 10px; color: #666; text-align: right; margin-top: 3px; }
+                    </style>
+                    """, unsafe_allow_html=True)
 
-        # Zona de escritura
-        with st.form("form_enviar", clear_on_submit=True):
-            col_in, col_btn = st.columns([0.85, 0.15])
-            texto_enviar = col_in.text_input("Escribe tu mensaje...", label_visibility="collapsed")
-            btn_enviar = col_btn.form_submit_button("➤")
-            
-            if btn_enviar and texto_enviar:
-                ok, res = enviar_mensaje_whatsapp(telefono_actual, texto_enviar)
-                if ok:
-                    # Guardar en DB
-                    with engine.connect() as conn:
-                        conn.execute(text("""
-                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, estado_waha)
-                            VALUES (:t, 'SALIENTE', :c, NOW(), TRUE, 'enviado')
-                        """), {"t": telefono_actual, "c": texto_enviar})
-                        conn.commit()
-                    st.rerun()
-                else:
-                    st.error(f"No se pudo enviar: {res}")
+                    for _, m in msgs.iterrows():
+                        es_mio = (m['tipo'] == 'SALIENTE')
+                        clase_row = "msg-mio" if es_mio else "msg-otro"
+                        clase_bub = "b-mio" if es_mio else "b-otro"
+                        hora = m['fecha'].strftime("%H:%M") if m['fecha'] else ""
+                        
+                        st.markdown(f"""
+                        <div class='msg-row {clase_row}'>
+                            <div class='bubble {clase_bub}'>
+                                {m['contenido']}
+                                <div class='meta'>{hora}</div>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-    except Exception as e:
-        st.error("Error al cargar la conversación.")
-        st.caption(str(e))
+                # --- INPUT ---
+                # Usamos un formulario para que se envíe con Enter
+                with st.form("chat_form", clear_on_submit=True):
+                    c_in, c_btn = st.columns([85, 15])
+                    txt = c_in.text_input("Mensaje", label_visibility="collapsed", placeholder="Escribe un mensaje...")
+                    btn = c_btn.form_submit_button("➤")
+                    
+                    if btn and txt:
+                        ok, res = enviar_mensaje_whatsapp(telefono_actual, txt)
+                        if ok:
+                            with engine.connect() as conn:
+                                conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido) VALUES (:t, 'SALIENTE', :c, NOW(), TRUE)"), {"t": telefono_actual, "c": txt})
+                                conn.commit()
+                            st.rerun()
+                        else:
+                            st.error(f"Error: {res}")
+
+            except Exception as e:
+                st.error("Error cargando chat")
+                st.caption(str(e))
