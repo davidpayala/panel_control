@@ -3,20 +3,19 @@ import pandas as pd
 from sqlalchemy import text
 import time
 from database import engine 
-# Intentamos importar con manejo de errores por si utils no está actualizado
+# Intentamos importar con manejo de errores
 try:
     from utils import (
         enviar_mensaje_media, enviar_mensaje_whatsapp, 
         normalizar_telefono_maestro, sincronizar_historial,
-        marcar_chat_como_leido_waha
+        marcar_leido_waha
     )
 except ImportError:
-    # Fallback si falta alguna función en utils
     from utils import (
         enviar_mensaje_media, enviar_mensaje_whatsapp, 
         normalizar_telefono_maestro, sincronizar_historial
     )
-    def marcar_chat_como_leido_waha(t): pass
+    def marcar_leido_waha(t): pass
 
 # --- FUNCIÓN PARA DETECTAR EL NOMBRE REAL DE LA TABLA ---
 def get_table_name(conn):
@@ -106,6 +105,7 @@ def render_chat():
                     telefono = row['telefono']
                     nombre = row['nombre_corto'] or telefono
                     no_leidos = row['no_leidos']
+                    estado = row['estado']
                     
                     # Diseño del botón
                     label = f"{nombre}"
@@ -113,7 +113,7 @@ def render_chat():
                         label = f"🔴 {nombre} ({no_leidos})"
                     
                     # Al hacer clic, guardamos en session_state y recargamos
-                    if st.button(label, key=f"chat_{telefono}", use_container_width=True):
+                    if st.button(f"{label}\n📌 {estado}", key=f"chat_{telefono}", use_container_width=True):
                         st.session_state['chat_actual_telefono'] = telefono
                         st.rerun()
                     
@@ -129,7 +129,7 @@ def render_chat():
     telefono_actual = st.session_state['chat_actual_telefono']
     
     # Intentar marcar leido en WhatsApp (Blue Ticks)
-    try: marcar_chat_como_leido_waha(telefono_actual)
+    try: marcar_leido_waha(f"{telefono_actual}@c.us")
     except: pass
 
     # Obtener mensajes y actualizar leídos localmente
