@@ -1,286 +1,203 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-import io
-import os
 import time
-import requests
-import streamlit.components.v1 as components 
-from streamlit_autorefresh import st_autorefresh 
 from database import engine 
 from utils import (
     enviar_mensaje_media, enviar_mensaje_whatsapp, 
-    normalizar_telefono_maestro, buscar_contacto_google, 
-    crear_en_google, sincronizar_historial,marcar_leido_waha
+    normalizar_telefono_maestro, sincronizar_historial,
+    marcar_chat_como_leido_waha
 )
 
-OPCIONES_TAGS = [
-    "🚫 SPAM", "⚠️ Problemático", "💎 VIP / Recurrente", 
-    "✅ Compró", "👀 Prospecto", "❓ Preguntón", 
-    "📉 Pide Rebaja", "📦 Mayorista"
-]
-
-
 def render_chat():
-    # 1. Configuración inicial
-    st_autorefresh(interval=5000, key="chat_autorefresh")
     st.title("💬 Chat Center")
 
-    # 2. Lógica de la Barra Lateral (SIDEBAR)
+    # --- 1. DIAGNÓSTICO AUTOMÁTICO DE TABLAS ---
+    # Esto revisa si tus tablas tienen datos y si coinciden los nombres
+    try:
+        with engine.connect() as conn:
+            # Verificamos cantidad de datos
+            cant_mensajes = conn.execute(text("SELECT COUNT(*) FROM mensajes")).scalar()
+            cant_clientes = conn.execute(text("SELECT COUNT(*) FROM clientes")).scalar()
+            
+            # AUTO-REPARACIÓN: Si hay mensajes pero no clientes, los creamos
+            if cant_mensajes > 0 and cant_clientes == 0:
+                st.toast("⚠️ Detectados mensajes sin cliente. Reparando...")
+                conn.execute(text("""
+                    INSERT INTO clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+                    SELECT DISTINCT m.telefono, 'Recuperado', 'Sin empezar', TRUE, NOW()
+                    FROM mensajes m
+                    WHERE m.telefono NOT IN (SELECT c.telefono FROM clientes c)
+                """))
+                conn.commit()
+                st.success("✅ Base de datos reparada automáticamente. Recargando...")
+                time.sleep(1.5)
+                st.rerun()
+                
+    except Exception as e:
+        st.error(f"🔥 Error de Base de Datos: {e}")
+        st.info("Posible causa: La tabla 'clientes' no existe o tiene otro nombre.")
+        return # Detenemos la ejecución si hay error grave
+
+    # --- 2. BARRA LATERAL (SIDEBAR) ---
     with st.sidebar:
         st.header("Clientes")
         
-        # --- BOTONES DE ACCIÓN ---
-        col_btns = st.columns(2)
-        with col_btns[0]:
-            if st.button("🔄 Sync", help="Descargar últimos mensajes de WhatsApp"):
-                try:
-                    with st.spinner("Sincronizando..."):
-                        res = sincronizar_historial()
-                    st.toast(res)
-                    time.sleep(1)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error Sync: {e}")
-        
-        with col_btns[1]:
-            # --- BOTÓN DE REPARACIÓN (NUEVO) ---
-            if st.button("🛠️ Reparar", help="Si no ves los chats, pulsa aquí"):
-                try:
-                    with engine.connect() as conn:
-                        # 1. Detectar números huérfanos y crearlos en clientes
-                        # Usamos 'clientes' en minúsculas para evitar el error 42P01
-                        res = conn.execute(text("""
-                            INSERT INTO clientes (telefono, nombre_corto, estado, activo, fecha_registro)
-                            SELECT DISTINCT m.telefono, 'Recuperado', 'Sin empezar', TRUE, NOW()
-                            FROM mensajes m
-                            WHERE m.telefono NOT IN (SELECT c.telefono FROM clientes c)
-                        """))
-                        conn.commit()
-                        st.toast(f"Fichas creadas: {res.rowcount}")
-                        time.sleep(1)
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Error al reparar: {e}")
+        # Muestra estado del sistema (Solo para debugging, puedes borrarlo luego)
+        st.caption(f"📊 Estado: {cant_mensajes} msgs | {cant_clientes} clientes")
+
+        col1, col2 = st.columns(2)
+        if col1.button("🔄 Sync"):
+            with st.spinner("Sincronizando..."):
+                res = sincronizar_historial()
+            st.toast(res)
+            time.sleep(1)
+            st.rerun()
+            
+        if col2.button("🛠️ Fix"):
+            # Botón manual de reparación por si acaso
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    INSERT INTO clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+                    SELECT DISTINCT m.telefono, 'Recuperado', 'Sin empezar', TRUE, NOW()
+                    FROM mensajes m
+                    WHERE m.telefono NOT IN (SELECT c.telefono FROM clientes c)
+                """))
+                conn.commit()
+            st.toast("Reparación forzada completada")
+            st.rerun()
 
         st.markdown("---")
-
-        # --- BUSCADOR Y LISTA ---
+        
         busqueda = st.text_input("🔍 Buscar:", "")
-        
-        # Query corregida (todo en minúsculas)
-        query_clientes = """
-            SELECT 
-                c.telefono, 
-                c.nombre_corto, 
-                c.estado,
-                (SELECT COUNT(*) FROM mensajes m 
-                 WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos
-            FROM clientes c
-            WHERE c.activo = TRUE
-        """
-        
-        if busqueda:
-            query_clientes += f" AND (c.nombre_corto ILIKE '%{busqueda}%' OR c.telefono ILIKE '%{busqueda}%')"
+
+        # Consulta principal para la lista
+        try:
+            # Nota: Usamos 'clientes' en minúsculas. Si falla, el try/except lo dirá.
+            query = """
+                SELECT 
+                    c.telefono, 
+                    c.nombre_corto, 
+                    c.estado,
+                    (SELECT COUNT(*) FROM mensajes m 
+                     WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos
+                FROM clientes c
+                WHERE c.activo = TRUE
+            """
             
-        query_clientes += " ORDER BY no_leidos DESC, c.fecha_registro DESC"
-        
-        # Ejecutar y mostrar
-        with engine.connect() as conn:
-            try:
-                df_clientes = pd.read_sql(text(query_clientes), conn)
+            if busqueda:
+                query += f" AND (c.nombre_corto ILIKE '%{busqueda}%' OR c.telefono ILIKE '%{busqueda}%')"
+            
+            query += " ORDER BY no_leidos DESC, c.fecha_registro DESC"
+            
+            with engine.connect() as conn:
+                df_clientes = pd.read_sql(text(query), conn)
+
+            if df_clientes.empty:
+                st.info("📭 No hay chats activos.")
+                st.markdown("Pueba el botón **🔄 Sync** para descargar chats.")
+            
+            # --- RENDERIZADO DE LA LISTA ---
+            for i, row in df_clientes.iterrows():
+                telefono = row['telefono']
+                nombre = row['nombre_corto'] or "Desconocido"
+                no_leidos = row['no_leidos']
+                estado_negocio = row['estado']
                 
-                if df_clientes.empty:
-                    st.info("No hay chats visibles. Pulsa '🛠️ Reparar' arriba.")
+                # Estilo visual
+                clase_extra = "unread" if no_leidos > 0 else ""
+                alert_html = f"<span class='badge'>{no_leidos}</span>" if no_leidos > 0 else ""
                 
-                for i, row in df_clientes.iterrows():
-                    # ... (Aquí sigue tu código original para renderizar cada botón de chat) ...
-                    # Asegúrate de usar row['telefono'], row['nombre_corto'], etc.
-                    pass 
-                    
-            except Exception as e:
-                st.error(f"Error cargando lista: {e}")
-
-    # 3. Chat Principal
-    if not st.session_state.get('chat_actual_telefono'):
-        st.info("👈 Selecciona un chat del menú lateral para comenzar")
-        return
-
-# views/chats.py (Dentro de render_chat, justo después de obtener telefono_actual)
-
-    telefono_actual = st.session_state['chat_actual_telefono']
-    
-    # Obtener info del cliente seleccionado
-    with engine.connect() as conn:
-        info_cliente = conn.execute(text("SELECT * FROM clientes WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
-        
-        # 1. Marcar leídos en TU base de datos
-        conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
-        conn.commit()
-    
-    # 2. NUEVO: Mandar señal a WhatsApp (Blue Ticks)
-    if info_cliente:
-        # Usamos un thread o llamada directa para no bloquear UI
-        marcar_leido_waha(f"{telefono_actual}@c.us")
-
-    # Cargar Mensajes
-    query_msgs = """
-        SELECT * FROM mensajes 
-        WHERE telefono = :t 
-        ORDER BY fecha ASC
-    """
-    with engine.connect() as conn:
-        df_msgs = pd.read_sql(query_msgs, conn, params={"t": telefono_actual})
-
-    # Renderizar Burbujas de Chat
-    contenedor_mensajes = st.container()
-    with contenedor_mensajes:
-        st.markdown("""
-        <style>
-        .chat-row { display: flex; width: 100%; margin-bottom: 10px; }
-        .row-izq { justify-content: flex-start; }
-        .row-der { justify-content: flex-end; }
-        .bubble { max-width: 70%; padding: 10px 14px; border-radius: 12px; position: relative; font-size: 15px; }
-        .bubble-izq { background-color: #333333; color: white; border-bottom-left-radius: 2px; }
-        .bubble-der { background-color: #005c4b; color: white; border-bottom-right-radius: 2px; }
-        .reply-box { background-color: rgba(0,0,0,0.2); border-left: 4px solid #00a884; padding: 5px; margin-bottom: 5px; border-radius: 4px; font-size: 12px; color: #ddd; }
-        .meta { font-size: 10px; color: #aaa; text-align: right; margin-top: 4px; }
-        </style>
-        """, unsafe_allow_html=True)
-
-        for _, msg in df_msgs.iterrows():
-            es_mio = (msg['tipo'] == 'SALIENTE')
-            
-            clase_row = "row-der" if es_mio else "row-izq"
-            clase_bubble = "bubble-der" if es_mio else "bubble-izq"
-            
-            contenido = msg['contenido'] or ""
-            hora = msg['fecha'].strftime("%H:%M") if msg['fecha'] else ""
-            
-            html_reply = ""
-            if msg.get('reply_content'):
-                html_reply = f"<div class='reply-box'>↪ {msg['reply_content'][:60]}...</div>"
-
-            html_archivo = ""
-            if msg.get('archivo_data'):
-                html_archivo = f"<div style='margin-bottom:5px'>📎 <i>Archivo adjunto</i></div>"
-
-            # Lógica para mostrar ticks en mensajes salientes
-            icono_estado = ""
-            if es_mio:
-                estado = msg.get('estado_waha') # Asegúrate de leer esta columna en tu query_msgs
-                if estado == 'leido': icono_estado = "🔵 ✓✓"
-                elif estado == 'recibido': icono_estado = "☑️ ✓✓"
-                elif estado == 'enviado': icono_estado = "☑️ ✓"
-                else: icono_estado = "🕒"
-
-            st.markdown(f"""
-            <div class='chat-row {clase_row}'>
-                <div class='bubble {clase_bubble}'>
-                    {html_reply}
-                    {html_archivo}
-                    {contenido}
-                    <div class='meta'>{hora} {icono_estado}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    # Input Area
-    st.markdown("---")
-    c1, c2 = st.columns([5, 1])
-    with c1:
-        txt_input = st.text_input("Escribe un mensaje...", key="input_msg", label_visibility="collapsed")
-    with c2:
-        uploaded = st.file_uploader("📎", type=["png","jpg","pdf","mp4"], label_visibility="collapsed")
-
-    if st.button("Enviar ➤", use_container_width=True):
-        if uploaded:
-            enviar_archivo_chat(telefono_actual, uploaded)
-        elif txt_input:
-            enviar_texto_chat(telefono_actual, txt_input)
-
-def mostrar_info_avanzada(telefono):
-    """Ficha de cliente integrada"""
-    with engine.connect() as conn:
-        res_cliente = conn.execute(text("SELECT * FROM Clientes WHERE telefono=:t"), {"t": telefono}).fetchone()
-        
-        if not res_cliente:
-            if st.button("Crear Ficha Rápida"):
-                 with engine.connect() as conn:
-                    conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro, nombre_corto) VALUES (:t, TRUE, NOW(), 'Nuevo')"), {"t": telefono})
-                    conn.commit()
+                # Botón HTML simulado
+                btn_label = f"{nombre} {alert_html}"
+                if st.button(f"{nombre}\n{estado_negocio}", key=f"chat_{telefono}", use_container_width=True):
+                    st.session_state['chat_actual_telefono'] = telefono
                     st.rerun()
-            return
+                
+        except Exception as e:
+            st.error(f"Error cargando lista: {e}")
 
-        cl = res_cliente._mapping
-        id_cliente = cl.get('id_cliente')
-        dirs = pd.read_sql(text("SELECT * FROM Direcciones WHERE id_cliente=:id"), conn, params={"id": id_cliente})
-
-    with st.container():
-        c1, c2 = st.columns(2)
-        new_corto = c1.text_input("Alias", value=cl.get('nombre_corto') or "", key=f"in_corto_{telefono}")
+    # --- 3. AREA DE CHAT (DERECHA) ---
+    if 'chat_actual_telefono' in st.session_state:
+        telefono_actual = st.session_state['chat_actual_telefono']
         
-        tags_act = cl.get('etiquetas', '') or ""
-        lista = [t for t in tags_act.split(',') if t]
-        new_tags = c2.multiselect("Etiquetas", OPCIONES_TAGS, default=[t for t in lista if t in OPCIONES_TAGS], key=f"tag_{telefono}")
+        # Marcar leídos visualmente en WhatsApp (Blue Ticks)
+        try:
+            marcar_chat_como_leido_waha(telefono_actual)
+        except: pass
 
-    st.markdown("#### 👤 Datos Google")
-    col_nom, col_ape, col_btns = st.columns([1.5, 1.5, 1.5])
-    new_nombre = col_nom.text_input("Nombre", value=cl.get('nombre') or "", key=f"in_nom_{telefono}")
-    new_apellido = col_ape.text_input("Apellido", value=cl.get('apellido') or "", key=f"in_ape_{telefono}")
-
-    with col_btns:
-            st.write("") 
-            if st.button("📥 Google (Sync)", key=f"btn_s_{telefono}", use_container_width=True):
-                with st.spinner("Google..."):
-                    norm = normalizar_telefono_maestro(telefono)
-                    dat = buscar_contacto_google(norm['db']) 
-                    if dat and dat['encontrado']:
-                        with engine.connect() as conn:
-                            conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, google_id=:gid, nombre_corto=:nc WHERE telefono=:t"), 
-                                        {"n": dat['nombre'], "a": dat['apellido'], "gid": dat['google_id'], "nc": dat['nombre_completo'], "t": telefono})
-                            conn.commit()
-                        st.toast("✅ Sync OK"); time.sleep(1); st.rerun()
-                    elif new_nombre:
-                        gid = crear_en_google(new_nombre, new_apellido, norm['db'])
-                        if gid:
-                            full = f"{new_nombre} {new_apellido}".strip()
-                            with engine.connect() as conn:
-                                conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a, google_id=:gid, nombre_corto=:nc WHERE telefono=:t"), 
-                                            {"n": new_nombre, "a": new_apellido, "gid": gid, "nc": full, "t": telefono})
-                                conn.commit()
-                            st.success(f"Creado: {full}"); time.sleep(1); st.rerun()
-                        else: st.error("Error Google")
-                    else: st.warning("Pon nombre primero")
-
-    if st.button("💾 GUARDAR", key=f"save_{telefono}", type="primary", use_container_width=True):
-        t_str = ",".join(new_tags)
+        # Consultar info del cliente
         with engine.connect() as conn:
-            conn.execute(text("UPDATE Clientes SET nombre_corto=:nc, etiquetas=:tag, nombre=:n, apellido=:a WHERE telefono=:t"), 
-                        {"nc": new_corto, "tag": t_str, "n": new_nombre, "a": new_apellido, "t": telefono})
+            # Marcar leídos en DB local
+            conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
             conn.commit()
-        st.toast("Guardado"); time.sleep(0.5); st.rerun()
+            
+            info_cliente = conn.execute(text("SELECT * FROM clientes WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
 
-    st.markdown("---")
-    if not dirs.empty:
-        for _, row in dirs.iterrows():
-            st.markdown(f"📍 **{row.get('tipo_envio','Loc')}:** {row.get('direccion_texto')} ({row.get('distrito')})")
+        if info_cliente:
+            st.subheader(f"Conversación con {info_cliente.nombre_corto or telefono_actual}")
+            
+            # Cargar mensajes
+            with engine.connect() as conn:
+                df_msgs = pd.read_sql(text("""
+                    SELECT * FROM mensajes 
+                    WHERE telefono = :t 
+                    ORDER BY fecha ASC
+                """), conn, params={"t": telefono_actual})
 
-def enviar_texto_chat(telefono, texto):
-    ok, r = enviar_mensaje_whatsapp(telefono, texto)
-    if ok: guardar_mensaje_saliente(telefono, texto, None); st.rerun()
-    else: st.error(r)
+            # Mostrar mensajes
+            contenedor_chat = st.container(height=500)
+            with contenedor_chat:
+                if df_msgs.empty:
+                    st.info("No hay mensajes previos.")
+                
+                for _, msg in df_msgs.iterrows():
+                    es_mio = (msg['tipo'] == 'SALIENTE')
+                    contenido = msg['contenido']
+                    hora = msg['fecha'].strftime("%H:%M") if msg['fecha'] else ""
+                    
+                    # Iconos de estado (Ticks)
+                    icono_estado = ""
+                    if es_mio:
+                        estado = msg.get('estado_waha', '') # .get por si la columna no existe aun
+                        if estado == 'leido': icono_estado = "🔵"
+                        elif estado == 'recibido': icono_estado = "☑️"
+                        elif estado == 'enviado': icono_estado = "✔️"
+                        else: icono_estado = "🕒"
 
-def enviar_archivo_chat(telefono, archivo):
-    ok, r = enviar_mensaje_media(telefono, archivo.getvalue(), archivo.type, "", archivo.name)
-    if ok: guardar_mensaje_saliente(telefono, f"📎 {archivo.name}", archivo.getvalue()); st.rerun()
-    else: st.error(r)
-
-def guardar_mensaje_saliente(telefono, texto, data):
-    norm = normalizar_telefono_maestro(telefono)
-    if not norm: return
-    t = norm['db']
-    with engine.connect() as conn:
-        conn.execute(text("INSERT INTO Clientes (telefono, activo, fecha_registro, nombre_corto) VALUES (:t, TRUE, NOW(), 'Nuevo') ON CONFLICT (telefono) DO NOTHING"), {"t": t})
-        conn.execute(text("INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data) VALUES (:t, 'SALIENTE', :c, NOW(), TRUE, :d)"), {"t": t, "c": texto, "d": data})
-        conn.commit()
+                    # Burbujas
+                    alineacion = "flex-end" if es_mio else "flex-start"
+                    bg_color = "#dcf8c6" if es_mio else "#ffffff"
+                    
+                    st.markdown(f"""
+                    <div style='display: flex; justify-content: {alineacion}; margin-bottom: 10px;'>
+                        <div style='background: {bg_color}; padding: 10px; border-radius: 10px; max-width: 70%; box-shadow: 1px 1px 2px rgba(0,0,0,0.1); color: black;'>
+                            <div>{contenido}</div>
+                            <div style='font-size: 0.7em; color: gray; text-align: right; margin-top: 5px;'>
+                                {hora} {icono_estado}
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # Input de respuesta
+            with st.form("form_chat", clear_on_submit=True):
+                col_txt, col_send = st.columns([5, 1])
+                texto = col_txt.text_input("Escribe un mensaje...", label_visibility="collapsed")
+                enviar = col_send.form_submit_button("➤")
+                
+                if enviar and texto:
+                    ok, res = enviar_mensaje_whatsapp(telefono_actual, texto)
+                    if ok:
+                        # Guardar localmente
+                        with engine.connect() as conn:
+                             conn.execute(text("""
+                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, estado_waha)
+                                VALUES (:t, 'SALIENTE', :c, NOW(), TRUE, 'enviado')
+                             """), {"t": telefono_actual, "c": texto})
+                             conn.commit()
+                        st.rerun()
+                    else:
+                        st.error(f"Error enviando: {res}")
+    else:
+        st.info("👈 Selecciona un chat del menú lateral para comenzar.")
