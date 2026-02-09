@@ -1,158 +1,83 @@
 import streamlit as st
 import pandas as pd
-import time
 from sqlalchemy import text
 from database import engine
-from utils import (
-    buscar_contacto_google, crear_en_google, actualizar_en_google, 
-    normalizar_telefono_maestro, generar_nombre_ia
-)
-
-OPCIONES_TAGS = [
-    "🚫 SPAM", "⚠️ Problemático", "💎 VIP / Recurrente",
-    "✅ Compró", "👀 Prospecto", "❓ Preguntón",
-    "📉 Pide Rebaja", "📦 Mayorista", "📦 Proveedor" 
-]
+from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_maestro, generar_nombre_ia
+import time
 
 # ==============================================================================
-# SUB-COMPONENTE: GESTIÓN DE DIRECCIONES (CORREGIDO GPS Y REF)
+# FUNCIÓN DE GESTIÓN DE DIRECCIONES (Agregada aquí para solucionar el error)
 # ==============================================================================
 def render_gestion_direcciones(id_cliente, nombre_cliente):
-    st.markdown(f"### 📍 Direcciones de: {nombre_cliente}")
+    st.markdown(f"##### 🏠 Direcciones de: **{nombre_cliente}**")
     
-    # 1. AGREGAR NUEVA DIRECCIÓN
-    with st.expander("➕ Agregar Nueva Dirección", expanded=True):
-        with st.form(f"form_add_dir_{id_cliente}"):
-            st.caption("Datos de Ubicación")
-            c1, c2, c3 = st.columns(3)
-            tipo = c1.selectbox("Tipo de Envío", ["DOMICILIO", "MOTO", "AGENCIA SHALOM", "AGENCIA OLVA", "OTRA AGENCIA"])
-            distrito = c2.text_input("Distrito / Ciudad")
-            dir_texto = c3.text_input("Dirección Exacta")
-            
-            # --- AQUÍ ESTÁ LA CORRECCIÓN DE CAMPOS ---
-            c_ref, c_gps, c_obs = st.columns(3)
-            referencia = c_ref.text_input("Referencia (Ej: Frente al parque)")
-            gps = c_gps.text_input("Link GPS / Google Maps") # Se guardará en gps_link
-            observaciones = c_obs.text_input("Observaciones Adicionales")
-            
-            st.caption("Datos de Quien Recibe")
-            c4, c5, c6 = st.columns(3)
-            receptor = c4.text_input("Nombre Receptor")
-            dni_rec = c5.text_input("DNI Receptor")
-            tel_rec = c6.text_input("Telf. Receptor")
-            
-            # Campos específicos para agencia
-            sede_agencia = ""
-            if "AGENCIA" in tipo:
-                sede_agencia = st.text_input("Sede de Agencia (Ej: Shalom Comas)", help="Específica la oficina de envío")
-
-            if st.form_submit_button("Guardar Dirección"):
-                if not dir_texto or not distrito:
-                    st.error("Dirección y distrito son obligatorios.")
-                else:
-                    try:
-                        # INSERT CORRECTO: Usando gps_link y referencia por separado
-                        with engine.begin() as conn:
-                            conn.execute(text("""
-                                INSERT INTO Direcciones (
-                                    id_cliente, tipo_envio, direccion_texto, distrito, 
-                                    referencia, gps_link, observaciones,
-                                    nombre_receptor, dni_receptor, telefono_receptor, 
-                                    sede_entrega, activo
-                                ) VALUES (
-                                    :id, :tipo, :dir, :dist, 
-                                    :ref, :gps, :obs,
-                                    :nom, :dni, :tel,
-                                    :sede, TRUE
-                                )
-                            """), {
-                                "id": id_cliente, "tipo": tipo, "dir": dir_texto, "dist": distrito,
-                                "ref": referencia, "gps": gps, "obs": observaciones,
-                                "nom": receptor, "dni": dni_rec, "tel": tel_rec,
-                                "sede": sede_agencia
-                            })
-                        st.success("✅ Dirección guardada correctamente con GPS y Referencia.")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error al guardar en DB: {e}")
-
-    # 2. EDITAR EXISTENTES
+    # 1. Listar Direcciones Existentes
     with engine.connect() as conn:
-        # Traemos explícitamente gps_link y referencia
-        query = """
-            SELECT 
-                id_direccion, activo, tipo_envio, 
-                direccion_texto, distrito, referencia, gps_link, observaciones,
-                nombre_receptor, dni_receptor, telefono_receptor, sede_entrega 
+        direcciones = pd.read_sql(text("""
+            SELECT id_direccion, direccion_texto, distrito, referencia, gps_link, activo 
             FROM Direcciones 
-            WHERE id_cliente = :id 
+            WHERE id_cliente = :id AND activo = TRUE 
             ORDER BY id_direccion DESC
-        """
-        try:
-            df_dirs = pd.read_sql(text(query), conn, params={"id": id_cliente})
-        except Exception as e:
-            st.error(f"Error leyendo direcciones: {e}")
-            df_dirs = pd.DataFrame()
+        """), conn, params={"id": id_cliente})
 
-    if not df_dirs.empty:
-        st.markdown("#### 📝 Editar Direcciones Existentes")
-        cambios_dir = st.data_editor(
-            df_dirs,
-            key=f"editor_dirs_{id_cliente}",
-            column_config={
-                "id_direccion": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "activo": st.column_config.CheckboxColumn("Activo?", width="small"),
-                "tipo_envio": st.column_config.SelectboxColumn("Tipo", options=["DOMICILIO", "MOTO", "AGENCIA SHALOM", "AGENCIA OLVA", "OTRA AGENCIA"], required=True),
-                "direccion_texto": st.column_config.TextColumn("Dirección", required=True, width="medium"),
-                "gps_link": st.column_config.TextColumn("Link GPS", width="medium"), # Ahora mapeado a gps_link
-                "referencia": st.column_config.TextColumn("Referencia", width="medium"),
-                "observaciones": st.column_config.TextColumn("Obs", width="small"),
-                "sede_entrega": st.column_config.TextColumn("Sede Agencia"),
-            },
-            hide_index=True, use_container_width=True, num_rows="dynamic"
-        )
-
-        if st.button("💾 Guardar Cambios en Direcciones", key=f"btn_upd_dir_{id_cliente}"):
-            try:
-                with engine.begin() as conn:
-                    for idx, row in cambios_dir.iterrows():
-                        # Si es una fila nueva agregada desde el editor (ID vacío/NaN)
-                        if pd.isna(row.get("id_direccion")):
-                            continue 
-                            
-                        # UPDATE COMPLETO: Asegurando que gps_link y referencia se actualicen
-                        conn.execute(text("""
-                            UPDATE Direcciones SET 
-                                activo=:act, tipo_envio=:tipo, direccion_texto=:dir, 
-                                distrito=:dist, referencia=:ref, gps_link=:gps, observaciones=:obs,
-                                nombre_receptor=:nom, dni_receptor=:dni, telefono_receptor=:tel, 
-                                sede_entrega=:sede 
-                            WHERE id_direccion=:id
-                        """), {
-                            "act": row['activo'], "tipo": row['tipo_envio'], "dir": row['direccion_texto'],
-                            "dist": row['distrito'], "ref": row['referencia'], "gps": row['gps_link'], "obs": row['observaciones'],
-                            "nom": row['nombre_receptor'], "dni": row['dni_receptor'], "tel": row['telefono_receptor'], 
-                            "sede": row['sede_entrega'], "id": row['id_direccion']
-                        })
-                st.success("✅ Direcciones actualizadas.")
-                time.sleep(0.5)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error al actualizar: {e}")
+    if not direcciones.empty:
+        for _, dir_row in direcciones.iterrows():
+            with st.container(border=True):
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    st.markdown(f"📍 **{dir_row['distrito']}** - {dir_row['direccion_texto']}")
+                    if dir_row['referencia']:
+                        st.caption(f"Referencia: {dir_row['referencia']}")
+                    if dir_row['gps_link']:
+                        st.markdown(f"[🔗 Ver Mapa]({dir_row['gps_link']})")
+                with c2:
+                    if st.button("🗑️", key=f"del_dir_{dir_row['id_direccion']}"):
+                        with engine.begin() as conn:
+                            conn.execute(text("UPDATE Direcciones SET activo=FALSE WHERE id_direccion=:id"), 
+                                         {"id": dir_row['id_direccion']})
+                        st.toast("Dirección eliminada")
+                        time.sleep(0.5)
+                        st.rerun()
     else:
-        st.info("Este cliente aún no tiene direcciones registradas.")
+        st.info("No hay direcciones registradas.")
 
-# ==============================================================================
-# VISTA PRINCIPAL
-# ==============================================================================
+    # 2. Formulario Nueva Dirección
+    with st.form(key=f"form_dir_{id_cliente}", clear_on_submit=True):
+        st.markdown("**➕ Nueva Dirección**")
+        c_a, c_b = st.columns(2)
+        with c_a:
+            new_dist = st.selectbox("Distrito", ["Lima", "Miraflores", "San Isidro", "Surco", "San Borja", "Callao", "Olivos", "SMP", "Otro"], key=f"dist_{id_cliente}")
+            new_gps = st.text_input("Link GPS / Google Maps", key=f"gps_{id_cliente}")
+        with c_b:
+            new_dir = st.text_input("Dirección exacta", key=f"dir_{id_cliente}")
+            new_ref = st.text_input("Referencia", key=f"ref_{id_cliente}")
+        
+        if st.form_submit_button("Guardar Dirección"):
+            if new_dir:
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text("""
+                            INSERT INTO Direcciones (id_cliente, direccion_texto, distrito, referencia, gps_link, activo)
+                            VALUES (:idc, :dt, :dis, :ref, :gps, TRUE)
+                        """), {
+                            "idc": id_cliente, "dt": new_dir, "dis": new_dist, 
+                            "ref": new_ref, "gps": new_gps
+                        })
+                    st.success("Dirección agregada.")
+                    time.sleep(0.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+            else:
+                st.warning("La dirección es obligatoria.")
+
 # ==============================================================================
 # VISTA PRINCIPAL
 # ==============================================================================
 def render_clientes():
     st.subheader("👥 Gestión de Clientes")
 
-    # --- 1. CREAR NUEVO CLIENTE (Igual que antes) ---
+    # --- 1. CREAR NUEVO CLIENTE ---
     with st.expander("➕ Nuevo Cliente", expanded=False):
         with st.form("form_nuevo_cliente"):
             c1, c2 = st.columns(2)
@@ -215,6 +140,7 @@ def render_clientes():
     busqueda = col_search.text_input("Buscar:", placeholder="Nombre, teléfono o ETIQUETA...")
     
     if busqueda:
+        # Limpieza de input para búsqueda numérica inteligente
         busqueda_limpia = "".join(filter(str.isdigit, busqueda))
         term_telefono = f"%{busqueda_limpia}%" if busqueda_limpia else f"%{busqueda}%"
         term_general = f"%{busqueda}%"
@@ -243,7 +169,7 @@ def render_clientes():
                 df, key="editor_clientes_main",
                 column_config={
                     "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                    "google_id": None, "etiquetas": None, "nombre": None, "apellido": None, # Ocultamos datos personales del editor masivo
+                    "google_id": None, "etiquetas": None, "nombre": None, "apellido": None, 
                     "nombre_corto": st.column_config.TextColumn("Alias Original", required=True, width="medium"),
                     "nombre_ia": st.column_config.TextColumn("🤖 Nombre IA", required=False),
                     "etiquetas_list": st.column_config.ListColumn("🏷️ Etiquetas", width="medium"), 
@@ -289,9 +215,7 @@ def render_clientes():
                 tab_dir, tab_datos = st.tabs(["🏠 Direcciones", "👤 Datos Personales / Google"])
                 
                 with tab_dir:
-                    # Asumiendo que esta función existe en tu código original o importada
-                    # render_gestion_direcciones(id_cli_sel, row_sel['nombre_corto'])
-                    from views.direcciones import render_gestion_direcciones # O donde la tengas
+                    # Llamamos a la función definida al inicio del archivo
                     render_gestion_direcciones(id_cli_sel, row_sel['nombre_corto'])
 
                 with tab_datos:
