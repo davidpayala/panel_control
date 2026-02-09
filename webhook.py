@@ -52,59 +52,72 @@ def descargar_media_plus(media_url):
     except: return None
 
 # ==============================================================================
-# 🕵️ LOGICA MAESTRA PARA EXTRAER EL NÚMERO (LID FIX FINAL)
+# 🕵️ LOGICA MAESTRA V20 (GROUPS & LID SUPPORT)
 # ==============================================================================
 def resolver_numero_real(payload, session):
     try:
-        # 1. Extraer datos profundos siempre
+        from_me = payload.get('fromMe', False)
+        
         _data = payload.get('_data', {}) or {}
         key = _data.get('key', {}) or {}
         
-        # --- PRIORIDAD ABSOLUTA: CAMPOS "ALT" (Desencriptan el LID) ---
-        # Funcionan tanto para mensajes ENTRANTES como SALIENTES (fromMe)
-        
-        # Caso A: Chat Privado con Privacidad (remoteJidAlt)
-        if key.get('remoteJidAlt'):
-            return key.get('remoteJidAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
+        # ---------------------------------------------------------
+        # CASO A: MENSAJE SALIENTE (Lo envié yo)
+        # Objetivo: Obtener el DESTINATARIO (Persona o Grupo)
+        # Ignoramos 'participant' porque ese soy yo.
+        # ---------------------------------------------------------
+        if from_me:
+            # 1. Prioridad: Alt (Si el destino tiene privacidad LID)
+            if key.get('remoteJidAlt'):
+                return key.get('remoteJidAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
             
-        # Caso B: Grupos/Comunidades (participantAlt)
-        if key.get('participantAlt'):
-            return key.get('participantAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
+            # 2. Prioridad: RemoteJid (ID del chat destino)
+            if key.get('remoteJid'):
+                return key.get('remoteJid').replace('@g.us', '').replace('@s.whatsapp.net', '').replace('@c.us', '')
 
-        # --- NIVEL 2: STANDARD ---
-        
-        # Si lo envié yo y no había Alt, usamos el 'to'
-        if payload.get('fromMe', False):
-             return payload.get('to', '').split('@')[0]
-        
-        raw_participant = payload.get('participant')
-        raw_from = payload.get('from')
+            # 3. Fallback: Campo 'to'
+            return payload.get('to', '').split('@')[0]
 
-        # Si hay participante (Grupos normales), ese es el que escribe
-        if raw_participant and '@lid' not in raw_participant:
-            return raw_participant.replace('@c.us', '').replace('@s.whatsapp.net', '')
+        # ---------------------------------------------------------
+        # CASO B: MENSAJE ENTRANTE (Me lo enviaron)
+        # Objetivo: Obtener el REMITENTE REAL
+        # ---------------------------------------------------------
+        else:
+            # 1. Prioridad: Alt de Participante (En grupos/LID)
+            if key.get('participantAlt'):
+                return key.get('participantAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
 
-        # Si es chat privado normal
-        if raw_from and '@g.us' not in raw_from and '@lid' not in raw_from:
-            return raw_from.replace('@c.us', '').replace('@s.whatsapp.net', '')
+            # 2. Prioridad: Alt de Remote (En privado/LID)
+            if key.get('remoteJidAlt'):
+                return key.get('remoteJidAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
+            
+            # 3. Prioridad: Participante (Grupos normales)
+            raw_participant = payload.get('participant')
+            if raw_participant and '@lid' not in raw_participant:
+                return raw_participant.replace('@c.us', '').replace('@s.whatsapp.net', '')
 
-        # --- NIVEL 3: FALLBACK ---
-        candidato = raw_participant or raw_from or ""
-        
-        # Si terminamos con un LID y no encontramos el Alt, intentamos resolverlo por API
-        if '@lid' in candidato and WAHA_URL:
-            try:
-                lid_clean = candidato
-                url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
-                headers = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
-                r = requests.get(url_api, headers=headers, timeout=3)
-                if r.status_code == 200:
-                    data_lid = r.json()
-                    if 'pn' in data_lid: 
-                        return data_lid['pn'].replace('@c.us', '').replace('@s.whatsapp.net', '')
-            except: pass
+            # 4. Prioridad: From (Chat privado normal)
+            raw_from = payload.get('from')
+            if raw_from and '@g.us' not in raw_from and '@lid' not in raw_from:
+                return raw_from.replace('@c.us', '').replace('@s.whatsapp.net', '')
 
-        return candidato.split('@')[0]
+            # 5. Fallback: Intentar limpiar lo que haya
+            candidato = raw_participant or raw_from or ""
+            
+            # Si es un LID y no pudimos resolverlo, intentamos API
+            if '@lid' in candidato and WAHA_URL:
+                try:
+                    lid_clean = candidato
+                    url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
+                    headers = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
+                    r = requests.get(url_api, headers=headers, timeout=3)
+                    if r.status_code == 200:
+                        data_lid = r.json()
+                        if 'pn' in data_lid: 
+                            return data_lid['pn'].replace('@c.us', '').replace('@s.whatsapp.net', '')
+                except: pass
+
+            return candidato.split('@')[0]
 
     except Exception as e:
         log_error(f"Error resolviendo numero: {e}")
@@ -115,7 +128,7 @@ def resolver_numero_real(payload, session):
 # ==============================================================================
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V19 (Sent LID Fix)", 200
+    return "Webhook V20 (Groups & LID)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -148,20 +161,28 @@ def recibir_mensaje():
             if tipo_evento not in ['message', 'message.any', 'message.created']:
                 continue
 
-            # IGNORAR ESTADOS
+            # IGNORAR ESTADOS (STORIES)
             if payload.get('from') == 'status@broadcast': continue
 
-            # 1. Resolver Teléfono
-            telefono_real = resolver_numero_real(payload, session_name)
+            # 1. RESOLVER ID (Teléfono o Grupo)
+            id_real = resolver_numero_real(payload, session_name)
             
-            formatos = normalizar_telefono_maestro(telefono_real)
+            # Normalización
+            formatos = normalizar_telefono_maestro(id_real)
+            
             if formatos:
                 telefono_db = formatos['db']
             else:
-                telefono_db = "".join(filter(str.isdigit, telefono_real))
+                # Fallback para Grupos (IDs largos) o números sin formato
+                telefono_db = "".join(filter(str.isdigit, id_real))
+                # Permitimos IDs largos si parecen ser grupos (ej: 1203...)
                 if len(telefono_db) < 5: continue 
 
-            log_info(f"📩 [{session_name}] Msg procesado: {telefono_db}")
+            # Detectar si es grupo para logs
+            es_grupo = '@g.us' in (payload.get('from') or '') or '@g.us' in (payload.get('to') or '')
+            label_log = "👥 GRUPO" if es_grupo else "👤 CHAT"
+
+            log_info(f"📩 [{session_name}] {label_log}: {telefono_db}")
 
             # 2. Contenido
             body = payload.get('body', '')
@@ -183,15 +204,17 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
 
-            # 4. LÓGICA DE REGISTRO RÁPIDO
+            # 4. REGISTRO & BD
             try:
                 _data = payload.get('_data') or {}
                 
-                # Extracción de Nombre
+                # Nombre
                 push_name = _data.get('pushName')
                 notify_name = _data.get('notifyName')
                 biz_name = _data.get('verifiedBizName')
                 
+                # Si es grupo, intentamos obtener nombre del grupo (a veces viene en _data)
+                # Ojo: WAHA a veces no manda el nombre del grupo en el mensaje, solo el ID
                 nombre_wsp = push_name or notify_name or biz_name or "Cliente Nuevo"
                 
                 tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
@@ -199,7 +222,7 @@ def recibir_mensaje():
 
                 with engine.connect() as conn:
                     
-                    # 4.1 Verificar Cliente
+                    # 4.1 Cliente / Grupo
                     cliente_existente = conn.execute(
                         text("SELECT id_cliente, google_id FROM Clientes WHERE telefono=:t"), 
                         {"t": telefono_db}
@@ -208,19 +231,19 @@ def recibir_mensaje():
                     nuevo_cliente = False
 
                     if not cliente_existente:
-                        # CREAR
-                        log_info(f"🆕 Cliente Nuevo: {telefono_db} | Nombre: {nombre_wsp}")
+                        # Si es grupo, le ponemos un prefijo visual
+                        nombre_final = f"Grupo {telefono_db[-4:]}" if es_grupo else nombre_wsp
+                        
                         conn.execute(text("""
                             INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                             VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
-                        """), {"t": telefono_db, "n": nombre_wsp})
+                        """), {"t": telefono_db, "n": nombre_final})
                         nuevo_cliente = True
                     else:
-                        # REACTIVAR
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
 
-                    # 4.2 Sync Google (Solo nuevos)
-                    if nuevo_cliente:
+                    # 4.2 Sync Google (Solo para personas, NO GRUPOS)
+                    if nuevo_cliente and not es_grupo:
                         try:
                             datos_google = buscar_contacto_google(telefono_db)
                             if datos_google and datos_google['encontrado']:
@@ -236,10 +259,7 @@ def recibir_mensaje():
                                     "completo": datos_google['nombre_completo'],
                                     "t": telefono_db
                                 })
-                            else:
-                                log_info(f"ℹ️ No en Google. Usando: {nombre_wsp}")
-                        except Exception as e_google:
-                            log_error(f"Error Sync Google: {e_google}")
+                        except: pass
 
                     # 4.3 Guardar Mensaje
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
