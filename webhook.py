@@ -153,10 +153,9 @@ def recibir_mensaje():
             # IGNORAR ESTADOS
             if payload.get('from') == 'status@broadcast': continue
 
-            # 1. Resolver Teléfono (Con lógica "Alt")
+            # 1. Resolver Teléfono
             telefono_real = resolver_numero_real(payload, session_name)
             
-            # Normalizar
             formatos = normalizar_telefono_maestro(telefono_real)
             if formatos:
                 telefono_db = formatos['db']
@@ -185,33 +184,73 @@ def recibir_mensaje():
                 reply_content = raw_reply.get('body')
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
-            
-            # 4. Guardar DB
+
+            # 4. LÓGICA DE REGISTRO RÁPIDO Y BASE DE DATOS
             try:
                 _data = payload.get('_data') or {}
+                # 1.2 Obtener PushName (Nombre que tiene en wsp)
                 push_name = _data.get('notifyName')
-                nombre_final = push_name or "Cliente Nuevo"
+                nombre_wsp = push_name or "Cliente Nuevo"
                 
                 tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
-
-                if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final:
-                     try:
-                        datos_google = buscar_contacto_google(telefono_db)
-                        if datos_google and datos_google['encontrado']:
-                            nombre_final = datos_google['nombre_completo']
-                     except: pass
-
                 whatsapp_id = payload.get('id')
 
                 with engine.connect() as conn:
-                    # Upsert Cliente
-                    conn.execute(text("""
-                        INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
-                        VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
-                        ON CONFLICT (telefono) DO UPDATE SET activo=TRUE
-                    """), {"t": telefono_db, "n": nombre_final})
+                    
+                    # === PASO 1: VERIFICAR SI EL CLIENTE EXISTE ===
+                    cliente_existente = conn.execute(
+                        text("SELECT id_cliente, google_id FROM Clientes WHERE telefono=:t"), 
+                        {"t": telefono_db}
+                    ).fetchone()
+                    
+                    nuevo_cliente = False
 
-                    # Upsert Mensaje
+                    if not cliente_existente:
+                        # === PASO 1.2: NO EXISTE -> CREAR ===
+                        # Usamos pushName como nombre_corto inicial
+                        log_info(f"🆕 Cliente Nuevo detectado: {telefono_db} ({nombre_wsp})")
+                        conn.execute(text("""
+                            INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+                            VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
+                        """), {"t": telefono_db, "n": nombre_wsp})
+                        
+                        nuevo_cliente = True
+                    else:
+                        # === PASO 1.1: SI EXISTE -> VINCULAR (Solo reactivar) ===
+                        conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
+
+                    # === PASO 2: SINCRONIZACIÓN CON GOOGLE (SOLO SI ES NUEVO) ===
+                    if nuevo_cliente:
+                        try:
+                            # Buscar en Google Contactos
+                            datos_google = buscar_contacto_google(telefono_db)
+                            
+                            if datos_google and datos_google['encontrado']:
+                                log_info(f"🔗 Vinculando con Google: {datos_google['nombre_completo']}")
+                                
+                                # Actualizar SQL con datos de Google
+                                conn.execute(text("""
+                                    UPDATE Clientes 
+                                    SET nombre = :nom, 
+                                        apellido = :ape, 
+                                        google_id = :gid,
+                                        nombre_corto = :completo
+                                    WHERE telefono = :t
+                                """), {
+                                    "nom": datos_google['nombre'],
+                                    "ape": datos_google['apellido'],
+                                    "gid": datos_google['google_id'],
+                                    "completo": datos_google['nombre_completo'],
+                                    "t": telefono_db
+                                })
+                            else:
+                                log_info(f"ℹ️ No encontrado en Google Contactos. Se mantiene como '{nombre_wsp}'")
+                                # IMPORTANTE: NO CREAMOS CONTACTO EN GOOGLE (Paso 2 cumplido)
+                        
+                        except Exception as e_google:
+                            log_error(f"Error Sync Google: {e_google}")
+
+                    # === GUARDAR MENSAJE ===
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if existe_msg:
