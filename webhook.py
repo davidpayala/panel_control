@@ -50,68 +50,74 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
+# ==============================================================================
+# 🕵️ LOGICA MAESTRA PARA EXTRAER EL NÚMERO (UPDATED)
+# ==============================================================================
 def resolver_numero_real(payload, session):
-    """
-    Estrategia robusta para extraer el teléfono real del remitente.
-    Basado en: https://waha.devlike.pro/docs/how-to/receive-messages/
-    """
     try:
-        # 1. Determinar dirección (Saliente vs Entrante)
-        from_me = payload.get('fromMe', False)
-        raw_target = None
-        
-        if from_me:
-            # Si lo envié yo, el destinatario está en 'to'
-            raw_target = payload.get('to')
-        else:
-            # Si es entrante, WAHA puede poner el ID en 'participant' (grupos) o 'from' (privado)
-            # 'participant' tiene prioridad si existe, porque identifica al usuario específico
-            if payload.get('participant'):
-                raw_target = payload.get('participant')
-            else:
-                raw_target = payload.get('from')
-        
-        # 2. Fallback a datos internos (_data) si falla lo estándar
-        if not raw_target:
-            _data = payload.get('_data') or {}
-            raw_target = _data.get('id', {}).get('remote') or _data.get('participant')
+        # 1. Si lo envié yo, el destinatario está en 'to'
+        if payload.get('fromMe', False):
+            return payload.get('to', '').split('@')[0]
 
-        if not raw_target: return None
+        # Datos profundos donde se esconde el número real (LID bypass)
+        _data = payload.get('_data', {}) or {}
+        key = _data.get('key', {}) or {}
+        
+        raw_participant = payload.get('participant')
+        raw_from = payload.get('from')
 
-        # 3. Lógica Especial: LIDs (Identificadores ocultos de WhatsApp)
-        if '@lid' in raw_target and WAHA_URL:
-            # Intentamos resolver el LID al número real consultando a WAHA
+        # --- NIVEL 1: PRIORIDAD ABSOLUTA (Los campos "Alt" descubiertos) ---
+        
+        # CASO 2, 3, 4, 5: Grupos o Chats con Privacidad (LID)
+        # Buscamos 'participantAlt' dentro de _data.key
+        if key.get('participantAlt'):
+            return key.get('participantAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
+
+        # CASO 1: Chat Privado con Privacidad (LID)
+        # Buscamos 'remoteJidAlt' dentro de _data.key
+        if key.get('remoteJidAlt'):
+            return key.get('remoteJidAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
+
+        # --- NIVEL 2: STANDARD (Sin Privacidad / LIDs) ---
+
+        # Si hay participante (Grupos normales), ese es el que escribe
+        if raw_participant and '@lid' not in raw_participant:
+            return raw_participant.replace('@c.us', '').replace('@s.whatsapp.net', '')
+
+        # Si es chat privado normal
+        if raw_from and '@g.us' not in raw_from and '@lid' not in raw_from:
+            return raw_from.replace('@c.us', '').replace('@s.whatsapp.net', '')
+
+        # --- NIVEL 3: FALLBACK (Intentar limpiar lo que haya) ---
+        candidato = raw_participant or raw_from or ""
+        
+        # Si terminamos con un LID y no encontramos el Alt, intentamos resolverlo por API
+        if '@lid' in candidato and WAHA_URL:
             try:
-                lid_clean = raw_target
+                lid_clean = candidato
                 url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
                 headers = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
                 r = requests.get(url_api, headers=headers, timeout=3)
                 if r.status_code == 200:
                     data_lid = r.json()
-                    # El 'pn' (Phone Number) es lo que buscamos
-                    if 'pn' in data_lid:
-                        raw_target = data_lid['pn']
-            except: 
-                pass # Si falla, seguimos con lo que tenemos
+                    if 'pn' in data_lid: 
+                        return data_lid['pn'].replace('@c.us', '').replace('@s.whatsapp.net', '')
+            except: pass
 
-        # 4. Limpieza final de dominios
-        # Quitamos @c.us, @s.whatsapp.net, @g.us, etc.
-        numero_limpio = raw_target
-        for sufijo in ['@c.us', '@s.whatsapp.net', '@g.us', '@lid', '@broadcast']:
-            numero_limpio = numero_limpio.replace(sufijo, '')
-        
-        # Aseguramos que solo queden números
-        if '@' in numero_limpio: numero_limpio = numero_limpio.split('@')[0]
-        
-        return numero_limpio
+        # Limpieza final desesperada
+        return candidato.split('@')[0]
 
     except Exception as e:
         log_error(f"Error resolviendo numero: {e}")
-        return payload.get('from', '').replace('@c.us', '')
+        return payload.get('from', '').split('@')[0]
+
+# ==============================================================================
+# RUTAS FLASK
+# ==============================================================================
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V14 (Phone Fix)", 200
+    return "Webhook V16 (LID/Alt Support)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -122,57 +128,45 @@ def recibir_mensaje():
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
-            # 1. EXTRACCIÓN SEGURA DE DATOS (CORRECCIÓN CRÍTICA)
             tipo_evento = evento.get('event')
-            session_name = evento.get('session', 'default') # Extraemos la sesión
-            payload = evento.get('payload', {})             # Definimos payload aquí para todos
+            session_name = evento.get('session', 'default')
+            payload = evento.get('payload', {})
 
-            # 2. MANEJO DE ACKs (Confirmaciones)
+            # --- A) ACKs ---
             if tipo_evento == 'message.ack':
                 msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
-                
                 estado_map = {1: 'enviado', 2: 'recibido', 3: 'leido', 4: 'reproducido'}
                 nuevo_estado = estado_map.get(ack_status, 'pendiente')
-                
                 try:
                     with engine.connect() as conn:
                         conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), 
                                     {"e": nuevo_estado, "w": msg_id})
                         conn.commit()
-                        log_info(f"✅ ACK [{session_name}]: {msg_id} -> {nuevo_estado}")
-                except Exception as e:
-                    log_error(f"Error ACK: {e}")
+                except: pass
                 continue 
 
-            # 3. FILTRO DE EVENTOS
-            # Solo procesamos mensajes creados o upserts
+            # --- B) MENSAJES ---
             if tipo_evento not in ['message', 'message.any', 'message.created']:
                 continue
-            # ==================================================================
-            # 🛑 FILTRO ANTI-ESTADOS (STORIES)
-            # ==================================================================
-            # Si el mensaje proviene de 'status@broadcast', es una historia.
-            # Lo ignoramos INMEDIATAMENTE antes de extraer números.
-            if payload.get('from') == 'status@broadcast':
-                # Opcional: Descomentar si quieres ver en logs que se ignoró
-                # log_info(f"🙈 [{session_name}] Estado/Historia ignorada")
-                continue
-            # ==================================================================
 
-            # 4. RESOLVER NÚMERO
+            # IGNORAR ESTADOS
+            if payload.get('from') == 'status@broadcast': continue
+
+            # 1. Resolver Teléfono (Con lógica "Alt")
             telefono_real = resolver_numero_real(payload, session_name)
             
+            # Normalizar
             formatos = normalizar_telefono_maestro(telefono_real)
             if formatos:
                 telefono_db = formatos['db']
             else:
                 telefono_db = "".join(filter(str.isdigit, telefono_real))
-                if len(telefono_db) < 5: continue
+                if len(telefono_db) < 5: continue 
 
-            log_info(f"📩 [{session_name}] Msg de: {telefono_db} (Raw: {telefono_real})")
+            log_info(f"📩 [{session_name}] Msg procesado: {telefono_db}")
 
-            # 5. CONTENIDO
+            # 2. Contenido
             body = payload.get('body', '')
             media_obj = payload.get('media') or {} 
             media_url = payload.get('mediaUrl') or media_obj.get('url')
@@ -182,10 +176,9 @@ def recibir_mensaje():
                 archivo_bytes = descargar_media_plus(media_url)
                 if archivo_bytes and not body: body = "📷 Archivo Multimedia"
 
-            # 6. REPLY (Respuestas citadas)
+            # 3. Reply
             reply_id = None
             reply_content = None
-            
             raw_reply = payload.get('replyTo')
             if isinstance(raw_reply, dict):
                 reply_id = raw_reply.get('id')
@@ -193,14 +186,7 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
             
-            if not reply_content:
-                quoted = payload.get('_data', {}).get('quotedMsg', {})
-                if quoted:
-                    reply_content = quoted.get('body') or quoted.get('caption')
-                    if not reply_id: 
-                         reply_id = quoted.get('id')
-            
-            # 7. GUARDAR EN DB
+            # 4. Guardar DB
             try:
                 _data = payload.get('_data') or {}
                 push_name = _data.get('notifyName')
@@ -208,7 +194,6 @@ def recibir_mensaje():
                 
                 tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
 
-                # Auto-Identificación con Google Contacts (Solo entrantes desconocidos)
                 if tipo_msg == 'ENTRANTE' and "Cliente" in nombre_final:
                      try:
                         datos_google = buscar_contacto_google(telefono_db)
@@ -220,14 +205,11 @@ def recibir_mensaje():
 
                 with engine.connect() as conn:
                     # Upsert Cliente
-                    existe_cli = conn.execute(text("SELECT 1 FROM Clientes WHERE telefono=:t"), {"t": telefono_db}).scalar()
-                    if not existe_cli:
-                        conn.execute(text("""
-                            INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
-                            VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
-                        """), {"t": telefono_db, "n": nombre_final})
-                    else:
-                        conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
+                    conn.execute(text("""
+                        INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
+                        VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
+                        ON CONFLICT (telefono) DO UPDATE SET activo=TRUE
+                    """), {"t": telefono_db, "n": nombre_final})
 
                     # Upsert Mensaje
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
@@ -260,8 +242,7 @@ def recibir_mensaje():
                         })
                     
                     conn.commit()
-                    log_info(f"✅ [{session_name}] Guardado: {telefono_db}")
-
+                    
             except Exception as e:
                 log_error(f"🔥 Error DB [{session_name}]: {e}")
 
