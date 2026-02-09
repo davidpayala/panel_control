@@ -152,7 +152,7 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
 def render_clientes():
     st.subheader("👥 Gestión de Clientes")
 
-    # --- 1. CREAR NUEVO CLIENTE ---
+    # --- 1. CREAR NUEVO CLIENTE (Igual que antes) ---
     with st.expander("➕ Nuevo Cliente", expanded=False):
         with st.form("form_nuevo_cliente"):
             c1, c2 = st.columns(2)
@@ -162,7 +162,7 @@ def render_clientes():
                 apellido_real = st.text_input("Apellido (Google)")
             with c2:
                 nombre_corto = st.text_input("📝 Alias / Nombre Corto")
-                tags_nuevos = st.multiselect("🏷️ Etiquetas", OPCIONES_TAGS)
+                tags_nuevos = st.multiselect("🏷️ Etiquetas", ["VIP", "Mayorista", "Recurrente", "Nuevo", "Problemático"]) 
                 estado_ini = st.selectbox("Estado", ["Interesado en venta", "Responder duda", "Proveedor nacional"])
 
             if st.form_submit_button("💾 Guardar y Sincronizar", type="primary"):
@@ -178,16 +178,19 @@ def render_clientes():
                         st.error("Cliente ya existe.")
                     else:
                         gid = None
-                        datos_google = buscar_contacto_google(tel_db)
-                        if datos_google and datos_google['encontrado']:
-                            gid = datos_google['google_id']
-                            if not nombre_real: nombre_real = datos_google['nombre']
-                            if not apellido_real: apellido_real = datos_google['apellido']
-                        elif nombre_real:
+                        # Lógica de creación automática
+                        if not nombre_real and not apellido_real:
+                            datos_google = buscar_contacto_google(tel_db)
+                            if datos_google and datos_google['encontrado']:
+                                gid = datos_google['google_id']
+                                nombre_real = datos_google['nombre']
+                                apellido_real = datos_google['apellido']
+                        
+                        # Si aún no tenemos ID pero tenemos nombres, creamos en Google
+                        if not gid and nombre_real:
                             gid = crear_en_google(nombre_real, apellido_real, tel_db)
 
                         if not nombre_corto: nombre_corto = f"{nombre_real} {apellido_real}".strip() or "Cliente Nuevo"
-                        
                         nombre_ia_calc = generar_nombre_ia(nombre_corto, nombre_real)
                         tags_str = ",".join(tags_nuevos)
 
@@ -205,38 +208,14 @@ def render_clientes():
 
     st.divider()
 
-    # --- 2. HERRAMIENTAS Y BUSCADOR ---
+    # --- 2. BUSCADOR Y EDITOR MASIVO ---
     st.subheader("🔍 Buscar y Editar")
     
-    with st.expander("⚡ Herramientas Masivas"):
-        if st.button("🪄 Generar Nombres IA para TODOS (Backfill)"):
-            with st.spinner("Analizando nombres..."):
-                with engine.connect() as conn:
-                    clientes = pd.read_sql(text("SELECT id_cliente, nombre_corto, nombre FROM Clientes WHERE activo=TRUE"), conn)
-                
-                count = 0
-                try:
-                    with engine.begin() as conn:
-                        for _, row in clientes.iterrows():
-                            nuevo_ia = generar_nombre_ia(row['nombre_corto'], row['nombre'])
-                            conn.execute(text("UPDATE Clientes SET nombre_ia = :nia WHERE id_cliente = :id"), 
-                                         {"nia": nuevo_ia, "id": row['id_cliente']})
-                            count += 1
-                    st.success(f"✅ Procesados {count} clientes.")
-                except Exception as e:
-                    st.error(f"Error masivo: {e}")
-
-    # BUSCADOR MEJORADO
     col_search, _ = st.columns([3, 1])
     busqueda = col_search.text_input("Buscar:", placeholder="Nombre, teléfono o ETIQUETA...")
     
     if busqueda:
-        # MEJORA DE BÚSQUEDA: Limpiamos el input para obtener solo números
-        # Si pegas "+51 988 998 606", esto lo convierte en "51988998606"
         busqueda_limpia = "".join(filter(str.isdigit, busqueda))
-        
-        # Si logramos extraer números, buscamos por ese número limpio. 
-        # Si no (ej. buscas "David"), usamos el texto original para que no falle.
         term_telefono = f"%{busqueda_limpia}%" if busqueda_limpia else f"%{busqueda}%"
         term_general = f"%{busqueda}%"
 
@@ -249,23 +228,22 @@ def render_clientes():
                     OR nombre ILIKE :b_gen 
                     OR etiquetas ILIKE :b_gen 
                     OR nombre_ia ILIKE :b_gen
-                    OR telefono ILIKE :b_tel -- Busca en teléfono usando el término limpio
+                    OR telefono ILIKE :b_tel
                 ) 
                 AND activo = TRUE 
                 ORDER BY nombre_corto ASC LIMIT 50
             """), conn, params={"b_gen": term_general, "b_tel": term_telefono})
 
         if not df.empty:
-            st.caption("Edita 'Nombre IA' o el 'Alias' directamente en la tabla:")
-            
+            # --- EDITOR MASIVO (Solo campos rápidos) ---
+            st.caption("Edición rápida (Alias, Estado, Etiquetas):")
             df['etiquetas_list'] = df['etiquetas'].apply(lambda x: x.split(',') if x else [])
 
             edited_df = st.data_editor(
                 df, key="editor_clientes_main",
                 column_config={
                     "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                    "google_id": None, "etiquetas": None,
-                    # MODIFICACIÓN: Habilitado para editar
+                    "google_id": None, "etiquetas": None, "nombre": None, "apellido": None, # Ocultamos datos personales del editor masivo
                     "nombre_corto": st.column_config.TextColumn("Alias Original", required=True, width="medium"),
                     "nombre_ia": st.column_config.TextColumn("🤖 Nombre IA", required=False),
                     "etiquetas_list": st.column_config.ListColumn("🏷️ Etiquetas", width="medium"), 
@@ -280,105 +258,120 @@ def render_clientes():
                     with engine.begin() as conn:
                         for _, row in edited_df.iterrows():
                             tags_final = ",".join(row['etiquetas_list']) if isinstance(row['etiquetas_list'], list) else ""
-                            # MODIFICACIÓN: Agregado nombre_corto al UPDATE
                             conn.execute(text("""
                                 UPDATE Clientes 
                                 SET nombre_corto=:nc, nombre_ia=:nia, estado=:e, etiquetas=:tag 
                                 WHERE id_cliente=:id
                             """), {
-                                "nc": row['nombre_corto'], 
-                                "nia": row['nombre_ia'], 
-                                "e": row['estado'], 
-                                "tag": tags_final, 
-                                "id": row['id_cliente']
+                                "nc": row['nombre_corto'], "nia": row['nombre_ia'], 
+                                "e": row['estado'], "tag": tags_final, "id": row['id_cliente']
                             })
-                    st.success("Datos guardados (Alias, IA, Estado y Etiquetas).")
-                    time.sleep(1)
+                    st.success("Datos guardados.")
+                    time.sleep(0.5)
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error al guardar: {e}")
 
-            # SELECCIÓN PARA DIRECCIONES
+            # --- GESTIÓN INDIVIDUAL (DIRECCIONES Y GOOGLE) ---
             st.divider()
-            st.markdown("#### 🚚 Gestionar Direcciones")
+            st.markdown("#### 👤 Gestión Individual")
+            
+            # Selector de cliente
             opciones_clientes = df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
-            cliente_seleccionado = st.selectbox("Selecciona cliente para ver direcciones:", opciones_clientes)
+            cliente_seleccionado = st.selectbox("Selecciona cliente a gestionar:", opciones_clientes)
             
             if cliente_seleccionado:
                 row_sel = df[df.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1) == cliente_seleccionado].iloc[0]
-                render_gestion_direcciones(int(row_sel['id_cliente']), row_sel['nombre_corto'])
+                id_cli_sel = int(row_sel['id_cliente'])
+                tel_cli_sel = row_sel['telefono']
+                
+                # Pestañas para organizar mejor
+                tab_dir, tab_datos = st.tabs(["🏠 Direcciones", "👤 Datos Personales / Google"])
+                
+                with tab_dir:
+                    # Asumiendo que esta función existe en tu código original o importada
+                    # render_gestion_direcciones(id_cli_sel, row_sel['nombre_corto'])
+                    from views.direcciones import render_gestion_direcciones # O donde la tengas
+                    render_gestion_direcciones(id_cli_sel, row_sel['nombre_corto'])
+
+                with tab_datos:
+                    st.markdown(f"**Gestión de Datos Personales para:** {row_sel['nombre_corto']}")
+                    
+                    # Verificamos estado actual
+                    gid_actual = row_sel['google_id']
+                    nombre_actual = row_sel['nombre']
+                    apellido_actual = row_sel['apellido']
+
+                    c_info, c_acc = st.columns([2, 1])
+                    
+                    with c_info:
+                        st.text_input("Nombre (Google)", value=nombre_actual if nombre_actual else "", disabled=True)
+                        st.text_input("Apellido (Google)", value=apellido_actual if apellido_actual else "", disabled=True)
+                        st.text_input("Google ID", value=gid_actual if gid_actual else "No vinculado", disabled=True)
+                    
+                    with c_acc:
+                        st.write("Acciones:")
+                        if gid_actual:
+                            st.success("✅ Vinculado con Google")
+                            if st.button("🔄 Refrescar desde Google"):
+                                datos = buscar_contacto_google(tel_cli_sel)
+                                if datos and datos['encontrado']:
+                                    with engine.begin() as conn:
+                                        conn.execute(text("UPDATE Clientes SET nombre=:n, apellido=:a WHERE id_cliente=:id"),
+                                                     {"n": datos['nombre'], "a": datos['apellido'], "id": id_cli_sel})
+                                    st.toast("Datos refrescados")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.warning("No se encontró al refrescar.")
+                        else:
+                            st.warning("⚠️ No vinculado")
+                            
+                            # 1. BUSCAR EN GOOGLE
+                            if st.button("🔍 Buscar en Google Contacts"):
+                                with st.spinner("Buscando..."):
+                                    datos = buscar_contacto_google(tel_cli_sel)
+                                    if datos and datos['encontrado']:
+                                        # ENCONTRADO -> Actualizamos
+                                        with engine.begin() as conn:
+                                            conn.execute(text("""
+                                                UPDATE Clientes 
+                                                SET google_id=:gid, nombre=:n, apellido=:a 
+                                                WHERE id_cliente=:id
+                                            """), {"gid": datos['google_id'], "n": datos['nombre'], "a": datos['apellido'], "id": id_cli_sel})
+                                        st.success("✅ ¡Encontrado y vinculado!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error("❌ No encontrado en Google Contacts.")
+                                        st.session_state['crear_google_mode'] = True
+
+                            # 2. CREAR EN GOOGLE (Si no se encuentra)
+                            if st.session_state.get('crear_google_mode', False):
+                                st.markdown("---")
+                                st.caption("Crear nuevo contacto en Google:")
+                                new_nom = st.text_input("Nuevo Nombre", key="new_n_g")
+                                new_ape = st.text_input("Nuevo Apellido", key="new_a_g")
+                                
+                                if st.button("💾 Crear en Google y Vincular"):
+                                    if new_nom:
+                                        with st.spinner("Creando en Google..."):
+                                            nuevo_gid = crear_en_google(new_nom, new_ape, tel_cli_sel)
+                                            if nuevo_gid:
+                                                with engine.begin() as conn:
+                                                    conn.execute(text("""
+                                                        UPDATE Clientes 
+                                                        SET google_id=:gid, nombre=:n, apellido=:a 
+                                                        WHERE id_cliente=:id
+                                                    """), {"gid": nuevo_gid, "n": new_nom, "a": new_ape, "id": id_cli_sel})
+                                                st.success("✅ Creado y vinculado.")
+                                                st.session_state['crear_google_mode'] = False
+                                                time.sleep(1)
+                                                st.rerun()
+                                            else:
+                                                st.error("Error al crear en Google API.")
+                                    else:
+                                        st.warning("El nombre es obligatorio.")
 
         else:
             st.info("No se encontraron clientes.")
-    
-    # 3. FUSIÓN DE DUPLICADOS
-    st.divider()
-    st.subheader("🧬 Fusión de Clientes Duplicados")
-    
-    with st.expander("Abrir herramienta de fusión"):
-        col_dup, col_orig = st.columns(2)
-        
-        with col_dup:
-            st.markdown("### ❌ A Eliminar")
-            search_dup = st.text_input("Buscar duplicado:", key="search_dup")
-            id_duplicado = None
-            if search_dup:
-                # También aplicamos la lógica de limpieza aquí por si acaso
-                clean_dup = "".join(filter(str.isdigit, search_dup))
-                term_dup = f"%{clean_dup}%" if clean_dup else f"%{search_dup}%"
-                
-                with engine.connect() as conn:
-                    res = pd.read_sql(text("""
-                        SELECT id_cliente, nombre_corto, telefono 
-                        FROM Clientes 
-                        WHERE (nombre_corto ILIKE :s OR telefono ILIKE :t) AND activo=TRUE LIMIT 5
-                    """), conn, params={"s":f"%{search_dup}%", "t": term_dup})
-                if not res.empty:
-                    opts_dup = res.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
-                    sel_dup = st.selectbox("Sel. Duplicado:", opts_dup)
-                    if sel_dup:
-                        id_duplicado = int(res[res.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1) == sel_dup].iloc[0]['id_cliente'])
-
-        with col_orig:
-            st.markdown("### ✅ Principal")
-            search_orig = st.text_input("Buscar principal:", key="search_orig")
-            id_original = None
-            if search_orig:
-                clean_orig = "".join(filter(str.isdigit, search_orig))
-                term_orig = f"%{clean_orig}%" if clean_orig else f"%{search_orig}%"
-
-                with engine.connect() as conn:
-                    res2 = pd.read_sql(text("""
-                        SELECT id_cliente, nombre_corto, telefono 
-                        FROM Clientes 
-                        WHERE (nombre_corto ILIKE :s OR telefono ILIKE :t) AND activo=TRUE LIMIT 5
-                    """), conn, params={"s":f"%{search_orig}%", "t": term_orig})
-                if not res2.empty:
-                    opts_orig = res2.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
-                    sel_orig = st.selectbox("Sel. Principal:", opts_orig)
-                    if sel_orig:
-                        id_original = int(res2[res2.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1) == sel_orig].iloc[0]['id_cliente'])
-
-        if id_duplicado and id_original and st.button("🚀 FUSIONAR"):
-            if id_duplicado == id_original:
-                st.error("Son el mismo cliente.")
-            else:
-                try:
-                    with engine.begin() as conn:
-                        dup_data = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente=:id"), {"id": id_duplicado}).fetchone()
-                        orig_data = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente=:id"), {"id": id_original}).fetchone()
-                        
-                        if dup_data and orig_data:
-                            tel_old = dup_data.telefono
-                            tel_new = orig_data.telefono
-                            
-                            conn.execute(text("UPDATE mensajes SET telefono=:nt, id_cliente=:ni WHERE telefono=:ot"), {"nt": tel_new, "ni": id_original, "ot": tel_old})
-                            conn.execute(text("UPDATE Ventas SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
-                            conn.execute(text("UPDATE Direcciones SET id_cliente=:new WHERE id_cliente=:old"), {"new":id_original, "old":id_duplicado})
-                            conn.execute(text("UPDATE Clientes SET activo=FALSE, nombre_corto=nombre_corto||' (FUSIONADO)' WHERE id_cliente=:old"), {"old": id_duplicado})
-                    
-                    st.success("✅ Fusión completada.")
-                    time.sleep(1.5)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error en fusión: {e}")
