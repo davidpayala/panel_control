@@ -22,14 +22,15 @@ def log_error(msg):
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
-            # ... tus parches anteriores ...
-            # NUEVO: Columna para estado del mensaje (ack)
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre VARCHAR(100)"))
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS apellido VARCHAR(100)"))
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id VARCHAR(100)"))
     except: pass
 
 aplicar_parche_db()
 
-# --- FUNCIONES ---
+# --- FUNCIONES AUXILIARES ---
 def descargar_media_plus(media_url):
     try:
         if not media_url: return None
@@ -51,34 +52,33 @@ def descargar_media_plus(media_url):
     except: return None
 
 # ==============================================================================
-# 🕵️ LOGICA MAESTRA PARA EXTRAER EL NÚMERO (UPDATED)
+# 🕵️ LOGICA MAESTRA PARA EXTRAER EL NÚMERO (LID FIX FINAL)
 # ==============================================================================
 def resolver_numero_real(payload, session):
     try:
-        # 1. Si lo envié yo, el destinatario está en 'to'
-        if payload.get('fromMe', False):
-            return payload.get('to', '').split('@')[0]
-
-        # Datos profundos donde se esconde el número real (LID bypass)
+        # 1. Extraer datos profundos siempre
         _data = payload.get('_data', {}) or {}
         key = _data.get('key', {}) or {}
         
-        raw_participant = payload.get('participant')
-        raw_from = payload.get('from')
-
-        # --- NIVEL 1: PRIORIDAD ABSOLUTA (Los campos "Alt" descubiertos) ---
+        # --- PRIORIDAD ABSOLUTA: CAMPOS "ALT" (Desencriptan el LID) ---
+        # Funcionan tanto para mensajes ENTRANTES como SALIENTES (fromMe)
         
-        # CASO 2, 3, 4, 5: Grupos o Chats con Privacidad (LID)
-        # Buscamos 'participantAlt' dentro de _data.key
+        # Caso A: Chat Privado con Privacidad (remoteJidAlt)
+        if key.get('remoteJidAlt'):
+            return key.get('remoteJidAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
+            
+        # Caso B: Grupos/Comunidades (participantAlt)
         if key.get('participantAlt'):
             return key.get('participantAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
 
-        # CASO 1: Chat Privado con Privacidad (LID)
-        # Buscamos 'remoteJidAlt' dentro de _data.key
-        if key.get('remoteJidAlt'):
-            return key.get('remoteJidAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
-
-        # --- NIVEL 2: STANDARD (Sin Privacidad / LIDs) ---
+        # --- NIVEL 2: STANDARD ---
+        
+        # Si lo envié yo y no había Alt, usamos el 'to'
+        if payload.get('fromMe', False):
+             return payload.get('to', '').split('@')[0]
+        
+        raw_participant = payload.get('participant')
+        raw_from = payload.get('from')
 
         # Si hay participante (Grupos normales), ese es el que escribe
         if raw_participant and '@lid' not in raw_participant:
@@ -88,7 +88,7 @@ def resolver_numero_real(payload, session):
         if raw_from and '@g.us' not in raw_from and '@lid' not in raw_from:
             return raw_from.replace('@c.us', '').replace('@s.whatsapp.net', '')
 
-        # --- NIVEL 3: FALLBACK (Intentar limpiar lo que haya) ---
+        # --- NIVEL 3: FALLBACK ---
         candidato = raw_participant or raw_from or ""
         
         # Si terminamos con un LID y no encontramos el Alt, intentamos resolverlo por API
@@ -104,7 +104,6 @@ def resolver_numero_real(payload, session):
                         return data_lid['pn'].replace('@c.us', '').replace('@s.whatsapp.net', '')
             except: pass
 
-        # Limpieza final desesperada
         return candidato.split('@')[0]
 
     except Exception as e:
@@ -114,10 +113,9 @@ def resolver_numero_real(payload, session):
 # ==============================================================================
 # RUTAS FLASK
 # ==============================================================================
-
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V16 (LID/Alt Support)", 200
+    return "Webhook V19 (Sent LID Fix)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -185,19 +183,23 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
 
-            # 4. LÓGICA DE REGISTRO RÁPIDO Y BASE DE DATOS
+            # 4. LÓGICA DE REGISTRO RÁPIDO
             try:
                 _data = payload.get('_data') or {}
-                # 1.2 Obtener PushName (Nombre que tiene en wsp)
-                push_name = _data.get('notifyName')
-                nombre_wsp = push_name or "Cliente Nuevo"
+                
+                # Extracción de Nombre
+                push_name = _data.get('pushName')
+                notify_name = _data.get('notifyName')
+                biz_name = _data.get('verifiedBizName')
+                
+                nombre_wsp = push_name or notify_name or biz_name or "Cliente Nuevo"
                 
                 tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
                 whatsapp_id = payload.get('id')
 
                 with engine.connect() as conn:
                     
-                    # === PASO 1: VERIFICAR SI EL CLIENTE EXISTE ===
+                    # 4.1 Verificar Cliente
                     cliente_existente = conn.execute(
                         text("SELECT id_cliente, google_id FROM Clientes WHERE telefono=:t"), 
                         {"t": telefono_db}
@@ -206,35 +208,26 @@ def recibir_mensaje():
                     nuevo_cliente = False
 
                     if not cliente_existente:
-                        # === PASO 1.2: NO EXISTE -> CREAR ===
-                        # Usamos pushName como nombre_corto inicial
-                        log_info(f"🆕 Cliente Nuevo detectado: {telefono_db} ({nombre_wsp})")
+                        # CREAR
+                        log_info(f"🆕 Cliente Nuevo: {telefono_db} | Nombre: {nombre_wsp}")
                         conn.execute(text("""
                             INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
                             VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
                         """), {"t": telefono_db, "n": nombre_wsp})
-                        
                         nuevo_cliente = True
                     else:
-                        # === PASO 1.1: SI EXISTE -> VINCULAR (Solo reactivar) ===
+                        # REACTIVAR
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
 
-                    # === PASO 2: SINCRONIZACIÓN CON GOOGLE (SOLO SI ES NUEVO) ===
+                    # 4.2 Sync Google (Solo nuevos)
                     if nuevo_cliente:
                         try:
-                            # Buscar en Google Contactos
                             datos_google = buscar_contacto_google(telefono_db)
-                            
                             if datos_google and datos_google['encontrado']:
-                                log_info(f"🔗 Vinculando con Google: {datos_google['nombre_completo']}")
-                                
-                                # Actualizar SQL con datos de Google
+                                log_info(f"🔗 Google Sync: {datos_google['nombre_completo']}")
                                 conn.execute(text("""
                                     UPDATE Clientes 
-                                    SET nombre = :nom, 
-                                        apellido = :ape, 
-                                        google_id = :gid,
-                                        nombre_corto = :completo
+                                    SET nombre = :nom, apellido = :ape, google_id = :gid, nombre_corto = :completo
                                     WHERE telefono = :t
                                 """), {
                                     "nom": datos_google['nombre'],
@@ -244,13 +237,11 @@ def recibir_mensaje():
                                     "t": telefono_db
                                 })
                             else:
-                                log_info(f"ℹ️ No encontrado en Google Contactos. Se mantiene como '{nombre_wsp}'")
-                                # IMPORTANTE: NO CREAMOS CONTACTO EN GOOGLE (Paso 2 cumplido)
-                        
+                                log_info(f"ℹ️ No en Google. Usando: {nombre_wsp}")
                         except Exception as e_google:
                             log_error(f"Error Sync Google: {e_google}")
 
-                    # === GUARDAR MENSAJE ===
+                    # 4.3 Guardar Mensaje
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if existe_msg:
