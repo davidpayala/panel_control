@@ -52,7 +52,7 @@ def descargar_media_plus(media_url):
     except: return None
 
 # ==============================================================================
-# 🕵️ LOGICA MAESTRA V20 (GROUPS & LID SUPPORT)
+# 🕵️ LOGICA MAESTRA V21 (FIX SENT MESSAGES & GROUPS)
 # ==============================================================================
 def resolver_numero_real(payload, session):
     try:
@@ -63,19 +63,21 @@ def resolver_numero_real(payload, session):
         
         # ---------------------------------------------------------
         # CASO A: MENSAJE SALIENTE (Lo envié yo)
-        # Objetivo: Obtener el DESTINATARIO (Persona o Grupo)
-        # Ignoramos 'participant' porque ese soy yo.
+        # Objetivo: Obtener el DESTINATARIO REAL (Persona o Grupo)
         # ---------------------------------------------------------
         if from_me:
-            # 1. Prioridad: Alt (Si el destino tiene privacidad LID)
+            # 1. Prioridad Absoluta: Alt (El número real escondido tras el LID)
+            # En mensajes salientes, remoteJidAlt es el DESTINATARIO.
             if key.get('remoteJidAlt'):
                 return key.get('remoteJidAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
             
             # 2. Prioridad: RemoteJid (ID del chat destino)
             if key.get('remoteJid'):
+                # Si es grupo (@g.us), este es el ID correcto.
+                # Si es privado, limpiamos sufijos.
                 return key.get('remoteJid').replace('@g.us', '').replace('@s.whatsapp.net', '').replace('@c.us', '')
 
-            # 3. Fallback: Campo 'to'
+            # 3. Fallback: Campo 'to' (A veces viene vacío o con LID)
             return payload.get('to', '').split('@')[0]
 
         # ---------------------------------------------------------
@@ -83,11 +85,11 @@ def resolver_numero_real(payload, session):
         # Objetivo: Obtener el REMITENTE REAL
         # ---------------------------------------------------------
         else:
-            # 1. Prioridad: Alt de Participante (En grupos/LID)
+            # 1. Prioridad: Alt de Participante (En grupos con LID)
             if key.get('participantAlt'):
                 return key.get('participantAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
 
-            # 2. Prioridad: Alt de Remote (En privado/LID)
+            # 2. Prioridad: Alt de Remote (En privado con LID)
             if key.get('remoteJidAlt'):
                 return key.get('remoteJidAlt').replace('@s.whatsapp.net', '').replace('@c.us', '')
             
@@ -104,7 +106,7 @@ def resolver_numero_real(payload, session):
             # 5. Fallback: Intentar limpiar lo que haya
             candidato = raw_participant or raw_from or ""
             
-            # Si es un LID y no pudimos resolverlo, intentamos API
+            # Si terminamos con un LID y no pudimos resolverlo, intentamos API
             if '@lid' in candidato and WAHA_URL:
                 try:
                     lid_clean = candidato
@@ -128,7 +130,7 @@ def resolver_numero_real(payload, session):
 # ==============================================================================
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V20 (Groups & LID)", 200
+    return "Webhook V21 (Sent Msg Fix)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -213,8 +215,6 @@ def recibir_mensaje():
                 notify_name = _data.get('notifyName')
                 biz_name = _data.get('verifiedBizName')
                 
-                # Si es grupo, intentamos obtener nombre del grupo (a veces viene en _data)
-                # Ojo: WAHA a veces no manda el nombre del grupo en el mensaje, solo el ID
                 nombre_wsp = push_name or notify_name or biz_name or "Cliente Nuevo"
                 
                 tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
@@ -242,7 +242,7 @@ def recibir_mensaje():
                     else:
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
 
-                    # 4.2 Sync Google (Solo para personas, NO GRUPOS)
+                    # 4.2 Sync Google (Solo para personas nuevas, NO GRUPOS)
                     if nuevo_cliente and not es_grupo:
                         try:
                             datos_google = buscar_contacto_google(telefono_db)
