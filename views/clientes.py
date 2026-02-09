@@ -238,8 +238,9 @@ def render_clientes():
             """), conn, params={"b": f"%{busqueda}%"})
 
         if not df.empty:
-            st.caption("Edita 'Nombre IA' si el algoritmo se equivocó:")
+            st.caption("Edita 'Nombre IA' o el 'Alias' directamente en la tabla:")
             
+            # Convertimos etiquetas a lista para el editor
             df['etiquetas_list'] = df['etiquetas'].apply(lambda x: x.split(',') if x else [])
 
             edited_df = st.data_editor(
@@ -247,7 +248,8 @@ def render_clientes():
                 column_config={
                     "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                     "google_id": None, "etiquetas": None,
-                    "nombre_corto": st.column_config.TextColumn("Alias Original", disabled=True),
+                    # CAMBIO 1: Quitamos disabled=True y lo hacemos editable
+                    "nombre_corto": st.column_config.TextColumn("Alias Original", required=True, width="medium"),
                     "nombre_ia": st.column_config.TextColumn("🤖 Nombre IA", required=False),
                     "etiquetas_list": st.column_config.ListColumn("🏷️ Etiquetas", width="medium"), 
                     "estado": st.column_config.SelectboxColumn("Estado", options=["Sin empezar", "Interesado en venta", "Venta cerrada", "Post-venta", "Proveedor nacional"], required=True),
@@ -261,11 +263,20 @@ def render_clientes():
                     with engine.begin() as conn:
                         for _, row in edited_df.iterrows():
                             tags_final = ",".join(row['etiquetas_list']) if isinstance(row['etiquetas_list'], list) else ""
+                            
+                            # CAMBIO 2: Agregamos nombre_corto=:nc al UPDATE y al diccionario de parámetros
                             conn.execute(text("""
-                                UPDATE Clientes SET nombre_ia=:nia, estado=:e, etiquetas=:tag 
+                                UPDATE Clientes 
+                                SET nombre_corto=:nc, nombre_ia=:nia, estado=:e, etiquetas=:tag 
                                 WHERE id_cliente=:id
-                            """), {"nia": row['nombre_ia'], "e": row['estado'], "tag": tags_final, "id": row['id_cliente']})
-                    st.success("Datos guardados.")
+                            """), {
+                                "nc": row['nombre_corto'],  # <--- Nuevo parámetro
+                                "nia": row['nombre_ia'], 
+                                "e": row['estado'], 
+                                "tag": tags_final, 
+                                "id": row['id_cliente']
+                            })
+                    st.success("Datos guardados (Alias, IA, Estado y Etiquetas).")
                     time.sleep(1)
                     st.rerun()
                 except Exception as e:
