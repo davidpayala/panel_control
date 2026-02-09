@@ -146,6 +146,9 @@ def render_gestion_direcciones(id_cliente, nombre_cliente):
 # ==============================================================================
 # VISTA PRINCIPAL
 # ==============================================================================
+# ==============================================================================
+# VISTA PRINCIPAL
+# ==============================================================================
 def render_clientes():
     st.subheader("👥 Gestión de Clientes")
 
@@ -223,24 +226,38 @@ def render_clientes():
                 except Exception as e:
                     st.error(f"Error masivo: {e}")
 
-    # BUSCADOR
+    # BUSCADOR MEJORADO
     col_search, _ = st.columns([3, 1])
     busqueda = col_search.text_input("Buscar:", placeholder="Nombre, teléfono o ETIQUETA...")
     
     if busqueda:
+        # MEJORA DE BÚSQUEDA: Limpiamos el input para obtener solo números
+        # Si pegas "+51 988 998 606", esto lo convierte en "51988998606"
+        busqueda_limpia = "".join(filter(str.isdigit, busqueda))
+        
+        # Si logramos extraer números, buscamos por ese número limpio. 
+        # Si no (ej. buscas "David"), usamos el texto original para que no falle.
+        term_telefono = f"%{busqueda_limpia}%" if busqueda_limpia else f"%{busqueda}%"
+        term_general = f"%{busqueda}%"
+
         with engine.connect() as conn:
             df = pd.read_sql(text("""
                 SELECT id_cliente, nombre_corto, nombre_ia, estado, nombre, apellido, telefono, etiquetas, google_id 
                 FROM Clientes 
-                WHERE (nombre_corto ILIKE :b OR telefono ILIKE :b OR nombre ILIKE :b OR etiquetas ILIKE :b OR nombre_ia ILIKE :b) 
+                WHERE (
+                    nombre_corto ILIKE :b_gen 
+                    OR nombre ILIKE :b_gen 
+                    OR etiquetas ILIKE :b_gen 
+                    OR nombre_ia ILIKE :b_gen
+                    OR telefono ILIKE :b_tel -- Busca en teléfono usando el término limpio
+                ) 
                 AND activo = TRUE 
                 ORDER BY nombre_corto ASC LIMIT 50
-            """), conn, params={"b": f"%{busqueda}%"})
+            """), conn, params={"b_gen": term_general, "b_tel": term_telefono})
 
         if not df.empty:
             st.caption("Edita 'Nombre IA' o el 'Alias' directamente en la tabla:")
             
-            # Convertimos etiquetas a lista para el editor
             df['etiquetas_list'] = df['etiquetas'].apply(lambda x: x.split(',') if x else [])
 
             edited_df = st.data_editor(
@@ -248,7 +265,7 @@ def render_clientes():
                 column_config={
                     "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                     "google_id": None, "etiquetas": None,
-                    # CAMBIO 1: Quitamos disabled=True y lo hacemos editable
+                    # MODIFICACIÓN: Habilitado para editar
                     "nombre_corto": st.column_config.TextColumn("Alias Original", required=True, width="medium"),
                     "nombre_ia": st.column_config.TextColumn("🤖 Nombre IA", required=False),
                     "etiquetas_list": st.column_config.ListColumn("🏷️ Etiquetas", width="medium"), 
@@ -263,14 +280,13 @@ def render_clientes():
                     with engine.begin() as conn:
                         for _, row in edited_df.iterrows():
                             tags_final = ",".join(row['etiquetas_list']) if isinstance(row['etiquetas_list'], list) else ""
-                            
-                            # CAMBIO 2: Agregamos nombre_corto=:nc al UPDATE y al diccionario de parámetros
+                            # MODIFICACIÓN: Agregado nombre_corto al UPDATE
                             conn.execute(text("""
                                 UPDATE Clientes 
                                 SET nombre_corto=:nc, nombre_ia=:nia, estado=:e, etiquetas=:tag 
                                 WHERE id_cliente=:id
                             """), {
-                                "nc": row['nombre_corto'],  # <--- Nuevo parámetro
+                                "nc": row['nombre_corto'], 
                                 "nia": row['nombre_ia'], 
                                 "e": row['estado'], 
                                 "tag": tags_final, 
@@ -307,8 +323,16 @@ def render_clientes():
             search_dup = st.text_input("Buscar duplicado:", key="search_dup")
             id_duplicado = None
             if search_dup:
+                # También aplicamos la lógica de limpieza aquí por si acaso
+                clean_dup = "".join(filter(str.isdigit, search_dup))
+                term_dup = f"%{clean_dup}%" if clean_dup else f"%{search_dup}%"
+                
                 with engine.connect() as conn:
-                    res = pd.read_sql(text("SELECT id_cliente, nombre_corto, telefono FROM Clientes WHERE (nombre_corto ILIKE :s OR telefono ILIKE :s) AND activo=TRUE LIMIT 5"), conn, params={"s":f"%{search_dup}%"})
+                    res = pd.read_sql(text("""
+                        SELECT id_cliente, nombre_corto, telefono 
+                        FROM Clientes 
+                        WHERE (nombre_corto ILIKE :s OR telefono ILIKE :t) AND activo=TRUE LIMIT 5
+                    """), conn, params={"s":f"%{search_dup}%", "t": term_dup})
                 if not res.empty:
                     opts_dup = res.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
                     sel_dup = st.selectbox("Sel. Duplicado:", opts_dup)
@@ -320,8 +344,15 @@ def render_clientes():
             search_orig = st.text_input("Buscar principal:", key="search_orig")
             id_original = None
             if search_orig:
+                clean_orig = "".join(filter(str.isdigit, search_orig))
+                term_orig = f"%{clean_orig}%" if clean_orig else f"%{search_orig}%"
+
                 with engine.connect() as conn:
-                    res2 = pd.read_sql(text("SELECT id_cliente, nombre_corto, telefono FROM Clientes WHERE (nombre_corto ILIKE :s OR telefono ILIKE :s) AND activo=TRUE LIMIT 5"), conn, params={"s":f"%{search_orig}%"})
+                    res2 = pd.read_sql(text("""
+                        SELECT id_cliente, nombre_corto, telefono 
+                        FROM Clientes 
+                        WHERE (nombre_corto ILIKE :s OR telefono ILIKE :t) AND activo=TRUE LIMIT 5
+                    """), conn, params={"s":f"%{search_orig}%", "t": term_orig})
                 if not res2.empty:
                     opts_orig = res2.apply(lambda x: f"{x['nombre_corto']} ({x['telefono']})", axis=1).tolist()
                     sel_orig = st.selectbox("Sel. Principal:", opts_orig)
