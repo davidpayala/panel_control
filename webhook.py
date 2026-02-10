@@ -18,15 +18,29 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🚑 PARCHE DB ---
+# --- 🚑 PARCHE DB: MODELO ID-CENTRIC ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
+            # 1. Crear columna para el ID Técnico
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS whatsapp_internal_id VARCHAR(150)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wsp_id ON Clientes(whatsapp_internal_id)"))
+            
+            # 2. Migración de Datos Antiguos (Backfill)
+            # Si un cliente no tiene ID interno, se lo generamos basado en su teléfono
+            conn.execute(text("""
+                UPDATE Clientes 
+                SET whatsapp_internal_id = CONCAT(telefono, '@s.whatsapp.net') 
+                WHERE whatsapp_internal_id IS NULL AND telefono IS NOT NULL AND LENGTH(telefono) > 8
+            """))
+            
+            # 3. Columnas auxiliares
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre VARCHAR(100)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS apellido VARCHAR(100)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id VARCHAR(100)"))
-    except: pass
+    except Exception as e:
+        log_error(f"Error migración DB: {e}")
 
 aplicar_parche_db()
 
@@ -52,73 +66,88 @@ def descargar_media_plus(media_url):
     except: return None
 
 # ==============================================================================
-# 🕵️ LOGICA MAESTRA V22 (REMOTE-ALT FORCE & NAME FIX)
+# 🧠 CEREBRO V23: EXTRACCIÓN DE ID CANÓNICO
 # ==============================================================================
-def resolver_numero_real(payload, session):
+def obtener_identidad(payload, session):
+    """
+    Devuelve un diccionario con:
+    - 'id_canonico': El ID técnico real (ej: 51999...@s.whatsapp.net)
+    - 'telefono': El número limpio extraído de ese ID
+    - 'es_grupo': Booleano
+    """
     try:
         from_me = payload.get('fromMe', False)
         
-        # Extracción segura de diccionarios
-        _data = payload.get('_data')
-        if not isinstance(_data, dict): _data = {}
-        
-        key = _data.get('key')
-        if not isinstance(key, dict): key = {}
+        # Extracción segura
+        _data = payload.get('_data') or {}
+        key = _data.get('key') or {}
 
-        # --- ESTRATEGIA 1: BUSCAR "ALT" (EL NÚMERO REAL ESCONDIDO) ---
-        # WAHA pone el número real en 'remoteJidAlt' o 'participantAlt' cuando usa LIDs.
-        # Buscamos en orden de probabilidad según tus JSONs.
-        
-        candidatos_alt = [
-            key.get('remoteJidAlt'),      # Tu caso más común (Mensajes salientes/privados)
-            key.get('participantAlt'),    # Grupos
-            _data.get('participantAlt'),  # Variante rara
-        ]
-        
-        for cand in candidatos_alt:
-            if cand and '@' in cand:
-                # Limpiamos y devolvemos inmediato
-                real = cand.replace('@s.whatsapp.net', '').replace('@c.us', '')
-                # Log de confirmación para debug
-                log_info(f"🔎 ID Resuelto por ALT: {real}")
-                return real
+        candidate_id = ""
 
-        # --- ESTRATEGIA 2: STANDARD (SIN PRIVACIDAD) ---
-        if from_me:
-            # Si lo envié yo, buscamos el destino en 'remoteJid' o 'to'
-            remote = key.get('remoteJid') # Puede ser LID (153...) o Numero (519...)
-            
-            # Si es un LID (tiene @lid), y falló la Estrategia 1, estamos en problemas,
-            # pero intentamos devolverlo para no perder el mensaje.
-            if remote:
-                val = remote.replace('@g.us', '').replace('@s.whatsapp.net', '').replace('@c.us', '').replace('@lid', '')
-                return val
-            
-            # Último recurso: campo 'to'
-            to_val = payload.get('to', '')
-            return to_val.split('@')[0]
-            
+        # --- PASO 1: Buscar el "Alt" (El ID real detrás del LID) ---
+        # Esto soluciona tus problemas anteriores de raíz.
+        alt_id = key.get('remoteJidAlt') or key.get('participantAlt')
+        
+        if alt_id and '@' in alt_id:
+            candidate_id = alt_id
         else:
-            # Mensaje entrante normal
-            participant = payload.get('participant')
-            from_jid = payload.get('from')
-            
-            # Si es grupo, el que escribe es 'participant'
-            if participant and '@lid' not in participant:
-                return participant.replace('@c.us', '').replace('@s.whatsapp.net', '')
-            
-            return (from_jid or "").replace('@c.us', '').replace('@s.whatsapp.net', '')
+            # --- PASO 2: Si no hay Alt, buscamos el Standard ---
+            if from_me:
+                # Si lo envié yo, el ID es el remoteJid (Chat destino)
+                candidate_id = key.get('remoteJid') or payload.get('to')
+            else:
+                # Si es entrante
+                # En grupos: participant. En privado: from.
+                part = payload.get('participant')
+                src = payload.get('from')
+                
+                if part and '@lid' not in part:
+                    candidate_id = part
+                else:
+                    candidate_id = src
+
+        if not candidate_id: return None
+
+        # --- PASO 3: Normalización ---
+        # Queremos formato JID puro: '51999...@s.whatsapp.net' o '123...@g.us'
+        # Eliminamos sufijos extraños si existen, pero mantenemos el dominio.
+        
+        # Si es un LID puro sin Alt, intentamos resolverlo por API (último recurso)
+        if '@lid' in candidate_id and WAHA_URL:
+             try:
+                lid_clean = candidate_id
+                url_api = f"{WAHA_URL}/api/{session}/lids/{lid_clean}"
+                headers = {"X-Api-Key": WAHA_KEY} if WAHA_KEY else {}
+                r = requests.get(url_api, headers=headers, timeout=2) # Timeout rápido
+                if r.status_code == 200:
+                    data_lid = r.json()
+                    if 'pn' in data_lid: 
+                        # Convertimos el número retornado a formato JID
+                        candidate_id = f"{data_lid['pn']}@s.whatsapp.net"
+             except: pass
+
+        # Detectar tipo
+        es_grupo = '@g.us' in candidate_id
+        
+        # Extraer teléfono (solo dígitos) del ID
+        telefono_limpio = "".join(filter(str.isdigit, candidate_id.split('@')[0]))
+        
+        return {
+            "id_canonico": candidate_id,
+            "telefono": telefono_limpio,
+            "es_grupo": es_grupo
+        }
 
     except Exception as e:
-        log_error(f"🔥 Error Crítico Resolver Numero: {e}")
-        return payload.get('from', '').split('@')[0]
+        log_error(f"Error obteniendo identidad: {e}")
+        return None
 
 # ==============================================================================
 # RUTAS FLASK
 # ==============================================================================
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V22 (Alt+Name Fix)", 200
+    return "Webhook V23 (ID-Centric Architecture)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -150,37 +179,28 @@ def recibir_mensaje():
             # --- B) MENSAJES ---
             if tipo_evento not in ['message', 'message.any', 'message.created']:
                 continue
-
-            # IGNORAR ESTADOS
             if payload.get('from') == 'status@broadcast': continue
 
-            # 1. RESOLVER TELEFONO
-            id_real = resolver_numero_real(payload, session_name)
+            # 1. OBTENER IDENTIDAD (Tu nueva lógica paso 1)
+            identidad = obtener_identidad(payload, session_name)
+            if not identidad: continue
             
-            # Normalización (Filtro numérico estricto)
-            telefono_db = "".join(filter(str.isdigit, id_real))
-            
-            # Si quedó vacío o muy corto, ignoramos
-            if len(telefono_db) < 5: 
-                log_info(f"⚠️ Ignorando ID inválido: {id_real}")
-                continue 
+            chat_id = identidad['id_canonico']
+            telefono_msg = identidad['telefono']
+            es_grupo = identidad['es_grupo']
 
-            es_grupo = '@g.us' in (payload.get('from') or '') or '@g.us' in (payload.get('to') or '')
-            label_log = "👥 GRUPO" if es_grupo else "👤 CHAT"
+            log_info(f"🔑 [{session_name}] Procesando ID: {chat_id}")
 
-            log_info(f"📩 [{session_name}] {label_log}: {telefono_db}")
-
-            # 2. Contenido
+            # 2. PROCESAR CONTENIDO
             body = payload.get('body', '')
             media_obj = payload.get('media') or {} 
             media_url = payload.get('mediaUrl') or media_obj.get('url')
-            
             archivo_bytes = None
             if media_url:
                 archivo_bytes = descargar_media_plus(media_url)
                 if archivo_bytes and not body: body = "📷 Archivo Multimedia"
-
-            # 3. Reply
+            
+            # Reply info
             reply_id = None
             reply_content = None
             raw_reply = payload.get('replyTo')
@@ -190,79 +210,85 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
 
-            # 4. REGISTRO & BD
+            # 3. LÓGICA DB (Tu nueva lógica pasos 2, 3 y 4)
             try:
-                _data = payload.get('_data') or {}
                 tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
                 whatsapp_id = payload.get('id')
                 
-                # --- LÓGICA DE NOMBRE (MEJORADA) ---
-                if tipo_msg == 'SALIENTE':
-                    # Si yo envío el mensaje, NO usar pushName (porque es mi propio nombre)
-                    nombre_wsp = "Cliente Nuevo"
-                else:
-                    # Si es entrante, usamos su nombre
-                    push_name = _data.get('pushName')
-                    notify_name = _data.get('notifyName')
-                    biz_name = _data.get('verifiedBizName')
-                    nombre_wsp = push_name or notify_name or biz_name or "Cliente Nuevo"
+                # Datos para creación
+                _data = payload.get('_data') or {}
+                push_name = _data.get('pushName') or _data.get('notifyName') or _data.get('verifiedBizName')
+                nombre_wsp = push_name or "Cliente Nuevo"
+                if tipo_msg == 'SALIENTE': nombre_wsp = f"Chat {telefono_msg}" # No usar mi nombre
 
                 with engine.connect() as conn:
                     
-                    # 4.1 Verificar Cliente
-                    cliente_existente = conn.execute(
-                        text("SELECT id_cliente, google_id FROM Clientes WHERE telefono=:t"), 
-                        {"t": telefono_db}
+                    # --- PASO 2: BUSCAR POR ID INTERNO (La clave del éxito) ---
+                    cliente_db = conn.execute(
+                        text("SELECT id_cliente, telefono, whatsapp_internal_id FROM Clientes WHERE whatsapp_internal_id = :wid"), 
+                        {"wid": chat_id}
                     ).fetchone()
+
+                    telefono_final_db = telefono_msg # Por defecto usamos el del mensaje
+
+                    if cliente_db:
+                        # YA EXISTE -> Solo actualizamos actividad
+                        telefono_final_db = cliente_db.telefono # Mantenemos el telefono que ya tenia registrado
+                        
+                        # --- PASO 4: ADVERTENCIA DE CAMBIO DE NUMERO ---
+                        # Si el teléfono del mensaje es diferente al de la DB, es raro (pero posible si mantuvo ID)
+                        # Aquí podrías lanzar un log o actualizar si quisieras.
+                        if telefono_msg and cliente_db.telefono and telefono_msg != cliente_db.telefono:
+                             log_info(f"⚠️ Alerta: ID {chat_id} ahora usa tel {telefono_msg} (En DB: {cliente_db.telefono})")
+                             # Opcional: Actualizar el telefono en DB automáticamente
+                             # conn.execute(text("UPDATE Clientes SET telefono=:t WHERE id_cliente=:id"), {"t": telefono_msg, "id": cliente_db.id_cliente})
+
+                        conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": cliente_db.id_cliente})
                     
-                    nuevo_cliente = False
-
-                    if not cliente_existente:
-                        # Nombre final para DB
-                        nombre_final = f"Grupo {telefono_db[-4:]}" if es_grupo else nombre_wsp
-                        
-                        log_info(f"🆕 Creando Cliente: {telefono_db} | Nombre: {nombre_final}")
-                        
-                        conn.execute(text("""
-                            INSERT INTO Clientes (telefono, nombre_corto, estado, activo, fecha_registro)
-                            VALUES (:t, :n, 'Sin empezar', TRUE, NOW())
-                        """), {"t": telefono_db, "n": nombre_final})
-                        nuevo_cliente = True
                     else:
-                        conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE telefono=:t"), {"t": telefono_db})
+                        # NO EXISTE -> CREAR (Paso 1)
+                        # Intentamos ver si existe por telefono antiguo (Legacy fallback)
+                        cliente_legacy = conn.execute(
+                            text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), 
+                            {"t": telefono_msg}
+                        ).fetchone()
 
-                    # 4.2 Sync Google (Solo Personas + Nuevos + Entrantes)
-                    # No sincronizamos si FUI YO quien inició el chat (porque no sé el nombre real aún)
-                    if nuevo_cliente and not es_grupo and tipo_msg == 'ENTRANTE':
-                        try:
-                            datos_google = buscar_contacto_google(telefono_db)
-                            if datos_google and datos_google['encontrado']:
-                                log_info(f"🔗 Google Sync: {datos_google['nombre_completo']}")
-                                conn.execute(text("""
-                                    UPDATE Clientes 
-                                    SET nombre = :nom, apellido = :ape, google_id = :gid, nombre_corto = :completo
-                                    WHERE telefono = :t
-                                """), {
-                                    "nom": datos_google['nombre'],
-                                    "ape": datos_google['apellido'],
-                                    "gid": datos_google['google_id'],
-                                    "completo": datos_google['nombre_completo'],
-                                    "t": telefono_db
-                                })
-                        except: pass
+                        if cliente_legacy:
+                             # Es un cliente viejo que no tenía ID interno migrado. Lo actualizamos.
+                             log_info(f"🔄 Migrando Cliente Legacy: {telefono_msg} -> {chat_id}")
+                             conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), 
+                                         {"wid": chat_id, "id": cliente_legacy.id_cliente})
+                        else:
+                            # NUEVO ABSOLUTO
+                            nombre_final = f"Grupo {telefono_msg[-4:]}" if es_grupo else nombre_wsp
+                            log_info(f"🆕 Creando Cliente ID-Centric: {chat_id}")
+                            
+                            conn.execute(text("""
+                                INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
+                                VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
+                            """), {"t": telefono_msg, "wid": chat_id, "n": nombre_final})
+                            
+                            # Sync Google (Solo nuevos no grupos y entrantes)
+                            if not es_grupo and tipo_msg == 'ENTRANTE':
+                                try:
+                                    datos_google = buscar_contacto_google(telefono_msg)
+                                    if datos_google and datos_google['encontrado']:
+                                        conn.execute(text("""
+                                            UPDATE Clientes 
+                                            SET nombre=:nom, apellido=:ape, google_id=:gid, nombre_corto=:comp
+                                            WHERE whatsapp_internal_id=:wid
+                                        """), {
+                                            "nom": datos_google['nombre'], "ape": datos_google['apellido'],
+                                            "gid": datos_google['google_id'], "comp": datos_google['nombre_completo'],
+                                            "wid": chat_id
+                                        })
+                                except: pass
 
-                    # 4.3 Guardar Mensaje
+                    # GUARDAR MENSAJE (Usando el telefono para mantener compatibilidad con tu frontend actual)
+                    # Nota: Idealmente tu frontend debería buscar por id_cliente o whatsapp_internal_id en el futuro
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
-                    if existe_msg:
-                        conn.execute(text("""
-                            UPDATE mensajes SET 
-                                reply_to_id = :rid,
-                                reply_content = :rbody,
-                                archivo_data = COALESCE(mensajes.archivo_data, :d)
-                            WHERE whatsapp_id = :wid
-                        """), {"wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "d": archivo_bytes})
-                    else:
+                    if not existe_msg:
                         conn.execute(text("""
                             INSERT INTO mensajes (
                                 telefono, tipo, contenido, fecha, leido, archivo_data, 
@@ -270,7 +296,7 @@ def recibir_mensaje():
                             )
                             VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est)
                         """), {
-                            "t": telefono_db, 
+                            "t": telefono_final_db, # Usamos el teléfono asociado al ID
                             "tipo": tipo_msg, 
                             "txt": body, 
                             "leido": (tipo_msg == 'SALIENTE'), 
@@ -280,9 +306,15 @@ def recibir_mensaje():
                             "rbody": reply_content,
                             "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado'
                         })
+                    else:
+                         conn.execute(text("""
+                            UPDATE mensajes SET 
+                                reply_to_id = :rid, reply_content = :rbody, archivo_data = COALESCE(mensajes.archivo_data, :d)
+                            WHERE whatsapp_id = :wid
+                        """), {"wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "d": archivo_bytes})
                     
                     conn.commit()
-                    
+
             except Exception as e:
                 log_error(f"🔥 Error DB [{session_name}]: {e}")
 
