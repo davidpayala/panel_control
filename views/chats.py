@@ -4,7 +4,7 @@ from sqlalchemy import text
 import time
 import requests
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from database import engine 
 
 # --- CONFIGURACIÓN ---
@@ -205,7 +205,6 @@ def render_chat():
                 with st.container(height=550):
                     if msgs.empty: st.caption("Inicio de la conversación.")
                     
-                    # --- CSS ACTUALIZADO CON ESTILOS PARA LA CAJA DE RESPUESTA ---
                     st.markdown("""
                     <style>
                         .msg-row { display: flex; margin-bottom: 5px; }
@@ -217,7 +216,6 @@ def render_chat():
                         .meta { font-size: 10px; color: #666; text-align: right; margin-top: 3px; }
                         .check-read { color: #34B7F1; font-weight: bold; }
                         .check-sent { color: #999; }
-                        /* Estilos Cajita de Respuesta */
                         .reply-box { 
                             background-color: rgba(0, 0, 0, 0.06); 
                             border-left: 4px solid #34B7F1; 
@@ -233,16 +231,42 @@ def render_chat():
                             text-overflow: ellipsis;
                         }
                         .b-mio .reply-box { border-left-color: #075E54; background-color: rgba(0, 0, 0, 0.08); }
+                        .date-separator {
+                            display: flex; justify-content: center; margin: 15px 0;
+                        }
+                        .date-separator span {
+                            background-color: #e1f3fb; color: #555; padding: 4px 12px; 
+                            border-radius: 10px; font-size: 12px; font-weight: bold;
+                        }
                     </style>
                     """, unsafe_allow_html=True)
 
+                    ultima_fecha = None
+                    hoy = datetime.now().date()
+                    ayer = hoy - timedelta(days=1)
+
                     for _, m in msgs.iterrows():
+                        # --- SEPARADOR DE FECHA ---
+                        try:
+                            fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
+                        except:
+                            fecha_msg = None
+
+                        if fecha_msg and fecha_msg != ultima_fecha:
+                            if fecha_msg == hoy: texto_fecha = "Hoy"
+                            elif fecha_msg == ayer: texto_fecha = "Ayer"
+                            else: texto_fecha = fecha_msg.strftime("%d/%m/%Y")
+                            
+                            # SIN indentación para evitar el recuadro gris de código
+                            st.markdown(f"<div class='date-separator'><span>{texto_fecha}</span></div>", unsafe_allow_html=True)
+                            ultima_fecha = fecha_msg
+
+                        # --- VARIABLES DEL MENSAJE ---
                         es_mio = (m['tipo'] == 'SALIENTE')
                         clase_row = "msg-mio" if es_mio else "msg-otro"
                         clase_bub = "b-mio" if es_mio else "b-otro"
-                        hora = m['fecha'].strftime("%H:%M") if m['fecha'] else ""
+                        hora = m['fecha'].strftime("%H:%M") if pd.notna(m['fecha']) else ""
                         
-                        # --- 1. LÓGICA DE ICONOS DE ESTADO ---
                         icono_estado = ""
                         if es_mio:
                             estado = m.get('estado_waha', 'pendiente')
@@ -251,23 +275,23 @@ def render_chat():
                             elif estado == 'enviado': icono_estado = "<span class='check-sent'>✓</span>"
                             else: icono_estado = "🕒"
 
-                        # --- 2. LÓGICA DE LA CAJA DE RESPUESTA ---
                         reply_html = ""
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             texto_citado = str(m['reply_content'])
                             reply_html = f"<div class='reply-box'>↪️ {texto_citado}</div>"
 
-                        st.markdown(f"""
-                        <div class='msg-row {clase_row}'>
-                            <div class='bubble {clase_bub}'>
-                                {reply_html}
-                                <span>{m['contenido']}</span>
-                                <div class='meta'>{hora} {icono_estado}</div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        # IMPORTANTE: Esta cadena no debe tener espacios a la izquierda (indentación) 
+                        # para que Streamlit no lo interprete como un bloque de código.
+                        html_msg = f"""<div class='msg-row {clase_row}'>
+<div class='bubble {clase_bub}'>
+{reply_html}
+<div style='white-space: pre-wrap;'>{m['contenido']}</div>
+<div class='meta'>{hora} {icono_estado}</div>
+</div>
+</div>"""
+                        st.markdown(html_msg, unsafe_allow_html=True)
 
-                # --- 3. INPUT MODIFICADO (Delega a WAHA el registro del mensaje) ---
+                # --- INPUT ---
                 with st.form("chat_form", clear_on_submit=True):
                     c_in, c_btn = st.columns([85, 15])
                     txt = c_in.text_input("Mensaje", label_visibility="collapsed", placeholder="Escribe un mensaje...")
@@ -277,7 +301,6 @@ def render_chat():
                         ok, res = enviar_mensaje_whatsapp(telefono_actual, txt)
                         if ok:
                             with st.spinner("Enviando..."):
-                                # Damos 1.5 seg para que webhook.py procese el message.any y lo guarde
                                 time.sleep(1.5) 
                             st.rerun()
                         else:
