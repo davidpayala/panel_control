@@ -2,22 +2,26 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 import time
+import requests
+import os
+from datetime import datetime, timedelta
 from database import engine 
+
+# --- CONFIGURACIÓN ---
+WAHA_URL = os.getenv("WAHA_URL")
+WAHA_KEY = os.getenv("WAHA_KEY")
+SESIONES = ["default", "principal"] # Tus sesiones activas
 
 # --- GESTIÓN DE IMPORTACIONES ROBUSTA ---
 try:
     from utils import (
         enviar_mensaje_media, 
         enviar_mensaje_whatsapp, 
-        normalizar_telefono_maestro, 
-        sincronizar_historial,
         marcar_chat_como_leido_waha as marcar_leido_waha 
     )
 except ImportError:
     def enviar_mensaje_media(*args): return False, "Error import"
     def enviar_mensaje_whatsapp(*args): return False, "Error import"
-    def normalizar_telefono_maestro(*args): return None
-    def sincronizar_historial(*args): return "Error import"
     def marcar_leido_waha(*args): pass
 
 def get_table_name(conn):
@@ -27,6 +31,136 @@ def get_table_name(conn):
     except:
         return "\"Clientes\""
 
+# ==============================================================================
+# 🧠 LÓGICA DE SINCRONIZACIÓN TOTAL (MIGRACIÓN ID)
+# ==============================================================================
+def ejecutar_sync_masiva():
+    log_msgs = []
+    total_chats = 0
+    total_msgs = 0
+    
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+
+    with st.status("🔄 Ejecutando Migración y Sincronización...", expanded=True) as status:
+        
+        for session in SESIONES:
+            st.write(f"📡 Conectando con sesión: **{session}**...")
+            
+            try:
+                # 1. Obtener todos los chats de la sesión
+                url_chats = f"{WAHA_URL}/api/{session}/chats?limit=1000" # Traemos todos los posibles
+                r = requests.get(url_chats, headers=headers, timeout=15)
+                
+                if r.status_code != 200:
+                    st.error(f"Error conectando a {session}: {r.status_code}")
+                    continue
+                
+                chats_data = r.json()
+                st.write(f"📂 Procesando {len(chats_data)} chats en {session}...")
+
+                with engine.connect() as conn:
+                    for chat in chats_data:
+                        # --- A) REGISTRO DE CONTACTOS (ID CENTRIC) ---
+                        waha_id = chat.get('id') # Este es el ID Único (ej: 5199...@s.whatsapp.net)
+                        name = chat.get('name') or chat.get('pushName') or "Sin Nombre"
+                        
+                        # Limpieza de teléfono
+                        telefono_limpio = "".join(filter(str.isdigit, waha_id.split('@')[0]))
+                        
+                        if 'status' in waha_id: continue # Ignorar estados
+
+                        # Upsert inteligente: Busca por ID Interno, si no, busca por teléfono
+                        # Si encuentra, actualiza el ID Interno. Si no, crea.
+                        
+                        # 1. Intentar actualizar por ID
+                        res = conn.execute(text("""
+                            UPDATE Clientes 
+                            SET whatsapp_internal_id = :wid, activo = TRUE 
+                            WHERE whatsapp_internal_id = :wid
+                        """), {"wid": waha_id})
+                        
+                        if res.rowcount == 0:
+                            # 2. Si no existe por ID, buscar por teléfono (Migración Legacy)
+                            res = conn.execute(text("""
+                                UPDATE Clientes 
+                                SET whatsapp_internal_id = :wid, activo = TRUE
+                                WHERE telefono = :tel AND whatsapp_internal_id IS NULL
+                            """), {"wid": waha_id, "tel": telefono_limpio})
+                            
+                            if res.rowcount == 0:
+                                # 3. Si no existe, crear nuevo
+                                es_grupo = '@g.us' in waha_id
+                                nombre_final = f"Grupo {telefono_limpio[-4:]}" if es_grupo else name
+                                
+                                conn.execute(text("""
+                                    INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
+                                    VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
+                                    ON CONFLICT (telefono) DO UPDATE SET whatsapp_internal_id = :wid
+                                """), {"t": telefono_limpio, "wid": waha_id, "n": nombre_final})
+                        
+                        total_chats += 1
+
+                        # --- B) RECUPERACIÓN DE MENSAJES ---
+                        # Descargamos los últimos 50 mensajes de cada chat para llenar huecos
+                        try:
+                            url_msgs = f"{WAHA_URL}/api/{session}/chats/{waha_id}/messages?limit=50"
+                            r_m = requests.get(url_msgs, headers=headers, timeout=5)
+                            if r_m.status_code == 200:
+                                msgs_data = r_m.json()
+                                
+                                for m in msgs_data:
+                                    msg_id = m.get('id')
+                                    from_me = m.get('fromMe', False)
+                                    body = m.get('body', '')
+                                    has_media = m.get('hasMedia', False)
+                                    timestamp = m.get('timestamp')
+                                    
+                                    # Verificar si ya existe
+                                    existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id = :wid"), {"wid": msg_id}).scalar()
+                                    
+                                    if not existe:
+                                        # Calcular fecha (Timestamp Unix -> Datetime - 5h)
+                                        try:
+                                            dt_object = datetime.fromtimestamp(timestamp)
+                                            fecha_peru = dt_object - timedelta(hours=5)
+                                        except:
+                                            fecha_peru = datetime.now() - timedelta(hours=5)
+
+                                        tipo = 'SALIENTE' if from_me else 'ENTRANTE'
+                                        contenido = body
+                                        if has_media and not body: contenido = "📷 Archivo (Recuperado)"
+                                        
+                                        conn.execute(text("""
+                                            INSERT INTO mensajes (
+                                                telefono, tipo, contenido, fecha, leido, whatsapp_id, estado_waha
+                                            ) VALUES (
+                                                :tel, :tipo, :cont, :fecha, :leido, :wid, 'recuperado'
+                                            )
+                                        """), {
+                                            "tel": telefono_limpio,
+                                            "tipo": tipo,
+                                            "cont": contenido,
+                                            "fecha": fecha_peru,
+                                            "leido": True, # Si es recuperado, lo marcamos como leído para no spamear
+                                            "wid": msg_id
+                                        })
+                                        total_msgs += 1
+                                        
+                                conn.commit()
+                        except Exception as e:
+                            print(f"Error msg fetch: {e}")
+
+            except Exception as e:
+                st.error(f"Error crítico en sesión {session}: {e}")
+        
+        status.update(label="✅ ¡Sincronización Completa!", state="complete", expanded=False)
+    
+    return f"Procesados: {total_chats} chats y recuperados {total_msgs} mensajes."
+
+# ==============================================================================
+# RENDERIZADO DE LA VISTA
+# ==============================================================================
 def render_chat():
     # Título principal
     st.title("💬 Chat Center")
@@ -46,35 +180,12 @@ def render_chat():
     with col_lista:
         st.subheader("Bandeja")
         
-        # --- Botones de Acción ---
-        c1, c2 = st.columns(2)
-        if c1.button("🔄 Sync", use_container_width=True, help="Descargar mensajes"):
-            with st.spinner("Sincronizando..."):
-                try:
-                    res = sincronizar_historial()
-                    st.toast(res, icon="✅")
-                    time.sleep(1)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-        if c2.button("🛠️ Fix", use_container_width=True, help="Reparar lista"):
-            try:
-                with engine.connect() as conn:
-                    tabla = get_table_name(conn)
-                    sql_fix = f"""
-                        INSERT INTO {tabla} (telefono, nombre_corto, estado, activo, fecha_registro)
-                        SELECT DISTINCT m.telefono, 'Recuperado', 'Sin empezar', TRUE, NOW()
-                        FROM mensajes m
-                        WHERE m.telefono NOT IN (SELECT c.telefono FROM {tabla} c)
-                    """
-                    res = conn.execute(text(sql_fix))
-                    conn.commit()
-                    st.success(f"Recuperados: {res.rowcount}")
-                    time.sleep(1)
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Error Fix: {e}")
+        # --- Botón de Acción Único (SYNC TOTAL) ---
+        if st.button("🔄 Sync Total (Migración)", use_container_width=True, type="primary", help="Registra IDs y recupera historial faltante"):
+            resultado = ejecutar_sync_masiva()
+            st.success(resultado)
+            time.sleep(2)
+            st.rerun()
 
         st.divider()
 
@@ -86,19 +197,19 @@ def render_chat():
                 # Input de búsqueda
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # Consulta base
+                # Consulta base (Optimizada)
                 query = f"""
                     SELECT 
                         c.telefono, 
                         COALESCE(c.nombre_corto, c.telefono) as nombre,
-                        c.estado,
+                        c.whatsapp_internal_id,
                         (SELECT COUNT(*) FROM mensajes m 
                          WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos
                     FROM {tabla} c
                     WHERE c.activo = TRUE
                 """
                 
-                # --- LÓGICA DE BÚSQUEDA MEJORADA (Números + Texto) ---
+                # --- LÓGICA DE BÚSQUEDA ---
                 if busqueda:
                     busqueda_limpia = "".join(filter(str.isdigit, busqueda))
                     filtro = " AND ("
@@ -110,7 +221,7 @@ def render_chat():
                     filtro += ")"
                     query += filtro
                 
-                query += " ORDER BY no_leidos DESC, c.id_cliente DESC LIMIT 50"
+                query += " ORDER BY no_leidos DESC, c.fecha_registro DESC LIMIT 50"
                 df_clientes = pd.read_sql(text(query), conn)
 
             # Contenedor con scroll para la lista
@@ -130,12 +241,13 @@ def render_chat():
                         # Estilo del botón
                         tipo = "primary" if telefono_actual == t_row else "secondary"
                         
+                        # Usamos index puro para evitar reinicios
                         if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo):
                             st.session_state['chat_actual_telefono'] = t_row
                             st.rerun()
 
         except Exception as e:
-            st.error("Error lista")
+            st.error("Error cargando lista")
             st.code(e)
 
     # ==========================================
@@ -168,13 +280,14 @@ def render_chat():
                     # Info cliente
                     info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
                     nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
+                    wsp_id = info.whatsapp_internal_id if hasattr(info, 'whatsapp_internal_id') else "Desconocido"
                     
                     # Mensajes
                     msgs = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha ASC"), conn, params={"t": telefono_actual})
 
                 # Cabecera Chat
                 st.subheader(f"👤 {nombre}")
-                st.caption(f"📱 {telefono_actual}")
+                st.caption(f"📱 {telefono_actual} | 🆔 {wsp_id}")
                 
                 # --- AREA DE MENSAJES ---
                 with st.container(height=550):
@@ -228,7 +341,7 @@ def render_chat():
                         ok, res = enviar_mensaje_whatsapp(telefono_actual, txt)
                         if ok:
                             with engine.connect() as conn:
-                                # AQUI ESTABA EL ERROR: Cambiamos NOW() por (NOW() - INTERVAL '5 hours')
+                                # Corrección horaria (-5 horas)
                                 conn.execute(text("""
                                     INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, estado_waha) 
                                     VALUES (:t, 'SALIENTE', :c, (NOW() - INTERVAL '5 hours'), TRUE, 'enviado')
