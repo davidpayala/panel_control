@@ -4,6 +4,8 @@ from database import engine
 import os
 import requests
 import sys
+import json
+from datetime import datetime
 from utils import normalizar_telefono_maestro, buscar_contacto_google
 
 app = Flask(__name__)
@@ -18,16 +20,28 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🚑 PARCHE DB ---
+# --- 🚑 PARCHE DB (LOGS CRUDOS) ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
+            # Tablas existentes
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS whatsapp_internal_id VARCHAR(150)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wsp_id ON Clientes(whatsapp_internal_id)"))
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre VARCHAR(100)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS apellido VARCHAR(100)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id VARCHAR(100)"))
+            
+            # --- NUEVA TABLA PARA DIAGNÓSTICO ---
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS webhook_logs (
+                    id SERIAL PRIMARY KEY,
+                    fecha TIMESTAMP DEFAULT NOW(),
+                    session_name VARCHAR(50),
+                    event_type VARCHAR(50),
+                    payload TEXT
+                )
+            """))
     except: pass
 
 aplicar_parche_db()
@@ -53,35 +67,60 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
+# --- GUARDAR LOG DIAGNÓSTICO (ROTACIÓN 20) ---
+def guardar_log_diagnostico(data):
+    try:
+        if isinstance(data, list):
+            item = data[0]
+        else:
+            item = data
+        
+        session = item.get('session', 'unknown')
+        event = item.get('event', 'unknown')
+        payload_str = json.dumps(item, ensure_ascii=False)
+
+        with engine.begin() as conn:
+            # 1. Insertar el nuevo
+            conn.execute(text("""
+                INSERT INTO webhook_logs (session_name, event_type, payload)
+                VALUES (:s, :e, :p)
+            """), {"s": session, "e": event, "p": payload_str})
+            
+            # 2. Mantener solo los últimos 20 (Limpieza)
+            conn.execute(text("""
+                DELETE FROM webhook_logs 
+                WHERE id NOT IN (
+                    SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 20
+                )
+            """))
+    except Exception as e:
+        log_error(f"Error guardando log diagnóstico: {e}")
+
 # ==============================================================================
 # 🧠 CEREBRO V25: ROBUST ID EXTRACTION
 # ==============================================================================
 def obtener_identidad(payload, session):
     try:
         from_me = payload.get('fromMe', False)
-        
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
 
-        # 1. ID DE RUTEO (LID o Chat ID)
+        # 1. ID DE RUTEO
         routing_id = ""
         if from_me:
              routing_id = key.get('remoteJid') or payload.get('to')
         else:
              routing_id = key.get('remoteJid') or payload.get('from')
 
-        if not routing_id: 
-            log_error("ID de ruteo no encontrado en payload.")
-            return None
+        if not routing_id: return None
 
-        # 2. TELÉFONO VISUAL (Alt)
+        # 2. TELÉFONO VISUAL
         alt_source = key.get('remoteJidAlt') or key.get('participantAlt') or _data.get('participantAlt')
-        
         telefono_limpio = ""
+        
         if alt_source and '@' in alt_source:
              telefono_limpio = "".join(filter(str.isdigit, alt_source.split('@')[0]))
         else:
-             # Fallback
              part = payload.get('participant')
              fuente_num = part if (part and '@lid' not in part) else routing_id
              telefono_limpio = "".join(filter(str.isdigit, fuente_num.split('@')[0]))
@@ -93,7 +132,6 @@ def obtener_identidad(payload, session):
             "telefono": telefono_limpio,
             "es_grupo": es_grupo
         }
-
     except Exception as e:
         log_error(f"Error identidad: {e}")
         return None
@@ -103,7 +141,7 @@ def obtener_identidad(payload, session):
 # ==============================================================================
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V25 (Force Create Sent Msgs)", 200
+    return "Webhook V26 (Logger Enabled)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -111,6 +149,9 @@ def recibir_mensaje():
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
         
+        # --- PASO 0: GUARDAR LOG CRUDO PARA DIAGNÓSTICO ---
+        guardar_log_diagnostico(data)
+
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
@@ -118,7 +159,6 @@ def recibir_mensaje():
             session_name = evento.get('session', 'default')
             payload = evento.get('payload', {})
 
-            # --- ACK (Estado del mensaje) ---
             if tipo_evento == 'message.ack':
                 msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
@@ -132,21 +172,18 @@ def recibir_mensaje():
                 except: pass
                 continue 
 
-            # --- MENSAJES ---
             if tipo_evento not in ['message', 'message.any', 'message.created']: continue
             if payload.get('from') == 'status@broadcast': continue
 
             # 1. IDENTIDAD
             identidad = obtener_identidad(payload, session_name)
-            if not identidad: 
-                log_error("Mensaje ignorado: No se pudo determinar identidad.")
-                continue
+            if not identidad: continue
             
             chat_id = identidad['id_canonico'] 
             telefono_msg = identidad['telefono'] 
             es_grupo = identidad['es_grupo']
 
-            log_info(f"🔑 [{session_name}] Procesando: {telefono_msg} (ID: {chat_id})")
+            log_info(f"🔑 [{session_name}] Procesando: {telefono_msg}")
 
             # 2. CONTENIDO
             body = payload.get('body', '')
@@ -175,13 +212,11 @@ def recibir_mensaje():
                 push_name = _data.get('pushName') or _data.get('notifyName') or _data.get('verifiedBizName')
                 nombre_wsp = push_name or "Cliente Nuevo"
                 
-                # Nombre por defecto para chats iniciados por ti
                 if tipo_msg == 'SALIENTE': 
                     nombre_wsp = f"Chat {telefono_msg}"
 
                 with engine.connect() as conn:
                     
-                    # A) Buscar por ID TÉCNICO
                     cliente_db = conn.execute(
                         text("SELECT id_cliente, telefono, whatsapp_internal_id FROM Clientes WHERE whatsapp_internal_id = :wid"), 
                         {"wid": chat_id}
@@ -190,32 +225,27 @@ def recibir_mensaje():
                     telefono_final_db = telefono_msg 
 
                     if cliente_db:
-                        # EXISTE
                         telefono_final_db = cliente_db.telefono
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": cliente_db.id_cliente})
-                    
                     else:
-                        # NO EXISTE POR ID -> BUSCAR POR TELÉFONO
                         cliente_tel = conn.execute(
                             text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), 
                             {"t": telefono_msg}
                         ).fetchone()
 
                         if cliente_tel:
-                             log_info(f"🔄 Actualizando ID (LID detectado): {telefono_msg}")
+                             log_info(f"🔄 Actualizando ID (LID): {telefono_msg}")
                              conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), 
                                          {"wid": chat_id, "id": cliente_tel.id_cliente})
                         else:
-                            # CREAR NUEVO (Incluso si es SALIENTE)
                             nombre_final = f"Grupo {telefono_msg[-4:]}" if es_grupo else nombre_wsp
-                            log_info(f"🆕 Creando Cliente: {telefono_msg} (Origen: {tipo_msg})")
+                            log_info(f"🆕 Creando Cliente: {telefono_msg}")
                             
                             conn.execute(text("""
                                 INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
                                 VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
                             """), {"t": telefono_msg, "wid": chat_id, "n": nombre_final})
                             
-                            # Sync Google (Solo si es ENTRANTE para evitar ensuciar con chats que inicié yo sin saber nombre)
                             if not es_grupo and tipo_msg == 'ENTRANTE':
                                 try:
                                     datos_google = buscar_contacto_google(telefono_msg)
@@ -231,11 +261,9 @@ def recibir_mensaje():
                                         })
                                 except: pass
 
-                    # GUARDAR MENSAJE
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if not existe_msg:
-                        log_info(f"💾 Guardando mensaje {tipo_msg} para {telefono_final_db}")
                         conn.execute(text("""
                             INSERT INTO mensajes (
                                 telefono, tipo, contenido, fecha, leido, archivo_data, 
