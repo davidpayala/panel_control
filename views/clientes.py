@@ -75,7 +75,6 @@ def render_herramienta_fusion():
 
                                         # 4. GESTIÓN INTELIGENTE DE ID INTERNO
                                         # Regla: Si el ELIMINADO tiene ID, ese ID prevalece (sobreescribe al destino)
-                                        # Si el ELIMINADO no tiene, se queda el del DESTINO.
                                         if wid_del:
                                             tx.execute(text("UPDATE Clientes SET whatsapp_internal_id=:wid WHERE id_cliente=:id"),
                                                        {"wid": wid_del, "id": id_keep})
@@ -156,16 +155,23 @@ def render_clientes():
                 with st.form("form_cliente"):
                     c1, c2 = st.columns(2)
                     new_nombre = c1.text_input("Nombre Corto", value=cliente.nombre_corto or "")
-                    new_telefono = c2.text_input("Teléfono", value=cliente.telefono or "", disabled=True) 
                     
+                    # --- CAMBIO AQUÍ: TELEFONO EDITABLE + ADVERTENCIA ---
+                    new_telefono = c2.text_input("Teléfono", value=cliente.telefono or "") 
+                    
+                    # Advertencia visual sobre el ID
+                    if cliente.whatsapp_internal_id:
+                        st.warning(f"⚠️ **Atención:** Este cliente está vinculado internamente al WhatsApp ID: `{cliente.whatsapp_internal_id}`. " 
+                                   "Si cambias el teléfono solo visualmente, el chat seguirá llegando al ID original.")
+                    else:
+                        st.info("ℹ️ Este cliente no tiene ID interno de WhatsApp asignado aún.")
+
                     c3, c4 = st.columns(2)
                     new_nombre_real = c3.text_input("Nombre Real", value=cliente.nombre or "")
                     new_apellido = c4.text_input("Apellido", value=cliente.apellido or "")
                     
                     new_etiquetas = st.text_area("Etiquetas / Notas", value=cliente.etiquetas or "")
                     
-                    # Mostrar ID interno (Read only)
-                    st.caption(f"🆔 ID Interno: {cliente.whatsapp_internal_id or 'No asignado'}")
                     if cliente.google_id:
                         st.caption(f"🔗 Google Contact ID: {cliente.google_id}")
                     else:
@@ -175,13 +181,14 @@ def render_clientes():
                     
                     if submitted:
                         with engine.begin() as conn:
+                            # --- CAMBIO AQUÍ: AÑADIDO UPDATE TELEFONO ---
                             conn.execute(text("""
                                 UPDATE Clientes 
-                                SET nombre_corto=:nc, nombre=:n, apellido=:a, etiquetas=:e
+                                SET nombre_corto=:nc, nombre=:n, apellido=:a, etiquetas=:e, telefono=:t
                                 WHERE id_cliente=:id
                             """), {
                                 "nc": new_nombre, "n": new_nombre_real, "a": new_apellido, 
-                                "e": new_etiquetas, "id": id_cli_sel
+                                "e": new_etiquetas, "t": new_telefono, "id": id_cli_sel
                             })
                         st.success("Cambios guardados.")
                         time.sleep(1)
