@@ -340,14 +340,15 @@ def render_chat():
                     if btn and txt:
                         ok, res = enviar_mensaje_whatsapp(telefono_actual, txt)
                         if ok:
-                            with engine.connect() as conn:
-                                # Corrección horaria (-5 horas)
-                                conn.execute(text("""
-                                    INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, estado_waha) 
-                                    VALUES (:t, 'SALIENTE', :c, (NOW() - INTERVAL '5 hours'), TRUE, 'enviado')
-                                """), {"t": telefono_actual, "c": txt})
-                                conn.commit()
-                            st.rerun()
+                            # ¡MAGIA AQUÍ! 
+                            # Ya no insertamos en la BD manualmente. 
+                            # Al enviar por la API, WAHA dispara el evento message.any en milisegundos
+                            # y nuestro webhook.py lo guarda automáticamente con el whatsapp_id exacto.
+                            
+                            with st.spinner("Enviando..."):
+                                time.sleep(1.5) # Esperamos un segundito a que el webhook haga su trabajo
+                            
+                            st.rerun() # Recargamos la pantalla y el mensaje aparecerá mágicamente
                         else:
                             st.error(f"Error: {res}")
 
