@@ -54,56 +54,43 @@ def descargar_media_plus(media_url):
     except: return None
 
 # ==============================================================================
-# 🧠 CEREBRO V24: SEPARACIÓN ID vs TELÉFONO
+# 🧠 CEREBRO V25: ROBUST ID EXTRACTION
 # ==============================================================================
 def obtener_identidad(payload, session):
-    """
-    ID CANONICO: El que usamos para responder (remoteJid / LID).
-    TELEFONO: El número humano extraído del Alt o del ID.
-    """
     try:
         from_me = payload.get('fromMe', False)
         
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
 
-        # --- 1. DETERMINAR ID DE RUTEO (Para whatsapp_internal_id) ---
-        # Este NO debe cambiarse por el Alt, debe ser el origen real (LID o lo que sea)
+        # 1. ID DE RUTEO (LID o Chat ID)
         routing_id = ""
-        
         if from_me:
-             # Si lo envié yo, el destino es remoteJid o to
              routing_id = key.get('remoteJid') or payload.get('to')
         else:
-             # Si me lo enviaron
              routing_id = key.get('remoteJid') or payload.get('from')
-             # Nota: En grupos, remoteJid es el grupo. El participant es quien escribe.
-             # Pero para identificar el CHAT, usamos remoteJid.
 
-        if not routing_id: return None
+        if not routing_id: 
+            log_error("ID de ruteo no encontrado en payload.")
+            return None
 
-        # --- 2. DETERMINAR TELÉFONO VISUAL (El Tesoro Escondido) ---
-        # Aquí sí buscamos el Alt para sacar el número real
-        
+        # 2. TELÉFONO VISUAL (Alt)
         alt_source = key.get('remoteJidAlt') or key.get('participantAlt') or _data.get('participantAlt')
         
         telefono_limpio = ""
-        
         if alt_source and '@' in alt_source:
-             # ¡Tesoro encontrado! Usamos este para el teléfono
              telefono_limpio = "".join(filter(str.isdigit, alt_source.split('@')[0]))
         else:
-             # Si no hay tesoro, intentamos sacarlo del participant o del ID
+             # Fallback
              part = payload.get('participant')
              fuente_num = part if (part and '@lid' not in part) else routing_id
              telefono_limpio = "".join(filter(str.isdigit, fuente_num.split('@')[0]))
 
-        # Detectar grupo
         es_grupo = '@g.us' in routing_id
 
         return {
-            "id_canonico": routing_id, # Ej: 2513...@lid
-            "telefono": telefono_limpio, # Ej: 5350610509
+            "id_canonico": routing_id,
+            "telefono": telefono_limpio,
             "es_grupo": es_grupo
         }
 
@@ -116,7 +103,7 @@ def obtener_identidad(payload, session):
 # ==============================================================================
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V24 (LID Routing + Phone Alt)", 200
+    return "Webhook V25 (Force Create Sent Msgs)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -131,31 +118,35 @@ def recibir_mensaje():
             session_name = evento.get('session', 'default')
             payload = evento.get('payload', {})
 
+            # --- ACK (Estado del mensaje) ---
             if tipo_evento == 'message.ack':
-                # ... (Lógica de ACK igual) ...
                 msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
                 estado_map = {1: 'enviado', 2: 'recibido', 3: 'leido', 4: 'reproducido'}
                 nuevo_estado = estado_map.get(ack_status, 'pendiente')
                 try:
                     with engine.connect() as conn:
-                        conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), {"e": nuevo_estado, "w": msg_id})
+                        conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), 
+                                    {"e": nuevo_estado, "w": msg_id})
                         conn.commit()
                 except: pass
                 continue 
 
+            # --- MENSAJES ---
             if tipo_evento not in ['message', 'message.any', 'message.created']: continue
             if payload.get('from') == 'status@broadcast': continue
 
-            # 1. OBTENER IDENTIDAD
+            # 1. IDENTIDAD
             identidad = obtener_identidad(payload, session_name)
-            if not identidad: continue
+            if not identidad: 
+                log_error("Mensaje ignorado: No se pudo determinar identidad.")
+                continue
             
-            chat_id = identidad['id_canonico'] # El ID Técnico (LID)
-            telefono_msg = identidad['telefono'] # El Número Real
+            chat_id = identidad['id_canonico'] 
+            telefono_msg = identidad['telefono'] 
             es_grupo = identidad['es_grupo']
 
-            log_info(f"🔑 [{session_name}] ID: {chat_id} | Tel: {telefono_msg}")
+            log_info(f"🔑 [{session_name}] Procesando: {telefono_msg} (ID: {chat_id})")
 
             # 2. CONTENIDO
             body = payload.get('body', '')
@@ -175,7 +166,7 @@ def recibir_mensaje():
             elif isinstance(raw_reply, str):
                 reply_id = raw_reply
 
-            # 3. LÓGICA DB (Linkeado Inteligente)
+            # 3. LÓGICA DB
             try:
                 tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
                 whatsapp_id = payload.get('id')
@@ -183,11 +174,14 @@ def recibir_mensaje():
                 _data = payload.get('_data') or {}
                 push_name = _data.get('pushName') or _data.get('notifyName') or _data.get('verifiedBizName')
                 nombre_wsp = push_name or "Cliente Nuevo"
-                if tipo_msg == 'SALIENTE': nombre_wsp = f"Chat {telefono_msg}"
+                
+                # Nombre por defecto para chats iniciados por ti
+                if tipo_msg == 'SALIENTE': 
+                    nombre_wsp = f"Chat {telefono_msg}"
 
                 with engine.connect() as conn:
                     
-                    # A) Buscar por ID TÉCNICO (Prioridad Absoluta)
+                    # A) Buscar por ID TÉCNICO
                     cliente_db = conn.execute(
                         text("SELECT id_cliente, telefono, whatsapp_internal_id FROM Clientes WHERE whatsapp_internal_id = :wid"), 
                         {"wid": chat_id}
@@ -196,34 +190,32 @@ def recibir_mensaje():
                     telefono_final_db = telefono_msg 
 
                     if cliente_db:
-                        # EXISTE POR ID -> Todo perfecto
+                        # EXISTE
                         telefono_final_db = cliente_db.telefono
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": cliente_db.id_cliente})
                     
                     else:
-                        # B) NO EXISTE POR ID -> Buscar por TELÉFONO (Linkeo)
-                        # Aquí ocurre la magia: Si encontramos el número real, actualizamos su ID al nuevo LID
+                        # NO EXISTE POR ID -> BUSCAR POR TELÉFONO
                         cliente_tel = conn.execute(
                             text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), 
                             {"t": telefono_msg}
                         ).fetchone()
 
                         if cliente_tel:
-                             # ¡Es él! Pero está usando un ID nuevo (LID). Actualizamos el ID.
-                             log_info(f"🔄 Actualizando ID Routing: {telefono_msg} -> {chat_id}")
+                             log_info(f"🔄 Actualizando ID (LID detectado): {telefono_msg}")
                              conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), 
                                          {"wid": chat_id, "id": cliente_tel.id_cliente})
                         else:
-                            # NUEVO TOTAL
+                            # CREAR NUEVO (Incluso si es SALIENTE)
                             nombre_final = f"Grupo {telefono_msg[-4:]}" if es_grupo else nombre_wsp
-                            log_info(f"🆕 Nuevo Cliente (LID): {chat_id} | Tel: {telefono_msg}")
+                            log_info(f"🆕 Creando Cliente: {telefono_msg} (Origen: {tipo_msg})")
                             
                             conn.execute(text("""
                                 INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
                                 VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
                             """), {"t": telefono_msg, "wid": chat_id, "n": nombre_final})
                             
-                            # Sync Google (Solo nuevos)
+                            # Sync Google (Solo si es ENTRANTE para evitar ensuciar con chats que inicié yo sin saber nombre)
                             if not es_grupo and tipo_msg == 'ENTRANTE':
                                 try:
                                     datos_google = buscar_contacto_google(telefono_msg)
@@ -243,6 +235,7 @@ def recibir_mensaje():
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if not existe_msg:
+                        log_info(f"💾 Guardando mensaje {tipo_msg} para {telefono_final_db}")
                         conn.execute(text("""
                             INSERT INTO mensajes (
                                 telefono, tipo, contenido, fecha, leido, archivo_data, 
@@ -250,7 +243,7 @@ def recibir_mensaje():
                             )
                             VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est)
                         """), {
-                            "t": telefono_final_db, # Mantenemos el telefono para agrupar visualmente
+                            "t": telefono_final_db, 
                             "tipo": tipo_msg, 
                             "txt": body, 
                             "leido": (tipo_msg == 'SALIENTE'), 
