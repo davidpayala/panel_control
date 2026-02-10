@@ -75,8 +75,15 @@ def guardar_log_diagnostico(data):
         else:
             item = data
         
-        session = item.get('session', 'unknown')
         event = item.get('event', 'unknown')
+        
+        # --- FILTRO DE DIAGNÓSTICO ---
+        # Si el evento es un ACK, status de sesión o presencia, no lo guardamos en la tabla de logs.
+        # (Esto no afecta al funcionamiento de los checks, solo limpia la pestaña de diagnóstico)
+        if event in ['message.ack', 'presence.update', 'session.status']:
+            return 
+            
+        session = item.get('session', 'unknown')
         payload_str = json.dumps(item, ensure_ascii=False)
 
         with engine.begin() as conn:
@@ -97,7 +104,7 @@ def guardar_log_diagnostico(data):
         log_error(f"Error guardando log diagnóstico: {e}")
 
 # ==============================================================================
-# 🧠 CEREBRO V25: ROBUST ID EXTRACTION
+# 🧠 CEREBRO V27: ROBUST ID EXTRACTION & FILTERED LOGS
 # ==============================================================================
 def obtener_identidad(payload, session):
     try:
@@ -141,7 +148,7 @@ def obtener_identidad(payload, session):
 # ==============================================================================
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V26 (Logger Enabled)", 200
+    return "Webhook V27 (Filtered Logger Enabled)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
