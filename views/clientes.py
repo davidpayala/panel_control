@@ -6,18 +6,18 @@ from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_m
 import time
 
 # ==============================================================================
-# HERRAMIENTA DE FUSIÓN DE CLIENTES
+# HERRAMIENTA DE FUSIÓN DE CLIENTES (LOGICA ID MEJORADA)
 # ==============================================================================
 def render_herramienta_fusion():
     with st.expander("🔄 Fusionar Clientes Duplicados (Herramienta)", expanded=False):
-        st.info("Utiliza esto para unir dos registros (ej: uno con número y otro con ID) en uno solo. Se migrarán chats, ventas y direcciones.")
+        st.info("Utiliza esto para unir dos registros. Se migrarán chats, ventas y direcciones al cliente destino.")
         
         try:
             with engine.connect() as conn:
-                # Cargar lista de clientes para los selectbox
+                # Cargar lista de clientes
                 df = pd.read_sql(text("SELECT id_cliente, telefono, nombre_corto, whatsapp_internal_id FROM Clientes WHERE activo=TRUE ORDER BY nombre_corto"), conn)
                 
-                # Crear lista de opciones formateada
+                # Crear lista de opciones
                 opciones = df.apply(lambda x: f"{x['nombre_corto']} | {x['telefono']} (ID: {x['id_cliente']})", axis=1).tolist()
                 mapa_ids = dict(zip(opciones, df['id_cliente']))
                 mapa_tels = dict(zip(opciones, df['telefono']))
@@ -36,26 +36,32 @@ def render_herramienta_fusion():
                     id_del = mapa_ids[sel_del]
                     tel_keep = mapa_tels[sel_keep]
                     tel_del = mapa_tels[sel_del]
-                    wid_del = mapa_wids[sel_del]
+                    
+                    wid_keep = mapa_wids[sel_keep] # ID del destino
+                    wid_del = mapa_wids[sel_del]   # ID del origen (el que queremos priorizar si existe)
 
                     if id_keep == id_del:
                         st.error("Debes seleccionar dos clientes diferentes.")
                     else:
                         st.warning(f"⚠️ Al fusionar, **{sel_del}** desaparecerá y todos sus datos pasarán a **{sel_keep}**.")
                         
+                        # Mostrar qué ID se va a quedar
+                        id_final = wid_del if wid_del else wid_keep
+                        st.caption(f"🆔 ID Interno resultante será: `{id_final or 'Ninguno'}`")
+
                         if st.button("🚀 Confirmar Fusión"):
                             with st.spinner("Fusionando historiales..."):
                                 try:
                                     with engine.begin() as tx:
                                         # 1. Mover MENSAJES (Actualizamos el telefono dueño del mensaje)
-                                        # Nota: Se usa el telefono como llave en mensajes
+                                        # Nota: Usamos el telefono del destino para unificar el chat visualmente
                                         tx.execute(text("""
                                             UPDATE mensajes 
                                             SET telefono = :tel_new 
                                             WHERE telefono = :tel_old
                                         """), {"tel_new": tel_keep, "tel_old": tel_del})
                                         
-                                        # 2. Mover VENTAS (Si existen)
+                                        # 2. Mover VENTAS
                                         try:
                                             tx.execute(text("UPDATE Ventas SET id_cliente = :id_new WHERE id_cliente = :id_old"), 
                                                        {"id_new": id_keep, "id_old": id_del})
@@ -67,16 +73,17 @@ def render_herramienta_fusion():
                                                        {"id_new": id_keep, "id_old": id_del})
                                         except: pass
 
-                                        # 4. Rescatar ID Interno (Si el destino no tiene y el origen sí)
-                                        current_wid = tx.execute(text("SELECT whatsapp_internal_id FROM Clientes WHERE id_cliente=:id"), {"id": id_keep}).scalar()
-                                        if not current_wid and wid_del:
+                                        # 4. GESTIÓN INTELIGENTE DE ID INTERNO
+                                        # Regla: Si el ELIMINADO tiene ID, ese ID prevalece (sobreescribe al destino)
+                                        # Si el ELIMINADO no tiene, se queda el del DESTINO.
+                                        if wid_del:
                                             tx.execute(text("UPDATE Clientes SET whatsapp_internal_id=:wid WHERE id_cliente=:id"),
                                                        {"wid": wid_del, "id": id_keep})
 
                                         # 5. ELIMINAR cliente antiguo
                                         tx.execute(text("DELETE FROM Clientes WHERE id_cliente = :id"), {"id": id_del})
                                     
-                                    st.success("¡Fusión completada con éxito!")
+                                    st.success(f"¡Fusión completada! ID Final: {wid_del if wid_del else wid_keep}")
                                     time.sleep(1.5)
                                     st.rerun()
                                     
@@ -92,7 +99,7 @@ def render_herramienta_fusion():
 def render_clientes():
     st.title("👤 Gestión de Clientes")
 
-    # Insertar la herramienta de fusión arriba
+    # Insertar la herramienta de fusión
     render_herramienta_fusion()
     st.divider()
 
@@ -149,7 +156,7 @@ def render_clientes():
                 with st.form("form_cliente"):
                     c1, c2 = st.columns(2)
                     new_nombre = c1.text_input("Nombre Corto", value=cliente.nombre_corto or "")
-                    new_telefono = c2.text_input("Teléfono", value=cliente.telefono or "", disabled=True) # ID es clave, mejor no editar manual
+                    new_telefono = c2.text_input("Teléfono", value=cliente.telefono or "", disabled=True) 
                     
                     c3, c4 = st.columns(2)
                     new_nombre_real = c3.text_input("Nombre Real", value=cliente.nombre or "")
@@ -209,7 +216,6 @@ def render_clientes():
                     if st.session_state['crear_google_mode']:
                          if st.button("➕ Crear en Google Ahora"):
                             if cliente.nombre_corto:
-                                # Lógica simple de nombre/apellido
                                 partes = cliente.nombre_corto.split(" ", 1)
                                 nom = partes[0]
                                 ape = partes[1] if len(partes) > 1 else ""
