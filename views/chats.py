@@ -90,26 +90,28 @@ def generar_html_media(archivo_bytes):
 
 
 # ==========================================
-# 🕵️ LÓGICA 1/0 (DIRTY FLAG) ULTRA LIGERA
+# 🕵️ LÓGICA 1/0 (DIRTY FLAG) CORREGIDA
 # ==========================================
 try:
-    run_poller = st.fragment(run_every=3) # Como es ligero, podemos volver a 3s
+    run_poller = st.fragment(run_every=3) 
 except AttributeError:
     run_poller = lambda f: f
 
 @run_poller
 def poller_cambios_db():
     try:
-        with engine.begin() as conn: # Usamos begin() para modificar la tabla directamente
-            # 2. Revisa el estado (True = 1, False = 0)
+        with engine.connect() as conn: # 🚀 Usamos connect() en lugar de begin() para evitar Auto-Rollbacks
             hay_cambios = conn.execute(text("SELECT hay_cambios FROM sync_estado WHERE id = 1")).scalar()
             
-            # 2.1 Si está en 1 (Hubo cambios)
             if hay_cambios:
-                # Lo pone en 0 y recarga la pantalla
+                # 1. Apagamos la alarma
                 conn.execute(text("UPDATE sync_estado SET hay_cambios = FALSE WHERE id = 1"))
+                
+                # 2. GUARDAMOS expresamente el cambio ANTES de interrumpir
+                conn.commit() 
+                
+                # 3. Ahora sí, recargamos la página con seguridad
                 st.rerun()
-            # 2.2 Si está en 0, no hace nada y termina silenciosamente.
     except Exception:
         pass
 
@@ -311,7 +313,6 @@ def render_chat():
                 if txt:
                     ok, res = mandar_mensaje_api(telefono_actual, txt, sesion_elegida)
                     if ok:
-                        # Cuando nosotros enviamos el mensaje, forzamos recarga sin esperar al webhook
                         st.rerun()
                     else:
                         st.error(f"Error al enviar: {res}")
