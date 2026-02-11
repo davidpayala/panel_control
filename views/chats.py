@@ -89,22 +89,30 @@ def generar_html_media(archivo_bytes):
     except Exception: return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
 # ==========================================
-# 🕵️ VIGÍA INVISIBLE (Lógica 1/0)
+# 🕵️ VIGÍA INVISIBLE (ACTUALIZADO)
 # ==========================================
 try:
+    # Usamos fragmentos para que el chequeo sea independiente
     run_poller = st.fragment(run_every=3) 
 except AttributeError:
     run_poller = lambda f: f
 
 @run_poller
 def poller_cambios_db():
+    # Elemento invisible para mantener vivo el temporizador del navegador
+    st.markdown("<div style='display:none;'>vigia_activo</div>", unsafe_allow_html=True)
     try:
         with engine.connect() as conn: 
-            version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar()
+            # 🚀 TRUCO VITAL: commit() obliga a refrescar la sesión de DB y ver datos nuevos
+            conn.commit()
+            
+            # Leemos la versión actual (controlada por webhook.py)
+            version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar() or 0
             
             if 'db_version' not in st.session_state:
                 st.session_state['db_version'] = version_actual
             elif st.session_state['db_version'] != version_actual:
+                # Si la versión cambió, actualizamos el estado local y recargamos
                 st.session_state['db_version'] = version_actual
                 st.rerun()
     except Exception:
@@ -116,6 +124,7 @@ def poller_cambios_db():
 def render_chat():
     st.title("💬 Chat Center")
 
+    # Activamos el vigía
     poller_cambios_db()
 
     def cambiar_chat(telefono):
@@ -130,6 +139,10 @@ def render_chat():
     # --- BANDEJA AGRUPADA ---
     with col_lista:
         st.subheader("Bandeja")
+        
+        if st.button("🔄 Forzar Recarga", use_container_width=True):
+            st.rerun()
+            
         st.divider()
 
         try:
@@ -137,7 +150,7 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # Modificado: Se incluye 'estado' en la consulta SQL
+                # Seleccionamos también el ESTADO
                 query = f"""
                     SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id, c.estado,
                            (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos,
@@ -160,9 +173,9 @@ def render_chat():
                 if df_clientes.empty:
                     st.info("No se encontraron chats.")
                 else:
-                    # LÓGICA DE AGRUPACIÓN
+                    # --- CONFIGURACIÓN DE GRUPOS ---
                     cat_map = {
-                        "🆕 Sin empezar": ["Sin empezar"],
+                        "🆕 Sin empezar": ["Sin empezar", "sin empezar"], 
                         "💬 Cotizando": ["Responder duda", "Interesado en venta"],
                         "🏍️ Venta Motorizado": ["Venta motorizado", "Venta express moto"],
                         "🏢 Venta Agencia": ["Venta agencia"],
@@ -171,32 +184,47 @@ def render_chat():
                     }
                     
                     def asignar_categoria(estado):
-                        if not estado: return "📁 Otros"
+                        # 🚀 CORRECCIÓN: Si es nulo o vacío -> Sin empezar
+                        if not estado or str(estado).strip() == "":
+                            return "🆕 Sin empezar"
+                            
+                        # Buscamos en el mapa
                         for cat, estados in cat_map.items():
                             if estado in estados: return cat
+                        
                         return "📁 Otros"
                         
                     df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
+                    # El orden define cómo aparecen en la barra lateral
                     orden_categorias = ["🆕 Sin empezar", "💬 Cotizando", "🏍️ Venta Motorizado", "🏢 Venta Agencia", "🚚 En Ruta", "✨ Post Venta", "📁 Otros"]
 
                     for cat in orden_categorias:
                         df_cat = df_clientes[df_clientes['categoria'] == cat]
                         if not df_cat.empty:
                             no_leidos_cat = int(df_cat['no_leidos'].sum())
-                            badge = f" 🔴 {no_leidos_cat}" if no_leidos_cat > 0 else ""
+                            # Badge rojo si hay mensajes sin leer
+                            badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
                             
-                            chat_activo_en_cat = telefono_actual in df_cat['telefono'].values
+                            # Auto-expandir si hay mensajes nuevos O si el chat actual está aquí
+                            chat_activo_aqui = telefono_actual in df_cat['telefono'].values
+                            expandido = (no_leidos_cat > 0) or chat_activo_aqui
                             
-                            with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=(no_leidos_cat > 0 or chat_activo_en_cat)):
+                            with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
                                 for _, row in df_cat.iterrows():
                                     t_row = row['telefono']
                                     c_leidos = row['no_leidos']
+                                    
                                     icono = "🔴" if c_leidos > 0 else "👤"
-                                    label = f"{icono} {row['nombre']}" + (f" ({c_leidos})" if c_leidos > 0 else "")
+                                    texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
+                                    label = f"{icono} {row['nombre']}{texto_leidos}"
+                                    
                                     tipo = "primary" if telefono_actual == t_row else "secondary"
-                                    st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,))
+                                    
+                                    if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,)):
+                                        pass 
+
         except Exception as e:
-            st.error("Reconectando...")
+            st.error("Reconectando lista...")
 
     # --- CHAT ---
     with col_chat:
@@ -204,6 +232,7 @@ def render_chat():
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
+                # Marcar como leído al entrar
                 with engine.connect() as conn:
                     unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
                     if unreads_query and unreads_query[0] > 0:
@@ -213,6 +242,7 @@ def render_chat():
                         try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
                         except: pass
 
+                # Cargar info del chat
                 with engine.connect() as conn:
                     tabla = get_table_name(conn)
                     info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
