@@ -15,25 +15,27 @@ from database import engine
 WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
 
-try:
-    from utils import marcar_chat_como_leido_waha as marcar_leido_waha 
-except ImportError:
-    def marcar_leido_waha(*args): pass
-
-# 🚀 SOLUCIÓN ERROR 404: Endpoint corregido y sesión movida al JSON
-def mandar_mensaje_api(telefono, texto, sesion):
-    if not WAHA_URL: return False, "Falta WAHA_URL"
-    
-    url = f"{WAHA_URL.rstrip('/')}/api/sendText" # <-- Ruta corregida
+# 🚀 NUEVA FUNCIÓN PARA ENVIAR NOTIFICACIÓN DE LECTURA (DOBLE CHECK AZUL)
+def marcar_leido_api(telefono, sesion):
+    if not WAHA_URL: return
+    url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
     
-    payload = {
-        "session": sesion, # <-- Sesión enviada por dentro
-        "chatId": f"{telefono}@c.us", 
-        "text": texto
-    }
+    payload = {"session": sesion, "chatId": f"{telefono}@c.us"}
+    try:
+        requests.post(url, json=payload, headers=headers, timeout=5)
+    except:
+        pass
+
+# --- FUNCIÓN DE ENVÍO DE MENSAJE ---
+def mandar_mensaje_api(telefono, texto, sesion):
+    if not WAHA_URL: return False, "Falta WAHA_URL"
+    url = f"{WAHA_URL.rstrip('/')}/api/sendText"
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
     
+    payload = {"session": sesion, "chatId": f"{telefono}@c.us", "text": texto}
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         if r.status_code in [200, 201]: return True, ""
@@ -188,12 +190,16 @@ def render_chat():
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
+                # 🚀 LÓGICA DE DOBLE CHECK AZUL INTEGRADA AL ABRIR EL CHAT
                 with engine.connect() as conn:
-                    unreads = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).scalar()
-                    if unreads and unreads > 0:
+                    unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
+                    
+                    if unreads_query and unreads_query[0] > 0:
+                        sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
+                        
                         conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
                         conn.commit()
-                        try: threading.Thread(target=marcar_leido_waha, args=(f"{telefono_actual}@c.us",)).start()
+                        try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
                         except: pass
 
                 with engine.connect() as conn:
@@ -314,14 +320,13 @@ def render_chat():
                         nombre_ult = "KM" if ultima_sesion == 'principal' else "LENTES"
                         st.markdown(f"<div style='color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; padding: 6px 10px; border-radius: 5px; font-size: 13px; font-weight: bold;'>⚠️ OJO: El último mensaje fue en {nombre_ult}.</div>", unsafe_allow_html=True)
 
-                # 🚀 SOLUCIÓN AUTO-EXPANDIBLE: Usamos st.chat_input
                 txt = st.chat_input("Escribe un mensaje...")
                 
                 if txt:
                     ok, res = mandar_mensaje_api(telefono_actual, txt, sesion_elegida)
                     if ok:
                         with st.spinner("Enviando..."): 
-                            time.sleep(1.5) # Espera para que el Webhook lo registre en BD
+                            time.sleep(1.5) 
                         st.rerun()
                     else:
                         st.error(f"Error al enviar: {res}")
