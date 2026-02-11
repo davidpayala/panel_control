@@ -11,7 +11,6 @@ from database import engine
 WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
 
-# --- GESTIÓN DE IMPORTACIONES ROBUSTA ---
 try:
     from utils import (
         enviar_mensaje_whatsapp, 
@@ -28,13 +27,9 @@ def get_table_name(conn):
     except:
         return "\"Clientes\""
 
-# ==============================================================================
-# RENDERIZADO DE LA VISTA
-# ==============================================================================
 def render_chat():
     st.title("💬 Chat Center")
 
-    # 🚀 SOLUCIÓN DOBLE CARGA: Usamos un Callback para cambiar el estado ANTES de recargar
     def cambiar_chat(telefono):
         st.session_state['chat_actual_telefono'] = telefono
 
@@ -44,9 +39,7 @@ def render_chat():
     telefono_actual = st.session_state['chat_actual_telefono']
     col_lista, col_chat = st.columns([35, 65])
 
-    # ==========================================
-    # COLUMNA IZQUIERDA: LISTA DE CHATS
-    # ==========================================
+    # --- BANDEJA ---
     with col_lista:
         st.subheader("Bandeja")
         st.divider()
@@ -84,23 +77,18 @@ def render_chat():
                         icono = "🔴" if c_leidos > 0 else "👤"
                         label = f"{icono} {row['nombre']}" + (f" ({c_leidos})" if c_leidos > 0 else "")
                         tipo = "primary" if telefono_actual == t_row else "secondary"
-                        
-                        # Al usar on_click, eliminamos el st.rerun() y el parpadeo doble
                         st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,))
         except Exception as e:
             st.error("Error cargando lista")
             st.code(e)
 
-    # ==========================================
-    # COLUMNA DERECHA: CONVERSACIÓN
-    # ==========================================
+    # --- CHAT ---
     with col_chat:
         if not telefono_actual:
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
-                try: 
-                    threading.Thread(target=marcar_leido_waha, args=(f"{telefono_actual}@c.us",)).start()
+                try: threading.Thread(target=marcar_leido_waha, args=(f"{telefono_actual}@c.us",)).start()
                 except: pass
 
                 with engine.connect() as conn:
@@ -138,7 +126,6 @@ def render_chat():
                             elif fecha_msg == ayer: texto_fecha = "Ayer"
                             else: texto_fecha = fecha_msg.strftime("%d/%m/%Y")
                             
-                            # 🚀 SOLUCIÓN BUGS VISUALES: HTML 100% aplanado sin indentaciones
                             html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
                             ultima_fecha = fecha_msg
 
@@ -155,14 +142,20 @@ def render_chat():
                             elif estado == 'enviado': icono_estado = "<span class='check-sent'>✓</span>"
                             else: icono_estado = "🕒"
 
+                        # LOGICA DE ETIQUETA (SESIÓN)
+                        etiqueta_sess = ""
+                        if 'session_name' in m and pd.notna(m['session_name']):
+                            s_name = str(m['session_name']).strip().lower()
+                            if s_name == 'principal': etiqueta_sess = "<span class='session-tag'>KM</span>"
+                            elif s_name == 'default': etiqueta_sess = "<span class='session-tag'>LENTES</span>"
+
                         reply_html = ""
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
                         contenido_texto = str(m['contenido']) if pd.notna(m['contenido']) else "📷 Archivo"
 
-                        # HTML aplanado en una sola línea para evitar código de bloque Markdown
-                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}<div style='white-space: pre-wrap;'>{contenido_texto}</div><div class='meta'>{hora} {icono_estado}</div></div></div>"
+                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}<div style='white-space: pre-wrap;'>{contenido_texto}</div><div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
                         html_blocks.append(html_msg)
 
                     html_blocks.reverse()
@@ -182,11 +175,13 @@ def render_chat():
 .b-mio .reply-box {{ border-left-color: #075E54; background-color: rgba(0, 0, 0, 0.08); }}
 .date-separator {{ display: flex; justify-content: center; margin: 15px 0; }}
 .date-separator span {{ background-color: #e1f3fb; color: #555; padding: 4px 12px; border-radius: 10px; font-size: 12px; font-weight: bold; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
+/* CSS ETIQUETA SESIÓN */
+.session-tag {{ margin-left: 6px; padding: 1px 4px; border-radius: 4px; font-size: 9px; font-weight: 800; color: #666; background-color: rgba(0,0,0,0.06); }}
+.b-mio .session-tag {{ background-color: rgba(0,0,0,0.08); color: #444; }}
 </style><div class='chat-container'>{''.join(html_blocks)}</div>"""
                     
                     st.markdown(css_y_html, unsafe_allow_html=True)
 
-                # --- INPUT ---
                 with st.form("chat_form", clear_on_submit=True):
                     c_in, c_btn = st.columns([85, 15])
                     txt = c_in.text_input("Mensaje", label_visibility="collapsed", placeholder="Escribe un mensaje...")
@@ -195,11 +190,9 @@ def render_chat():
                     if btn and txt:
                         ok, res = enviar_mensaje_whatsapp(telefono_actual, txt)
                         if ok:
-                            with st.spinner("Enviando..."):
-                                time.sleep(1.5) 
+                            with st.spinner("Enviando..."): time.sleep(1.5) 
                             st.rerun()
-                        else:
-                            st.error(f"Error: {res}")
+                        else: st.error(f"Error: {res}")
 
             except Exception as e:
                 st.error("Error cargando chat")
