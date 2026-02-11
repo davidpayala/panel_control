@@ -29,7 +29,7 @@ def get_table_name(conn):
         return "\"Clientes\""
 
 # ==========================================
-# 🌟 MAGIA MULTIMEDIA REFORZADA
+# 🌟 MAGIA MULTIMEDIA V3 (Extensiones y Lottie)
 # ==========================================
 def generar_html_media(archivo_bytes):
     if not archivo_bytes:
@@ -38,18 +38,29 @@ def generar_html_media(archivo_bytes):
         b = bytes(archivo_bytes)
         b64 = base64.b64encode(b).decode('utf-8')
         
-        # Detector automático MÁS PERMISIVO
+        # Valores por defecto
         mime = 'application/octet-stream'
-        
-        if b.startswith(b'\xff\xd8'): mime = 'image/jpeg'
-        elif b.startswith(b'\x89PNG'): mime = 'image/png'
-        elif b'WEBP' in b[:20]: mime = 'image/webp' # <-- MAGIA PARA STICKERS
-        elif b.startswith(b'OggS'): mime = 'audio/ogg' # Notas de voz
-        elif b'ftyp' in b[:16]: mime = 'video/mp4' # Videos
-        elif b.startswith(b'%PDF'): mime = 'application/pdf'
-        elif b.startswith(b'GIF8'): mime = 'image/gif'
-        elif b.startswith(b'ID3') or b.startswith(b'\xff\xfb'): mime = 'audio/mpeg' # MP3
+        ext = 'bin'
+        nombre_archivo = "Documento"
+        es_lottie = False
 
+        # Detector de firmas
+        if b.startswith(b'\xff\xd8'): mime, ext = 'image/jpeg', 'jpg'
+        elif b.startswith(b'\x89PNG'): mime, ext = 'image/png', 'png'
+        elif b'WEBP' in b[:50]: mime, ext = 'image/webp', 'webp'
+        elif b.startswith(b'OggS'): mime, ext = 'audio/ogg', 'ogg'
+        elif b'ftyp' in b[:20]: mime, ext = 'video/mp4', 'mp4'
+        elif b.startswith(b'%PDF'): mime, ext = 'application/pdf', 'pdf'
+        elif b.startswith(b'GIF8'): mime, ext = 'image/gif', 'gif'
+        elif b.startswith(b'ID3') or b.startswith(b'\xff\xfb'): mime, ext = 'audio/mpeg', 'mp3'
+        elif b.startswith(b'PK\x03\x04'): 
+            mime, ext = 'application/zip', 'zip'
+            # Detectar si es un Sticker Animado Lottie (ZIP)
+            if b'animation.json' in b[:100] or b'animation/animation.json' in b[:100]:
+                es_lottie = True
+                nombre_archivo = "Sticker_Animado"
+
+        # Renderizado según el tipo
         if mime.startswith('image/'):
             return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent;' />"
         elif mime.startswith('audio/'):
@@ -57,7 +68,8 @@ def generar_html_media(archivo_bytes):
         elif mime.startswith('video/'):
             return f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
         else:
-            return f"<a href='data:{mime};base64,{b64}' download='Archivo_Adjunto' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>📄 Descargar Archivo</a>"
+            icono_texto = "🎞️ Sticker Animado (Descargar ZIP)" if es_lottie else "📄 Descargar Archivo"
+            return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>{icono_texto}</a>"
     except Exception as e:
         return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
