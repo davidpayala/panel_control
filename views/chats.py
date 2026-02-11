@@ -15,20 +15,11 @@ from database import engine
 WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
 
-# 🚀 NUEVA FUNCIÓN PARA ENVIAR NOTIFICACIÓN DE LECTURA (DOBLE CHECK AZUL)
-def marcar_leido_api(telefono, sesion):
-    if not WAHA_URL: return
-    url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
-    headers = {"Content-Type": "application/json"}
-    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-    
-    payload = {"session": sesion, "chatId": f"{telefono}@c.us"}
-    try:
-        requests.post(url, json=payload, headers=headers, timeout=5)
-    except:
-        pass
+try:
+    from utils import marcar_chat_como_leido_waha as marcar_leido_waha 
+except ImportError:
+    def marcar_leido_waha(*args): pass
 
-# --- FUNCIÓN DE ENVÍO DE MENSAJE ---
 def mandar_mensaje_api(telefono, texto, sesion):
     if not WAHA_URL: return False, "Falta WAHA_URL"
     url = f"{WAHA_URL.rstrip('/')}/api/sendText"
@@ -95,7 +86,7 @@ def generar_html_media(archivo_bytes):
 # 🕵️ VIGÍA INVISIBLE DE BASE DE DATOS
 # ==========================================
 try:
-    run_poller = st.fragment(run_every=3)
+    run_poller = st.fragment(run_every=10) # Frecuencia ampliada a 10s para proteger la DB
 except AttributeError:
     run_poller = lambda f: f
 
@@ -120,8 +111,8 @@ def poller_cambios_db():
             elif st.session_state['db_hash'] != estado_actual:
                 st.session_state['db_hash'] = estado_actual
                 st.rerun()
-    except:
-        pass
+    except Exception:
+        pass # Ignora fallos silenciosamente si la BD se reinicia
 
 
 # ==========================================
@@ -181,8 +172,7 @@ def render_chat():
                         tipo = "primary" if telefono_actual == t_row else "secondary"
                         st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,))
         except Exception as e:
-            st.error("Error cargando lista")
-            st.code(e)
+            st.error("Reconectando con la base de datos...")
 
     # --- CHAT ---
     with col_chat:
@@ -190,16 +180,12 @@ def render_chat():
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
-                # 🚀 LÓGICA DE DOBLE CHECK AZUL INTEGRADA AL ABRIR EL CHAT
                 with engine.connect() as conn:
-                    unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
-                    
-                    if unreads_query and unreads_query[0] > 0:
-                        sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
-                        
+                    unreads = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).scalar()
+                    if unreads and unreads > 0:
                         conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
                         conn.commit()
-                        try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
+                        try: threading.Thread(target=marcar_leido_waha, args=(f"{telefono_actual}@c.us",)).start()
                         except: pass
 
                 with engine.connect() as conn:
@@ -332,5 +318,4 @@ def render_chat():
                         st.error(f"Error al enviar: {res}")
 
             except Exception as e:
-                st.error("Error cargando chat")
-                st.caption(str(e))
+                st.error("Reconectando historial...")
