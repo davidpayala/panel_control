@@ -3,6 +3,7 @@ import pandas as pd
 from sqlalchemy import text
 import time
 import os
+import threading
 from datetime import datetime, timedelta, date
 from database import engine 
 
@@ -39,7 +40,9 @@ def render_chat():
     telefono_actual = st.session_state['chat_actual_telefono']
     col_lista, col_chat = st.columns([35, 65])
 
-    # --- LISTA DE CHATS ---
+    # ==========================================
+    # COLUMNA IZQUIERDA: LISTA DE CHATS
+    # ==========================================
     with col_lista:
         st.subheader("Bandeja")
         st.divider()
@@ -49,7 +52,6 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # Consulta actualizada para obtener la fecha de la última interacción
                 query = f"""
                     SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id,
                            (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos,
@@ -65,7 +67,6 @@ def render_chat():
                     else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
                     query += filtro
                 
-                # Orden: 1. No leídos primero | 2. Última interacción más reciente | 3. Fecha de registro
                 query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 50"
                 df_clientes = pd.read_sql(text(query), conn)
 
@@ -87,13 +88,18 @@ def render_chat():
             st.error("Error cargando lista")
             st.code(e)
 
-    # --- ZONA DE CONVERSACIÓN ---
+    # ==========================================
+    # COLUMNA DERECHA: CONVERSACIÓN
+    # ==========================================
     with col_chat:
         if not telefono_actual:
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
-                try: marcar_leido_waha(f"{telefono_actual}@c.us")
+                # 🚀 SOLUCIÓN LENTITUD: Hilo en segundo plano (Dispara y olvida)
+                # Esto evita que Streamlit se congele esperando a WAHA
+                try: 
+                    threading.Thread(target=marcar_leido_waha, args=(f"{telefono_actual}@c.us",)).start()
                 except: pass
 
                 with engine.connect() as conn:
@@ -108,65 +114,28 @@ def render_chat():
                 st.subheader(f"👤 {nombre}")
                 st.caption(f"📱 {telefono_actual} | 🆔 {wsp_id}")
                 
-                with st.container(height=550):
-                    if msgs.empty: st.caption("Inicio de la conversación.")
-                    
-                    st.markdown("""
-                    <style>
-                        .msg-row { display: flex; margin-bottom: 5px; }
-                        .msg-mio { justify-content: flex-end; }
-                        .msg-otro { justify-content: flex-start; }
-                        .bubble { padding: 10px 14px; border-radius: 15px; font-size: 15px; max-width: 80%; display: flex; flex-direction: column;}
-                        .b-mio { background-color: #dcf8c6; color: black; border-top-right-radius: 0; }
-                        .b-otro { background-color: #f2f2f2; color: black; border-top-left-radius: 0; border: 1px solid #ddd; }
-                        .meta { font-size: 10px; color: #666; text-align: right; margin-top: 3px; }
-                        .check-read { color: #34B7F1; font-weight: bold; }
-                        .check-sent { color: #999; }
-                        .reply-box { 
-                            background-color: rgba(0, 0, 0, 0.06); 
-                            border-left: 4px solid #34B7F1; 
-                            padding: 6px 8px; 
-                            border-radius: 4px; 
-                            font-size: 13px; 
-                            margin-bottom: 6px; 
-                            color: #555;
-                            display: -webkit-box;
-                            -webkit-line-clamp: 3;
-                            -webkit-box-orient: vertical;
-                            overflow: hidden;
-                            text-overflow: ellipsis;
-                        }
-                        .b-mio .reply-box { border-left-color: #075E54; background-color: rgba(0, 0, 0, 0.08); }
-                        .date-separator {
-                            display: flex; justify-content: center; margin: 15px 0;
-                        }
-                        .date-separator span {
-                            background-color: #e1f3fb; color: #555; padding: 4px 12px; 
-                            border-radius: 10px; font-size: 12px; font-weight: bold;
-                        }
-                    </style>
-                    """, unsafe_allow_html=True)
-
+                # 🚀 SOLUCIÓN AUTO-SCROLL Y RENDIMIENTO VISUAL
+                if msgs.empty: 
+                    st.caption("Inicio de la conversación.")
+                else:
+                    html_blocks = []
                     ultima_fecha = None
                     hoy = datetime.now().date()
                     ayer = hoy - timedelta(days=1)
 
+                    # 1. Construimos los mensajes cronológicamente
                     for _, m in msgs.iterrows():
-                        # --- SEPARADOR DE FECHA ---
-                        try:
-                            fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
-                        except:
-                            fecha_msg = None
+                        try: fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
+                        except: fecha_msg = None
 
                         if fecha_msg and fecha_msg != ultima_fecha:
                             if fecha_msg == hoy: texto_fecha = "Hoy"
                             elif fecha_msg == ayer: texto_fecha = "Ayer"
                             else: texto_fecha = fecha_msg.strftime("%d/%m/%Y")
                             
-                            st.markdown(f"<div class='date-separator'><span>{texto_fecha}</span></div>", unsafe_allow_html=True)
+                            html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
                             ultima_fecha = fecha_msg
 
-                        # --- VARIABLES DEL MENSAJE ---
                         es_mio = (m['tipo'] == 'SALIENTE')
                         clase_row = "msg-mio" if es_mio else "msg-otro"
                         clase_bub = "b-mio" if es_mio else "b-otro"
@@ -182,17 +151,53 @@ def render_chat():
 
                         reply_html = ""
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
-                            texto_citado = str(m['reply_content'])
-                            reply_html = f"<div class='reply-box'>↪️ {texto_citado}</div>"
+                            reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        html_msg = f"""<div class='msg-row {clase_row}'>
-<div class='bubble {clase_bub}'>
-{reply_html}
-<div style='white-space: pre-wrap;'>{m['contenido']}</div>
-<div class='meta'>{hora} {icono_estado}</div>
-</div>
-</div>"""
-                        st.markdown(html_msg, unsafe_allow_html=True)
+                        html_blocks.append(f"""
+                        <div class='msg-row {clase_row}'>
+                            <div class='bubble {clase_bub}'>
+                                {reply_html}
+                                <div style='white-space: pre-wrap;'>{m['contenido']}</div>
+                                <div class='meta'>{hora} {icono_estado}</div>
+                            </div>
+                        </div>
+                        """)
+
+                    # 2. Invertimos la lista para usar el truco de gravedad de CSS
+                    html_blocks.reverse()
+
+                    # 3. Renderizamos TODO de un solo golpe (Extremadamente rápido)
+                    st.markdown(f"""
+                    <style>
+                        .chat-container {{
+                            display: flex;
+                            flex-direction: column-reverse; /* ¡Aquí ocurre la magia del Scroll! */
+                            height: 550px;
+                            overflow-y: auto;
+                            padding: 10px;
+                            border: 1px solid rgba(128, 128, 128, 0.2);
+                            border-radius: 10px;
+                            background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); /* Fondo WhatsApp */
+                            background-color: transparent;
+                        }}
+                        .msg-row {{ display: flex; margin-bottom: 5px; }}
+                        .msg-mio {{ justify-content: flex-end; }}
+                        .msg-otro {{ justify-content: flex-start; }}
+                        .bubble {{ padding: 8px 12px; border-radius: 10px; font-size: 15px; max-width: 80%; display: flex; flex-direction: column; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
+                        .b-mio {{ background-color: #dcf8c6; color: black; border-top-right-radius: 0; }}
+                        .b-otro {{ background-color: #ffffff; color: black; border-top-left-radius: 0; }}
+                        .meta {{ font-size: 10px; color: #777; text-align: right; margin-top: 3px; display: inline-block; }}
+                        .check-read {{ color: #34B7F1; font-weight: bold; font-size: 12px; }}
+                        .check-sent {{ color: #999; font-size: 12px; }}
+                        .reply-box {{ background-color: rgba(0, 0, 0, 0.05); border-left: 4px solid #34B7F1; padding: 6px 8px; border-radius: 4px; font-size: 13px; margin-bottom: 6px; color: #555; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; }}
+                        .b-mio .reply-box {{ border-left-color: #075E54; background-color: rgba(0, 0, 0, 0.08); }}
+                        .date-separator {{ display: flex; justify-content: center; margin: 15px 0; }}
+                        .date-separator span {{ background-color: #e1f3fb; color: #555; padding: 4px 12px; border-radius: 10px; font-size: 12px; font-weight: bold; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
+                    </style>
+                    <div class='chat-container'>
+                        {''.join(html_blocks)}
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 # --- INPUT ---
                 with st.form("chat_form", clear_on_submit=True):
