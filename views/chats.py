@@ -20,13 +20,20 @@ try:
 except ImportError:
     def marcar_leido_waha(*args): pass
 
+# 🚀 SOLUCIÓN ERROR 404: Endpoint corregido y sesión movida al JSON
 def mandar_mensaje_api(telefono, texto, sesion):
     if not WAHA_URL: return False, "Falta WAHA_URL"
-    url = f"{WAHA_URL.rstrip('/')}/api/{sesion}/sendText"
+    
+    url = f"{WAHA_URL.rstrip('/')}/api/sendText" # <-- Ruta corregida
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
     
-    payload = {"chatId": f"{telefono}@c.us", "text": texto}
+    payload = {
+        "session": sesion, # <-- Sesión enviada por dentro
+        "chatId": f"{telefono}@c.us", 
+        "text": texto
+    }
+    
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         if r.status_code in [200, 201]: return True, ""
@@ -92,7 +99,6 @@ except AttributeError:
 
 @run_poller
 def poller_cambios_db():
-    """Consulta ultra rápida cada 3 seg. Solo recarga si hay cambios reales."""
     try:
         with engine.connect() as conn:
             res = conn.execute(text("""
@@ -105,14 +111,13 @@ def poller_cambios_db():
                 FROM mensajes
             """)).fetchone()
             
-            # Creamos un "Hash" o huella dactilar del estado actual
             estado_actual = f"{res[0]}_{res[1]}_{res[2]}_{res[3]}_{res[4]}"
             
             if 'db_hash' not in st.session_state:
                 st.session_state['db_hash'] = estado_actual
             elif st.session_state['db_hash'] != estado_actual:
                 st.session_state['db_hash'] = estado_actual
-                st.rerun() # ¡BINGO! Hay un cambio. Recargamos la interfaz.
+                st.rerun()
     except:
         pass
 
@@ -123,7 +128,6 @@ def poller_cambios_db():
 def render_chat():
     st.title("💬 Chat Center")
 
-    # Activamos el vigía invisible en segundo plano
     poller_cambios_db()
 
     def cambiar_chat(telefono):
@@ -184,7 +188,6 @@ def render_chat():
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
-                # Marcar como leído
                 with engine.connect() as conn:
                     unreads = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).scalar()
                     if unreads and unreads > 0:
@@ -284,7 +287,7 @@ def render_chat():
 </style><div class='chat-container'>{''.join(html_blocks)}</div>"""
                     st.markdown(css_y_html, unsafe_allow_html=True)
 
-                # --- LÓGICA DE SELECCIÓN ---
+                # --- LÓGICA DE SELECCIÓN DE SESIÓN ---
                 ultima_sesion = None
                 if not msgs.empty and 'session_name' in msgs.columns:
                     sesiones_validas = msgs['session_name'].dropna().astype(str).str.strip().str.lower()
@@ -311,18 +314,17 @@ def render_chat():
                         nombre_ult = "KM" if ultima_sesion == 'principal' else "LENTES"
                         st.markdown(f"<div style='color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; padding: 6px 10px; border-radius: 5px; font-size: 13px; font-weight: bold;'>⚠️ OJO: El último mensaje fue en {nombre_ult}.</div>", unsafe_allow_html=True)
 
-                # --- INPUT DE TEXTO ---
-                with st.form("chat_form", clear_on_submit=True):
-                    c_in, c_btn = st.columns([85, 15])
-                    txt = c_in.text_input("Mensaje", label_visibility="collapsed", placeholder="Escribe un mensaje...")
-                    btn = c_btn.form_submit_button("➤")
-                    
-                    if btn and txt:
-                        ok, res = mandar_mensaje_api(telefono_actual, txt, sesion_elegida)
-                        if ok:
-                            with st.spinner("Enviando..."): time.sleep(1.5) 
-                            st.rerun()
-                        else: st.error(f"Error al enviar: {res}")
+                # 🚀 SOLUCIÓN AUTO-EXPANDIBLE: Usamos st.chat_input
+                txt = st.chat_input("Escribe un mensaje...")
+                
+                if txt:
+                    ok, res = mandar_mensaje_api(telefono_actual, txt, sesion_elegida)
+                    if ok:
+                        with st.spinner("Enviando..."): 
+                            time.sleep(1.5) # Espera para que el Webhook lo registre en BD
+                        st.rerun()
+                    else:
+                        st.error(f"Error al enviar: {res}")
 
             except Exception as e:
                 st.error("Error cargando chat")
