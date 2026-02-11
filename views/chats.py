@@ -5,6 +5,8 @@ import time
 import os
 import threading
 import base64
+import zipfile
+import io
 from datetime import datetime, timedelta
 from database import engine 
 
@@ -29,7 +31,7 @@ def get_table_name(conn):
         return "\"Clientes\""
 
 # ==========================================
-# 🌟 MAGIA MULTIMEDIA V3 (Extensiones y Lottie)
+# 🌟 MAGIA MULTIMEDIA V4 (Lottie Animado)
 # ==========================================
 def generar_html_media(archivo_bytes):
     if not archivo_bytes:
@@ -38,11 +40,9 @@ def generar_html_media(archivo_bytes):
         b = bytes(archivo_bytes)
         b64 = base64.b64encode(b).decode('utf-8')
         
-        # Valores por defecto
         mime = 'application/octet-stream'
         ext = 'bin'
         nombre_archivo = "Documento"
-        es_lottie = False
 
         # Detector de firmas
         if b.startswith(b'\xff\xd8'): mime, ext = 'image/jpeg', 'jpg'
@@ -53,14 +53,28 @@ def generar_html_media(archivo_bytes):
         elif b.startswith(b'%PDF'): mime, ext = 'application/pdf', 'pdf'
         elif b.startswith(b'GIF8'): mime, ext = 'image/gif', 'gif'
         elif b.startswith(b'ID3') or b.startswith(b'\xff\xfb'): mime, ext = 'audio/mpeg', 'mp3'
+        
+        # 🚀 DETECTOR LOTTIE (STICKERS ANIMADOS ZIP)
         elif b.startswith(b'PK\x03\x04'): 
+            try:
+                with zipfile.ZipFile(io.BytesIO(b)) as z:
+                    json_filename = next((name for name in z.namelist() if name.endswith('.json')), None)
+                    if json_filename:
+                        # Extraemos el código JSON animado
+                        json_data = z.read(json_filename).decode('utf-8')
+                        json_b64 = base64.b64encode(json_data.encode('utf-8')).decode('utf-8')
+                        
+                        # Creamos un minireproductor web independiente
+                        lottie_html = f"""<!DOCTYPE html><html><head><script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script></head><body style="margin:0;overflow:hidden;background:transparent;"><lottie-player src="data:application/json;base64,{json_b64}" background="transparent" speed="1" style="width:150px;height:150px;" loop autoplay></lottie-player></body></html>"""
+                        lottie_html_b64 = base64.b64encode(lottie_html.encode('utf-8')).decode('utf-8')
+                        
+                        # Lo incrustamos en la burbuja del chat
+                        return f"<iframe src='data:text/html;base64,{lottie_html_b64}' width='150' height='150' frameborder='0' scrolling='no' allowtransparency='true' style='margin-bottom: 5px; pointer-events: none;'></iframe>"
+            except Exception:
+                pass # Si no es Lottie, sigue como ZIP normal
             mime, ext = 'application/zip', 'zip'
-            # Detectar si es un Sticker Animado Lottie (ZIP)
-            if b'animation.json' in b[:100] or b'animation/animation.json' in b[:100]:
-                es_lottie = True
-                nombre_archivo = "Sticker_Animado"
 
-        # Renderizado según el tipo
+        # Renderizado estándar para el resto
         if mime.startswith('image/'):
             return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent;' />"
         elif mime.startswith('audio/'):
@@ -68,8 +82,7 @@ def generar_html_media(archivo_bytes):
         elif mime.startswith('video/'):
             return f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
         else:
-            icono_texto = "🎞️ Sticker Animado (Descargar ZIP)" if es_lottie else "📄 Descargar Archivo"
-            return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>{icono_texto}</a>"
+            return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>📄 Descargar Archivo</a>"
     except Exception as e:
         return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
