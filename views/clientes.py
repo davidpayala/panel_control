@@ -240,7 +240,11 @@ def render_clientes():
                                         nombre_receptor=:n, telefono_receptor=:t, distrito=:dis, direccion_texto=:dt,
                                         referencia=:r, gps_link=:g, observacion=:o
                                         WHERE id_direccion=:id
-                                    """), {"n":e_nom, "t":e_tel, "dis":e_dist, "dt":e_dir, "r":e_ref, "g":e_gps, "o":e_obs, "id":r_dir['id_direccion']})
+                                    """), {
+                                        "n":e_nom, "t":e_tel, "dis":e_dist, "dt":e_dir, 
+                                        "r":e_ref, "g":e_gps, "o":e_obs, 
+                                        "id": int(r_dir['id_direccion']) # <-- Cambio aplicado aquí
+                                    })
                                 st.success("Dirección actualizada.")
                                 time.sleep(1)
                                 st.rerun()
