@@ -24,7 +24,6 @@ def log_error(msg):
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
-            # Tablas existentes
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS whatsapp_internal_id VARCHAR(150)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wsp_id ON Clientes(whatsapp_internal_id)"))
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
@@ -32,7 +31,6 @@ def aplicar_parche_db():
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS apellido VARCHAR(100)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id VARCHAR(100)"))
             
-            # --- NUEVA TABLA PARA DIAGNÓSTICO ---
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS webhook_logs (
                     id SERIAL PRIMARY KEY,
@@ -76,24 +74,27 @@ def guardar_log_diagnostico(data):
             item = data
         
         event = item.get('event', 'unknown')
+        payload_data = item.get('payload', {})
         
-        # --- FILTRO DE DIAGNÓSTICO ---
-        # Si el evento es un ACK, status de sesión o presencia, no lo guardamos en la tabla de logs.
-        # (Esto no afecta al funcionamiento de los checks, solo limpia la pestaña de diagnóstico)
+        # --- 1er Filtro: Ignorar ACKs y estados de sistema
         if event in ['message.ack', 'presence.update', 'session.status']:
             return 
             
+        # --- 2do Filtro: Ignorar TODO lo que sea de Estados/Historias (status@broadcast)
+        origen = str(payload_data.get('from', ''))
+        destino = str(payload_data.get('to', ''))
+        if 'status@broadcast' in origen or 'status@broadcast' in destino:
+            return
+
         session = item.get('session', 'unknown')
         payload_str = json.dumps(item, ensure_ascii=False)
 
         with engine.begin() as conn:
-            # 1. Insertar el nuevo
             conn.execute(text("""
                 INSERT INTO webhook_logs (session_name, event_type, payload)
                 VALUES (:s, :e, :p)
             """), {"s": session, "e": event, "p": payload_str})
             
-            # 2. Mantener solo los últimos 20 (Limpieza)
             conn.execute(text("""
                 DELETE FROM webhook_logs 
                 WHERE id NOT IN (
@@ -104,7 +105,7 @@ def guardar_log_diagnostico(data):
         log_error(f"Error guardando log diagnóstico: {e}")
 
 # ==============================================================================
-# 🧠 CEREBRO V27: ROBUST ID EXTRACTION & FILTERED LOGS
+# 🧠 CEREBRO V28: ROBUST ID EXTRACTION & FILTERED LOGS
 # ==============================================================================
 def obtener_identidad(payload, session):
     try:
@@ -148,7 +149,7 @@ def obtener_identidad(payload, session):
 # ==============================================================================
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V27 (Filtered Logger Enabled)", 200
+    return "Webhook V28 (Status Filter Enabled)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():

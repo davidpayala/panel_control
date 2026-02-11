@@ -4,7 +4,7 @@ from sqlalchemy import text
 import time
 import os
 import threading
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from database import engine 
 
 # --- CONFIGURACIÓN ---
@@ -96,25 +96,31 @@ def render_chat():
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
-                # 🚀 SOLUCIÓN LENTITUD: Hilo en segundo plano (Dispara y olvida)
-                # Esto evita que Streamlit se congele esperando a WAHA
+                # Marcar leído en WAHA en segundo plano
                 try: 
                     threading.Thread(target=marcar_leido_waha, args=(f"{telefono_actual}@c.us",)).start()
                 except: pass
 
                 with engine.connect() as conn:
                     tabla = get_table_name(conn)
+                    # Marcar leído en BD
                     conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
                     conn.commit()
+                    
                     info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
                     nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
                     wsp_id = info.whatsapp_internal_id if hasattr(info, 'whatsapp_internal_id') else "Desconocido"
-                    msgs = pd.read_sql(text("SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha ASC"), conn, params={"t": telefono_actual})
+                    
+                    # 🔥 OPTIMIZACIÓN DE RENDIMIENTO: Solo traemos los últimos 100 mensajes 
+                    msgs = pd.read_sql(text("""
+                        SELECT * FROM (
+                            SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha DESC LIMIT 100
+                        ) sub ORDER BY fecha ASC
+                    """), conn, params={"t": telefono_actual})
 
                 st.subheader(f"👤 {nombre}")
                 st.caption(f"📱 {telefono_actual} | 🆔 {wsp_id}")
                 
-                # 🚀 SOLUCIÓN AUTO-SCROLL Y RENDIMIENTO VISUAL
                 if msgs.empty: 
                     st.caption("Inicio de la conversación.")
                 else:
@@ -123,7 +129,7 @@ def render_chat():
                     hoy = datetime.now().date()
                     ayer = hoy - timedelta(days=1)
 
-                    # 1. Construimos los mensajes cronológicamente
+                    # 1. Construir bloques HTML sin indentación
                     for _, m in msgs.iterrows():
                         try: fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
                         except: fecha_msg = None
@@ -153,31 +159,34 @@ def render_chat():
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        html_blocks.append(f"""
-                        <div class='msg-row {clase_row}'>
-                            <div class='bubble {clase_bub}'>
-                                {reply_html}
-                                <div style='white-space: pre-wrap;'>{m['contenido']}</div>
-                                <div class='meta'>{hora} {icono_estado}</div>
-                            </div>
-                        </div>
-                        """)
+                        # CORRECCIÓN DE BUGS: Controlar "None" si el mensaje es multimedia
+                        contenido_texto = str(m['contenido']) if pd.notna(m['contenido']) else "📷 Archivo"
 
-                    # 2. Invertimos la lista para usar el truco de gravedad de CSS
+                        # CORRECCIÓN DE BUGS VISUAL: Totalmente pegado a la izquierda para evitar <code> de Streamlit
+                        html_msg = f"""<div class='msg-row {clase_row}'>
+<div class='bubble {clase_bub}'>
+{reply_html}
+<div style='white-space: pre-wrap;'>{contenido_texto}</div>
+<div class='meta'>{hora} {icono_estado}</div>
+</div>
+</div>"""
+                        html_blocks.append(html_msg)
+
+                    # 2. Invertir para el scroll automático
                     html_blocks.reverse()
 
-                    # 3. Renderizamos TODO de un solo golpe (Extremadamente rápido)
+                    # 3. Renderizado único de alto rendimiento
                     st.markdown(f"""
                     <style>
                         .chat-container {{
                             display: flex;
-                            flex-direction: column-reverse; /* ¡Aquí ocurre la magia del Scroll! */
+                            flex-direction: column-reverse;
                             height: 550px;
                             overflow-y: auto;
                             padding: 10px;
                             border: 1px solid rgba(128, 128, 128, 0.2);
                             border-radius: 10px;
-                            background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); /* Fondo WhatsApp */
+                            background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png');
                             background-color: transparent;
                         }}
                         .msg-row {{ display: flex; margin-bottom: 5px; }}
