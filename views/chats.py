@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 import time
-import requests
 import os
 from datetime import datetime, timedelta, date
 from database import engine 
@@ -10,17 +9,14 @@ from database import engine
 # --- CONFIGURACIÓN ---
 WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
-SESIONES = ["default", "principal"] 
 
 # --- GESTIÓN DE IMPORTACIONES ROBUSTA ---
 try:
     from utils import (
-        enviar_mensaje_media, 
         enviar_mensaje_whatsapp, 
         marcar_chat_como_leido_waha as marcar_leido_waha 
     )
 except ImportError:
-    def enviar_mensaje_media(*args): return False, "Error import"
     def enviar_mensaje_whatsapp(*args): return False, "Error import"
     def marcar_leido_waha(*args): pass
 
@@ -30,94 +26,6 @@ def get_table_name(conn):
         return "clientes"
     except:
         return "\"Clientes\""
-
-# ==============================================================================
-# LÓGICA DE SINCRONIZACIÓN TOTAL (MIGRACIÓN ID)
-# ==============================================================================
-def ejecutar_sync_masiva():
-    log_msgs = []
-    total_chats = 0
-    total_msgs = 0
-    
-    headers = {"Content-Type": "application/json"}
-    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-
-    with st.status("🔄 Ejecutando Migración y Sincronización...", expanded=True) as status:
-        for session in SESIONES:
-            st.write(f"📡 Conectando con sesión: **{session}**...")
-            try:
-                url_chats = f"{WAHA_URL}/api/{session}/chats?limit=1000"
-                r = requests.get(url_chats, headers=headers, timeout=15)
-                
-                if r.status_code != 200:
-                    st.error(f"Error conectando a {session}: {r.status_code}")
-                    continue
-                
-                chats_data = r.json()
-                st.write(f"📂 Procesando {len(chats_data)} chats en {session}...")
-
-                with engine.connect() as conn:
-                    for chat in chats_data:
-                        waha_id = chat.get('id') 
-                        name = chat.get('name') or chat.get('pushName') or "Sin Nombre"
-                        telefono_limpio = "".join(filter(str.isdigit, waha_id.split('@')[0]))
-                        
-                        if 'status' in waha_id: continue 
-
-                        res = conn.execute(text("""
-                            UPDATE Clientes SET whatsapp_internal_id = :wid, activo = TRUE WHERE whatsapp_internal_id = :wid
-                        """), {"wid": waha_id})
-                        
-                        if res.rowcount == 0:
-                            res = conn.execute(text("""
-                                UPDATE Clientes SET whatsapp_internal_id = :wid, activo = TRUE WHERE telefono = :tel AND whatsapp_internal_id IS NULL
-                            """), {"wid": waha_id, "tel": telefono_limpio})
-                            
-                            if res.rowcount == 0:
-                                es_grupo = '@g.us' in waha_id
-                                nombre_final = f"Grupo {telefono_limpio[-4:]}" if es_grupo else name
-                                conn.execute(text("""
-                                    INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
-                                    VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
-                                    ON CONFLICT (telefono) DO UPDATE SET whatsapp_internal_id = :wid
-                                """), {"t": telefono_limpio, "wid": waha_id, "n": nombre_final})
-                        total_chats += 1
-
-                        try:
-                            url_msgs = f"{WAHA_URL}/api/{session}/chats/{waha_id}/messages?limit=50"
-                            r_m = requests.get(url_msgs, headers=headers, timeout=5)
-                            if r_m.status_code == 200:
-                                msgs_data = r_m.json()
-                                for m in msgs_data:
-                                    msg_id = m.get('id')
-                                    from_me = m.get('fromMe', False)
-                                    body = m.get('body', '')
-                                    has_media = m.get('hasMedia', False)
-                                    timestamp = m.get('timestamp')
-                                    
-                                    existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id = :wid"), {"wid": msg_id}).scalar()
-                                    
-                                    if not existe:
-                                        try:
-                                            dt_object = datetime.fromtimestamp(timestamp)
-                                            fecha_peru = dt_object - timedelta(hours=5)
-                                        except:
-                                            fecha_peru = datetime.now() - timedelta(hours=5)
-
-                                        tipo = 'SALIENTE' if from_me else 'ENTRANTE'
-                                        contenido = body
-                                        if has_media and not body: contenido = "📷 Archivo (Recuperado)"
-                                        
-                                        conn.execute(text("""
-                                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, whatsapp_id, estado_waha) 
-                                            VALUES (:tel, :tipo, :cont, :fecha, :leido, :wid, 'recuperado')
-                                        """), {"tel": telefono_limpio, "tipo": tipo, "cont": contenido, "fecha": fecha_peru, "leido": True, "wid": msg_id})
-                                        total_msgs += 1
-                                conn.commit()
-                        except Exception as e: print(f"Error msg fetch: {e}")
-            except Exception as e: st.error(f"Error crítico en sesión {session}: {e}")
-        status.update(label="✅ ¡Sincronización Completa!", state="complete", expanded=False)
-    return f"Procesados: {total_chats} chats y recuperados {total_msgs} mensajes."
 
 # ==============================================================================
 # RENDERIZADO DE LA VISTA
@@ -134,11 +42,6 @@ def render_chat():
     # --- LISTA DE CHATS ---
     with col_lista:
         st.subheader("Bandeja")
-        if st.button("🔄 Sync Total (Migración)", use_container_width=True, type="primary", help="Registra IDs y recupera historial faltante"):
-            resultado = ejecutar_sync_masiva()
-            st.success(resultado)
-            time.sleep(2)
-            st.rerun()
         st.divider()
 
         try:
@@ -146,9 +49,11 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
+                # Consulta actualizada para obtener la fecha de la última interacción
                 query = f"""
                     SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id,
-                           (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos
+                           (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos,
+                           (SELECT MAX(fecha) FROM mensajes m WHERE m.telefono = c.telefono) as ultima_interaccion
                     FROM {tabla} c
                     WHERE c.activo = TRUE
                 """
@@ -160,7 +65,8 @@ def render_chat():
                     else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
                     query += filtro
                 
-                query += " ORDER BY no_leidos DESC, c.fecha_registro DESC LIMIT 50"
+                # Orden: 1. No leídos primero | 2. Última interacción más reciente | 3. Fecha de registro
+                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 50"
                 df_clientes = pd.read_sql(text(query), conn)
 
             with st.container(height=600):
@@ -257,7 +163,6 @@ def render_chat():
                             elif fecha_msg == ayer: texto_fecha = "Ayer"
                             else: texto_fecha = fecha_msg.strftime("%d/%m/%Y")
                             
-                            # SIN indentación para evitar el recuadro gris de código
                             st.markdown(f"<div class='date-separator'><span>{texto_fecha}</span></div>", unsafe_allow_html=True)
                             ultima_fecha = fecha_msg
 
@@ -280,8 +185,6 @@ def render_chat():
                             texto_citado = str(m['reply_content'])
                             reply_html = f"<div class='reply-box'>↪️ {texto_citado}</div>"
 
-                        # IMPORTANTE: Esta cadena no debe tener espacios a la izquierda (indentación) 
-                        # para que Streamlit no lo interprete como un bloque de código.
                         html_msg = f"""<div class='msg-row {clase_row}'>
 <div class='bubble {clase_bub}'>
 {reply_html}
