@@ -4,6 +4,7 @@ from sqlalchemy import text
 import time
 import os
 import threading
+import base64
 from datetime import datetime, timedelta
 from database import engine 
 
@@ -27,6 +28,42 @@ def get_table_name(conn):
     except:
         return "\"Clientes\""
 
+# --- MAGIA MULTIMEDIA ---
+def generar_html_media(archivo_bytes):
+    if not archivo_bytes:
+        return ""
+    try:
+        # Convertimos los datos binarios de PostgreSQL a Bytes y luego a Base64
+        b = bytes(archivo_bytes)
+        b64 = base64.b64encode(b).decode('utf-8')
+        
+        # Detector automático de archivos por "Magic Bytes"
+        mime = 'application/octet-stream'
+        if b.startswith(b'\xff\xd8\xff'): mime = 'image/jpeg'
+        elif b.startswith(b'\x89PNG\r\n\x1a\n'): mime = 'image/png'
+        elif b.startswith(b'RIFF') and b[8:12] == b'WEBP': mime = 'image/webp' # Stickers!
+        elif b.startswith(b'OggS'): mime = 'audio/ogg' # Notas de Voz
+        elif b.startswith(b'%PDF'): mime = 'application/pdf'
+        elif b.startswith(b'GIF8'): mime = 'image/gif'
+        elif len(b) > 8 and b[4:8] == b'ftyp': mime = 'video/mp4'
+
+        # Renderizar en HTML
+        if mime.startswith('image/'):
+            # WEBP (Stickers) y Fotos. max-width garantiza que no rompan la burbuja
+            return f"<img src='data:{mime};base64,{b64}' style='max-width: 250px; max-height: 250px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent;' />"
+        elif mime.startswith('audio/'):
+            # Reproductor de notas de voz nativo
+            return f"<audio controls style='max-width: 250px; height: 40px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></audio>"
+        elif mime.startswith('video/'):
+            # Reproductor de video
+            return f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
+        else:
+            # Botón de descarga para PDFs, Excel, etc.
+            return f"<a href='data:{mime};base64,{b64}' download='Documento_Adjunto' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.1); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px;'>📄 Descargar Archivo</a>"
+    except Exception as e:
+        return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
+
+# --- VISTA PRINCIPAL ---
 def render_chat():
     st.title("💬 Chat Center")
 
@@ -142,7 +179,6 @@ def render_chat():
                             elif estado == 'enviado': icono_estado = "<span class='check-sent'>✓</span>"
                             else: icono_estado = "🕒"
 
-                        # LOGICA DE ETIQUETA (SESIÓN)
                         etiqueta_sess = ""
                         if 'session_name' in m and pd.notna(m['session_name']):
                             s_name = str(m['session_name']).strip().lower()
@@ -153,9 +189,18 @@ def render_chat():
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        contenido_texto = str(m['contenido']) if pd.notna(m['contenido']) else "📷 Archivo"
+                        # 🌟 MAGIA MULTIMEDIA AQUÍ
+                        media_html = generar_html_media(m.get('archivo_data'))
+                        
+                        contenido_str = str(m['contenido']) if pd.notna(m['contenido']) else ""
+                        
+                        # Si ya pintamos la imagen/audio, limpiamos el texto aburrido de "📷 Archivo"
+                        if contenido_str in ["📷 Archivo Multimedia", "📷 Archivo", "📷 Archivo (Recuperado)"] and media_html:
+                            contenido_str = ""
+                            
+                        texto_html = f"<div style='white-space: pre-wrap;'>{contenido_str}</div>" if contenido_str.strip() else ""
 
-                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}<div style='white-space: pre-wrap;'>{contenido_texto}</div><div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
+                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
                         html_blocks.append(html_msg)
 
                     html_blocks.reverse()
@@ -175,7 +220,6 @@ def render_chat():
 .b-mio .reply-box {{ border-left-color: #075E54; background-color: rgba(0, 0, 0, 0.08); }}
 .date-separator {{ display: flex; justify-content: center; margin: 15px 0; }}
 .date-separator span {{ background-color: #e1f3fb; color: #555; padding: 4px 12px; border-radius: 10px; font-size: 12px; font-weight: bold; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
-/* CSS ETIQUETA SESIÓN */
 .session-tag {{ margin-left: 6px; padding: 1px 4px; border-radius: 4px; font-size: 9px; font-weight: 800; color: #666; background-color: rgba(0,0,0,0.06); }}
 .b-mio .session-tag {{ background-color: rgba(0,0,0,0.08); color: #444; }}
 </style><div class='chat-container'>{''.join(html_blocks)}</div>"""
