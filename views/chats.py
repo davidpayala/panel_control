@@ -28,42 +28,42 @@ def get_table_name(conn):
     except:
         return "\"Clientes\""
 
-# --- MAGIA MULTIMEDIA ---
+# ==========================================
+# 🌟 MAGIA MULTIMEDIA REFORZADA
+# ==========================================
 def generar_html_media(archivo_bytes):
     if not archivo_bytes:
         return ""
     try:
-        # Convertimos los datos binarios de PostgreSQL a Bytes y luego a Base64
         b = bytes(archivo_bytes)
         b64 = base64.b64encode(b).decode('utf-8')
         
-        # Detector automático de archivos por "Magic Bytes"
+        # Detector automático MÁS PERMISIVO
         mime = 'application/octet-stream'
-        if b.startswith(b'\xff\xd8\xff'): mime = 'image/jpeg'
-        elif b.startswith(b'\x89PNG\r\n\x1a\n'): mime = 'image/png'
-        elif b.startswith(b'RIFF') and b[8:12] == b'WEBP': mime = 'image/webp' # Stickers!
-        elif b.startswith(b'OggS'): mime = 'audio/ogg' # Notas de Voz
+        
+        if b.startswith(b'\xff\xd8'): mime = 'image/jpeg'
+        elif b.startswith(b'\x89PNG'): mime = 'image/png'
+        elif b'WEBP' in b[:20]: mime = 'image/webp' # <-- MAGIA PARA STICKERS
+        elif b.startswith(b'OggS'): mime = 'audio/ogg' # Notas de voz
+        elif b'ftyp' in b[:16]: mime = 'video/mp4' # Videos
         elif b.startswith(b'%PDF'): mime = 'application/pdf'
         elif b.startswith(b'GIF8'): mime = 'image/gif'
-        elif len(b) > 8 and b[4:8] == b'ftyp': mime = 'video/mp4'
+        elif b.startswith(b'ID3') or b.startswith(b'\xff\xfb'): mime = 'audio/mpeg' # MP3
 
-        # Renderizar en HTML
         if mime.startswith('image/'):
-            # WEBP (Stickers) y Fotos. max-width garantiza que no rompan la burbuja
-            return f"<img src='data:{mime};base64,{b64}' style='max-width: 250px; max-height: 250px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent;' />"
+            return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent;' />"
         elif mime.startswith('audio/'):
-            # Reproductor de notas de voz nativo
             return f"<audio controls style='max-width: 250px; height: 40px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></audio>"
         elif mime.startswith('video/'):
-            # Reproductor de video
             return f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
         else:
-            # Botón de descarga para PDFs, Excel, etc.
-            return f"<a href='data:{mime};base64,{b64}' download='Documento_Adjunto' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.1); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px;'>📄 Descargar Archivo</a>"
+            return f"<a href='data:{mime};base64,{b64}' download='Archivo_Adjunto' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>📄 Descargar Archivo</a>"
     except Exception as e:
         return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
-# --- VISTA PRINCIPAL ---
+# ==========================================
+# VISTA PRINCIPAL
+# ==========================================
 def render_chat():
     st.title("💬 Chat Center")
 
@@ -189,12 +189,9 @@ def render_chat():
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        # 🌟 MAGIA MULTIMEDIA AQUÍ
                         media_html = generar_html_media(m.get('archivo_data'))
                         
                         contenido_str = str(m['contenido']) if pd.notna(m['contenido']) else ""
-                        
-                        # Si ya pintamos la imagen/audio, limpiamos el texto aburrido de "📷 Archivo"
                         if contenido_str in ["📷 Archivo Multimedia", "📷 Archivo", "📷 Archivo (Recuperado)"] and media_html:
                             contenido_str = ""
                             
