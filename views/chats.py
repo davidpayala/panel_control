@@ -89,7 +89,7 @@ def generar_html_media(archivo_bytes):
     except Exception: return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
 # ==========================================
-# 🕵️ VIGÍA INVISIBLE
+# 🕵️ VIGÍA INVISIBLE (ACTUALIZADO)
 # ==========================================
 try:
     run_poller = st.fragment(run_every=3) 
@@ -101,8 +101,13 @@ def poller_cambios_db():
     st.markdown("<div style='display:none;'>vigia_activo</div>", unsafe_allow_html=True)
     try:
         with engine.connect() as conn: 
-            conn.commit()
-            version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar() or 0
+            conn.commit() # 💥 ROMPE-ESPEJISMO 1: Obliga a leer datos frescos
+            
+            # Si la tabla no existe aún, devolvemos 0 para no romper nada
+            try:
+                version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar() or 0
+            except:
+                version_actual = 0
             
             if 'db_version' not in st.session_state:
                 st.session_state['db_version'] = version_actual
@@ -118,7 +123,13 @@ def poller_cambios_db():
 def render_chat():
     st.title("💬 Chat Center")
 
+    # Activamos el vigía
     poller_cambios_db()
+
+    # --- DEBUGGING VISUAL (Puedes borrar esto luego) ---
+    ver = st.session_state.get('db_version', 0)
+    # st.sidebar.caption(f"📡 Sincronización DB: v{ver}") 
+    # ---------------------------------------------------
 
     def cambiar_chat(telefono):
         st.session_state['chat_actual_telefono'] = telefono
@@ -138,6 +149,8 @@ def render_chat():
 
         try:
             with engine.connect() as conn:
+                conn.commit() # 💥 ROMPE-ESPEJISMO 2: Obliga a ver los chats nuevos REALES
+                
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
@@ -163,7 +176,7 @@ def render_chat():
                 if df_clientes.empty:
                     st.info("No se encontraron chats.")
                 else:
-                    # --- 🚀 TU CONFIGURACIÓN DE ETAPAS ---
+                    # CONFIGURACIÓN DE ETAPAS
                     cat_map = {
                         "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"],
                         "ETAPA_1": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
@@ -173,20 +186,12 @@ def render_chat():
                     }
                     
                     def asignar_categoria(estado):
-                        # Si es nulo o vacío -> ETAPA_0 (al final)
-                        if not estado or str(estado).strip() == "":
-                            return "ETAPA_0"
-                        
-                        # Buscamos coincidencias exactas
+                        if not estado or str(estado).strip() == "": return "ETAPA_0"
                         for cat, estados in cat_map.items():
                             if estado in estados: return cat
-                        
-                        # Si tiene un estado raro que no está en la lista -> ETAPA_0
-                        return "ETAPA_0"
+                        return "ETAPA_0" # Por defecto si no coincide
                         
                     df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
-                    
-                    # 🚀 EL ORDEN EXACTO QUE PEDISTE
                     orden_categorias = ["ETAPA_2", "ETAPA_1", "ETAPA_3", "ETAPA_4", "ETAPA_0"]
 
                     for cat in orden_categorias:
@@ -196,23 +201,19 @@ def render_chat():
                             badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
                             
                             chat_activo_aqui = telefono_actual in df_cat['telefono'].values
-                            # Se expande si hay mensajes nuevos, si el chat actual está aquí, o si es la ETAPA_2 (Ventas)
                             expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "ETAPA_2")
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
                                 for _, row in df_cat.iterrows():
                                     t_row = row['telefono']
                                     c_leidos = row['no_leidos']
-                                    
                                     icono = "🔴" if c_leidos > 0 else "👤"
                                     texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
                                     label = f"{icono} {row['nombre']}{texto_leidos}"
-                                    
                                     tipo = "primary" if telefono_actual == t_row else "secondary"
                                     
                                     if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,)):
                                         pass 
-
         except Exception as e:
             st.error("Reconectando lista...")
 
@@ -222,7 +223,9 @@ def render_chat():
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
+                # Marcar leído
                 with engine.connect() as conn:
+                    conn.commit() # 💥 ROMPE-ESPEJISMO 3
                     unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
                     if unreads_query and unreads_query[0] > 0:
                         sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
@@ -231,12 +234,14 @@ def render_chat():
                         try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
                         except: pass
 
+                # Cargar Mensajes
                 with engine.connect() as conn:
+                    conn.commit() # 💥 ROMPE-ESPEJISMO 4: ¡ESTE ES EL MÁS IMPORTANTE PARA VER MENSAJES NUEVOS!
+                    
                     tabla = get_table_name(conn)
                     info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
                     nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
                     wsp_id = info.whatsapp_internal_id if hasattr(info, 'whatsapp_internal_id') else "Desconocido"
-                    # Estado actual para mostrarlo en el header
                     estado_actual_cliente = info.estado if hasattr(info, 'estado') and info.estado else "Sin estado"
                     
                     msgs = pd.read_sql(text("""
@@ -246,7 +251,6 @@ def render_chat():
                     """), conn, params={"t": telefono_actual})
 
                 st.subheader(f"👤 {nombre}")
-                # Mostramos el estado actual en la cabecera
                 st.caption(f"📱 {telefono_actual} | 🆔 {wsp_id} | 🏷️ **{estado_actual_cliente}**")
                 
                 if msgs.empty: 
@@ -265,7 +269,6 @@ def render_chat():
                             if fecha_msg == hoy: texto_fecha = "Hoy"
                             elif fecha_msg == ayer: texto_fecha = "Ayer"
                             else: texto_fecha = fecha_msg.strftime("%d/%m/%Y")
-                            
                             html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
                             ultima_fecha = fecha_msg
 
@@ -293,13 +296,10 @@ def render_chat():
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
                         media_html = generar_html_media(m.get('archivo_data'))
-                        
                         contenido_str = str(m['contenido']) if pd.notna(m['contenido']) else ""
                         if contenido_str in ["📷 Archivo Multimedia", "📷 Archivo", "📷 Archivo (Recuperado)"] and media_html:
                             contenido_str = ""
-                            
                         texto_html = f"<div style='white-space: pre-wrap;'>{contenido_str}</div>" if contenido_str.strip() else ""
-
                         html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
                         html_blocks.append(html_msg)
 
