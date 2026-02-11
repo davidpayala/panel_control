@@ -90,24 +90,32 @@ def generar_html_media(archivo_bytes):
 
 
 # ==========================================
-# 🕵️ VIGÍA INVISIBLE DE SOLO LECTURA
+# 🕵️ VIGÍA INVISIBLE DE SOLO LECTURA (Corregido)
 # ==========================================
 try:
     run_poller = st.fragment(run_every=3) 
+    TIENE_FRAGMENT = True
 except AttributeError:
     run_poller = lambda f: f
+    TIENE_FRAGMENT = False
 
 @run_poller
 def poller_cambios_db():
+    # 🚀 TRUCO VISUAL: Engañamos al navegador renderizando un elemento invisible. 
+    # Sin esto, el navegador cancela el temporizador para "ahorrar memoria".
+    st.markdown("<div style='display:none;'>vigia_activo</div>", unsafe_allow_html=True)
+    
     try:
         with engine.connect() as conn: 
-            # 🚀 LECTURA PURA: Jamás bloquea la base de datos
             version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar()
+            
+            # 🚀 TRUCO DB: Obligamos a Postgres a cerrar el "modo lectura" para que no 
+            # nos devuelva un dato viejo almacenado en caché la próxima vez.
+            conn.commit() 
             
             if 'db_version' not in st.session_state:
                 st.session_state['db_version'] = version_actual
             elif st.session_state['db_version'] != version_actual:
-                # Si la versión cambió, simplemente guardamos el nuevo número y recargamos
                 st.session_state['db_version'] = version_actual
                 st.rerun()
     except Exception:
@@ -119,6 +127,10 @@ def poller_cambios_db():
 # ==========================================
 def render_chat():
     st.title("💬 Chat Center")
+
+    # 🚀 ALERTA DE COMPATIBILIDAD
+    if not TIENE_FRAGMENT:
+        st.error("⚠️ **AVISO:** Tu sistema usa una versión antigua de Streamlit. Para que los chats se actualicen solos, abre tu archivo `requirements.txt`, asegúrate de que diga `streamlit>=1.37.0` y vuelve a desplegar en Railway.")
 
     poller_cambios_db()
 

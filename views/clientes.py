@@ -5,6 +5,14 @@ from database import engine
 from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_maestro
 import time
 
+ESTADOS_CLIENTE = [
+    "Sin empezar", "Responder duda", "Interesado en venta", 
+    "Proveedor nacional", "Proveedor internacional", 
+    "Venta motorizado", "Venta agencia", "Venta express moto", 
+    "En camino moto", "En camino agencia", "Contraentrega agencia", 
+    "Pendiente agradecer", "Problema post"
+]
+
 # ==============================================================================
 # HERRAMIENTA DE FUSIÓN DE CLIENTES
 # ==============================================================================
@@ -102,11 +110,12 @@ def render_clientes():
                 "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
                 "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                 "nombre_corto": st.column_config.TextColumn("Alias (Editable)", width="medium"),
+                "estado": st.column_config.SelectboxColumn("Estado", options=ESTADOS_CLIENTE, width="medium"),
                 "telefono": st.column_config.TextColumn("Teléfono", disabled=True),
                 "nombre": st.column_config.TextColumn("Nombre Google", disabled=True),
                 "apellido": st.column_config.TextColumn("Apellido Google", disabled=True),
                 "etiquetas": st.column_config.TextColumn("Etiquetas", width="medium"),
-                "google_id": None, "whatsapp_internal_id": None, "activo": None, "fecha_registro": None, "nombre_ia": None, "estado": None, "fecha_seguimiento": None
+                "google_id": None, "whatsapp_internal_id": None, "activo": None, "fecha_registro": None, "nombre_ia": None, "fecha_seguimiento": None
             },
             hide_index=True, use_container_width=True
         )
@@ -114,8 +123,8 @@ def render_clientes():
         if st.button("💾 Guardar Cambios Rápidos de Tabla"):
             with engine.begin() as conn:
                 for idx, row in edited_df.iterrows():
-                    conn.execute(text("UPDATE Clientes SET nombre_corto=:nc, etiquetas=:e WHERE id_cliente=:id"),
-                                 {"nc": row['nombre_corto'], "e": row['etiquetas'], "id": row['id_cliente']})
+                    conn.execute(text("UPDATE Clientes SET nombre_corto=:nc, etiquetas=:e, estado=:est WHERE id_cliente=:id"),
+                                 {"nc": row['nombre_corto'], "e": row['etiquetas'], "est": row['estado'], "id": row['id_cliente']})
             st.success("Cambios en tabla guardados.")
             time.sleep(1)
             st.rerun()
@@ -133,18 +142,20 @@ def render_clientes():
 
             with tab_datos:
                 with st.form(f"form_cliente_{id_cli_sel}"):
-                    c1, c2 = st.columns(2)
+                    c1, c2, c3 = st.columns([2, 2, 2])
                     new_nombre = c1.text_input("Alias Original", value=row_full['nombre_corto'] or "")
                     telefono_actual_db = row_full['telefono']
                     new_telefono = c2.text_input("Teléfono", value=row_full['telefono'] or "")
+                    curr_est = row_full['estado']
+                    new_estado = c3.selectbox("Estado", options=ESTADOS_CLIENTE, index=ESTADOS_CLIENTE.index(curr_est) if curr_est in ESTADOS_CLIENTE else 0)
                     
                     if row_full['whatsapp_internal_id']:
                         st.warning(f"⚠️ ID vinculado: `{row_full['whatsapp_internal_id']}`. Cambiar el número moverá el historial de chat.")
                     
                     st.caption("Datos de Google (Bloqueados, requiere sincronización)")
-                    c3, c4 = st.columns(2)
-                    new_nombre_real = c3.text_input("Nombre Real", value=row_full['nombre'] or "", disabled=True)
-                    new_apellido = c4.text_input("Apellido", value=row_full['apellido'] or "", disabled=True)
+                    c4, c5 = st.columns(2)
+                    new_nombre_real = c4.text_input("Nombre Real", value=row_full['nombre'] or "", disabled=True)
+                    new_apellido = c5.text_input("Apellido", value=row_full['apellido'] or "", disabled=True)
                     new_etiquetas = st.text_area("Etiquetas / Notas", value=row_full['etiquetas'] or "")
                     
                     if row_full['google_id']: st.success(f"✅ Vinculado a Google (ID: {row_full['google_id']})")
@@ -154,9 +165,9 @@ def render_clientes():
                         with engine.begin() as conn:
                             conn.execute(text("""
                                 UPDATE Clientes 
-                                SET nombre_corto=:nc, etiquetas=:e, telefono=:t
+                                SET nombre_corto=:nc, etiquetas=:e, telefono=:t, estado=:est
                                 WHERE id_cliente=:id
-                            """), {"nc": new_nombre, "e": new_etiquetas, "t": new_telefono, "id": id_cli_sel})
+                            """), {"nc": new_nombre, "e": new_etiquetas, "t": new_telefono, "est": new_estado, "id": id_cli_sel})
                             
                             if telefono_actual_db != new_telefono:
                                 conn.execute(text("UPDATE mensajes SET telefono = :new_tel WHERE telefono = :old_tel"), 
@@ -229,7 +240,7 @@ def render_clientes():
                             e_dir = st.text_input("Dirección", r_dir['direccion_texto'])
                             
                             d4, d5, d6 = st.columns(3)
-                            e_ref = d4.text_input("Referencia", r_dir['referencia'])
+                            e_ref = d4.text_input("Referencia", r_dir['referencia'] or "")
                             e_gps = d5.text_input("GPS Link", r_dir.get('gps_link', ''))
                             e_obs = d6.text_input("Observación", r_dir.get('observacion', ''))
                             
@@ -243,7 +254,7 @@ def render_clientes():
                                     """), {
                                         "n":e_nom, "t":e_tel, "dis":e_dist, "dt":e_dir, 
                                         "r":e_ref, "g":e_gps, "o":e_obs, 
-                                        "id": int(r_dir['id_direccion']) # <-- Cambio aplicado aquí
+                                        "id": int(r_dir['id_direccion'])
                                     })
                                 st.success("Dirección actualizada.")
                                 time.sleep(1)
