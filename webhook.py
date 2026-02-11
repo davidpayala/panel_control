@@ -13,24 +13,22 @@ app = Flask(__name__)
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
+# --- SISTEMA DE LOGS (Para ver errores en Railway) ---
 def log_info(msg):
     print(f"[INFO] {msg}", file=sys.stdout, flush=True)
 
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🚑 PARCHE DB: SISTEMA DE VERSIÓN (ANTI-BLOQUEOS) ---
+# --- 🚑 PARCHE DB: Asegura que las tablas existan ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS whatsapp_internal_id VARCHAR(150)"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wsp_id ON Clientes(whatsapp_internal_id)"))
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre VARCHAR(100)"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS apellido VARCHAR(100)"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id VARCHAR(100)"))
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS session_name VARCHAR(50)"))
             
+            # Tabla de logs para depuración interna
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS webhook_logs (
                     id SERIAL PRIMARY KEY,
@@ -41,7 +39,7 @@ def aplicar_parche_db():
                 )
             """))
 
-            # 🚀 NUEVO: Tabla de versión incremental. No usa True/False.
+            # Tabla de versión para sincronización
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS sync_estado (
                     id INT PRIMARY KEY,
@@ -52,7 +50,9 @@ def aplicar_parche_db():
                 INSERT INTO sync_estado (id, version)
                 VALUES (1, 0) ON CONFLICT (id) DO NOTHING
             """))
-    except: pass
+        log_info("Base de datos parcheada correctamente.")
+    except Exception as e:
+        log_error(f"Error parcheando DB: {e}")
 
 aplicar_parche_db()
 
@@ -76,79 +76,26 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
-def guardar_log_diagnostico(data):
-    try:
-        if isinstance(data, list): item = data[0]
-        else: item = data
-        
-        event = item.get('event', 'unknown')
-        payload_data = item.get('payload', {})
-        
-        if event in ['message.ack', 'presence.update', 'session.status']: return 
-            
-        origen = str(payload_data.get('from', ''))
-        destino = str(payload_data.get('to', ''))
-        if 'status@broadcast' in origen or 'status@broadcast' in destino: return
-
-        session = item.get('session', 'unknown')
-        payload_str = json.dumps(item, ensure_ascii=False)
-
-        with engine.begin() as conn:
-            conn.execute(text("""
-                INSERT INTO webhook_logs (session_name, event_type, payload)
-                VALUES (:s, :e, :p)
-            """), {"s": session, "e": event, "p": payload_str})
-            
-            conn.execute(text("""
-                DELETE FROM webhook_logs 
-                WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 20)
-            """))
-    except Exception as e:
-        log_error(f"Error guardando log diagnóstico: {e}")
-
-def obtener_identidad(payload, session):
-    try:
-        from_me = payload.get('fromMe', False)
-        _data = payload.get('_data') or {}
-        key = _data.get('key') or {}
-
-        routing_id = ""
-        if from_me: routing_id = key.get('remoteJid') or payload.get('to')
-        else: routing_id = key.get('remoteJid') or payload.get('from')
-
-        if not routing_id: return None
-
-        alt_source = key.get('remoteJidAlt') or key.get('participantAlt') or _data.get('participantAlt')
-        telefono_limpio = ""
-        
-        if alt_source and '@' in alt_source:
-             telefono_limpio = "".join(filter(str.isdigit, alt_source.split('@')[0]))
-        else:
-             part = payload.get('participant')
-             fuente_num = part if (part and '@lid' not in part) else routing_id
-             telefono_limpio = "".join(filter(str.isdigit, fuente_num.split('@')[0]))
-
-        es_grupo = '@g.us' in routing_id
-
-        return {
-            "id_canonico": routing_id,
-            "telefono": telefono_limpio,
-            "es_grupo": es_grupo
-        }
-    except Exception as e:
-        return None
-
-@app.route('/', methods=['GET', 'POST'])
+# --- RUTA DE PRUEBA: Verifica si el Webhook está vivo ---
+@app.route('/', methods=['GET'])
 def home():
-    return "Webhook V32 (Version Incremental Enabled)", 200
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return "Webhook Activo y DB Conectada ✅", 200
+    except Exception as e:
+        return f"Webhook Activo pero DB Falla ❌: {e}", 500
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
     try:
         data = request.json
-        if not data: return jsonify({"status": "empty"}), 200
+        if not data: 
+            log_error("Recibido POST sin datos JSON")
+            return jsonify({"status": "empty"}), 200
         
-        guardar_log_diagnostico(data)
+        # log_info(f"Payload recibido: {str(data)[:200]}...") # Loguea el inicio del mensaje
+        
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
@@ -156,103 +103,85 @@ def recibir_mensaje():
             session_name = evento.get('session', 'default')
             payload = evento.get('payload', {})
 
+            # 1. ACKS (Doble Check)
             if tipo_evento == 'message.ack':
                 msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
                 estado_map = {1: 'enviado', 2: 'recibido', 3: 'leido', 4: 'reproducido'}
                 nuevo_estado = estado_map.get(ack_status, 'pendiente')
                 try:
-                    with engine.connect() as conn:
+                    with engine.begin() as conn: # Usamos begin() para autocommit
                         conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), 
                                     {"e": nuevo_estado, "w": msg_id})
-                        # 🚀 SUMAR +1 A LA VERSIÓN
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
-                        conn.commit()
-                except: pass
+                except Exception as e:
+                    log_error(f"Error guardando ACK: {e}")
                 continue 
 
-            if tipo_evento not in ['message', 'message.any', 'message.created']: continue
-            if payload.get('from') == 'status@broadcast': continue
-
-            identidad = obtener_identidad(payload, session_name)
-            if not identidad: continue
+            # 2. MENSAJES NUEVOS
+            if tipo_evento not in ['message', 'message.any', 'message.created']: 
+                continue
             
-            chat_id = identidad['id_canonico'] 
-            telefono_msg = identidad['telefono'] 
-            es_grupo = identidad['es_grupo']
+            if payload.get('from') == 'status@broadcast': 
+                continue
 
+            # Extraer datos básicos
+            routing_id = payload.get('from') # Quien envía
+            if payload.get('fromMe'): routing_id = payload.get('to') # Si lo envié yo, el ID es el destino
+            
+            if not routing_id: 
+                log_error("Mensaje sin ID de origen/destino")
+                continue
+
+            telefono_msg = "".join(filter(str.isdigit, routing_id.split('@')[0]))
             body = payload.get('body', '')
-            media_obj = payload.get('media') or {} 
-            media_url = payload.get('mediaUrl') or media_obj.get('url')
-            archivo_bytes = None
-            if media_url:
-                archivo_bytes = descargar_media_plus(media_url)
-                if archivo_bytes and not body: body = "📷 Archivo Multimedia"
             
+            # Descargar multimedia si existe
+            media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
+            archivo_bytes = descargar_media_plus(media_url) if media_url else None
+            if archivo_bytes and not body: body = "📷 Archivo Multimedia"
+            
+            # Identificar respuestas
             reply_id = None
             reply_content = None
             raw_reply = payload.get('replyTo')
             if isinstance(raw_reply, dict):
                 reply_id = raw_reply.get('id')
                 reply_content = raw_reply.get('body')
-            elif isinstance(raw_reply, str):
-                reply_id = raw_reply
+
+            tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
+            whatsapp_id = payload.get('id')
+            push_name = (payload.get('_data') or {}).get('notifyName', 'Cliente')
+            
+            log_info(f"Procesando mensaje de {telefono_msg} ({tipo_msg}): {body[:30]}")
 
             try:
-                tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
-                whatsapp_id = payload.get('id')
-                
-                _data = payload.get('_data') or {}
-                push_name = _data.get('pushName') or _data.get('notifyName') or _data.get('verifiedBizName')
-                nombre_wsp = push_name or "Cliente Nuevo"
-                
-                if tipo_msg == 'SALIENTE': nombre_wsp = f"Chat {telefono_msg}"
-
-                with engine.connect() as conn:
-                    cliente_db = conn.execute(
-                        text("SELECT id_cliente, telefono, whatsapp_internal_id FROM Clientes WHERE whatsapp_internal_id = :wid"), 
-                        {"wid": chat_id}
+                with engine.begin() as conn: # Transacción segura
+                    # A. Gestionar Cliente
+                    cliente_existente = conn.execute(
+                        text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :wid OR telefono = :t"), 
+                        {"wid": routing_id, "t": telefono_msg}
                     ).fetchone()
 
-                    telefono_final_db = telefono_msg 
-
-                    if cliente_db:
-                        telefono_final_db = cliente_db.telefono
-                        conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": cliente_db.id_cliente})
+                    if cliente_existente:
+                        # Si ya existe, actualizamos su ID interno y lo activamos
+                        if not cliente_existente.telefono: # Caso raro
+                             conn.execute(text("UPDATE Clientes SET telefono=:t WHERE id_cliente=:id"), {"t": telefono_msg, "id": cliente_existente.id_cliente})
+                        
+                        conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), 
+                                     {"wid": routing_id, "id": cliente_existente.id_cliente})
                     else:
-                        cliente_tel = conn.execute(
-                            text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), 
-                            {"t": telefono_msg}
-                        ).fetchone()
+                        # Crear nuevo cliente
+                        log_info(f"Creando nuevo cliente: {telefono_msg}")
+                        conn.execute(text("""
+                            INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
+                            VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
+                        """), {"t": telefono_msg, "wid": routing_id, "n": push_name})
 
-                        if cliente_tel:
-                             conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), 
-                                         {"wid": chat_id, "id": cliente_tel.id_cliente})
-                        else:
-                            nombre_final = f"Grupo {telefono_msg[-4:]}" if es_grupo else nombre_wsp
-                            conn.execute(text("""
-                                INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
-                                VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
-                            """), {"t": telefono_msg, "wid": chat_id, "n": nombre_final})
-                            
-                            if not es_grupo and tipo_msg == 'ENTRANTE':
-                                try:
-                                    datos_google = buscar_contacto_google(telefono_msg)
-                                    if datos_google and datos_google['encontrado']:
-                                        conn.execute(text("""
-                                            UPDATE Clientes 
-                                            SET nombre=:nom, apellido=:ape, google_id=:gid, nombre_corto=:comp
-                                            WHERE whatsapp_internal_id=:wid
-                                        """), {
-                                            "nom": datos_google['nombre'], "ape": datos_google['apellido'],
-                                            "gid": datos_google['google_id'], "comp": datos_google['nombre_completo'],
-                                            "wid": chat_id
-                                        })
-                                except: pass
-
-                    existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
+                    # B. Guardar Mensaje
+                    existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
-                    if not existe_msg:
+                    if not existe:
                         conn.execute(text("""
                             INSERT INTO mensajes (
                                 telefono, tipo, contenido, fecha, leido, archivo_data, 
@@ -260,7 +189,7 @@ def recibir_mensaje():
                             )
                             VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est, :sess)
                         """), {
-                            "t": telefono_final_db, 
+                            "t": telefono_msg, 
                             "tipo": tipo_msg, 
                             "txt": body, 
                             "leido": (tipo_msg == 'SALIENTE'), 
@@ -271,24 +200,18 @@ def recibir_mensaje():
                             "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado',
                             "sess": session_name
                         })
-                    else:
-                         conn.execute(text("""
-                            UPDATE mensajes SET 
-                                reply_to_id = :rid, reply_content = :rbody, archivo_data = COALESCE(mensajes.archivo_data, :d)
-                            WHERE whatsapp_id = :wid
-                        """), {"wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "d": archivo_bytes})
+                        log_info("Mensaje guardado en DB.")
                     
-                    # 🚀 SUMAR +1 A LA VERSIÓN
+                    # C. Actualizar Versión (Para que Streamlit recargue)
                     conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
-                    conn.commit()
 
             except Exception as e:
-                log_error(f"🔥 Error DB [{session_name}]: {e}")
+                log_error(f"🔥 Error DB escribiendo mensaje: {e}")
 
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
-        log_error(f"🔥 Error General: {e}")
+        log_error(f"🔥 Error General Webhook: {e}")
         return jsonify({"status": "error"}), 500
 
 if __name__ == '__main__':
