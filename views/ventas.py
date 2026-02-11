@@ -8,9 +8,7 @@ from database import engine
 def render_ventas():
     # --- FUNCIÓN AUXILIAR LOCAL ---
     def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
-        # Validar stock si es de inventario
         if es_inventario:
-            # Verificar si ya está en el carrito para sumar
             cant_en_carrito = sum(item['cantidad'] for item in st.session_state.carrito if item['sku'] == sku)
             if (cant_en_carrito + cantidad) > stock_max:
                 st.error(f"❌ No hay suficiente stock. Disponibles: {stock_max}, En carrito: {cant_en_carrito}")
@@ -124,22 +122,18 @@ def render_ventas():
                 tipo_envio = col_e1.selectbox("Método Envío", ["Gratis", "🚚 Envío Lima", "Express (Moto)", "Agencia (Pago Destino)", "Agencia (Pagado)"])
                 costo_envio = col_e2.number_input("Costo Envío", value=0.0)
 
-                # 3. LÓGICA DE DIRECCIÓN
                 es_agencia = "Agencia" in tipo_envio
                 es_envio_lima = tipo_envio == "🚚 Envío Lima" or tipo_envio == "Express (Moto)"
-                
-                if es_agencia: cat_direccion = "AGENCIA"
-                elif es_envio_lima: cat_direccion = "MOTO"
-                else: cat_direccion = "OTROS"
 
-                # Buscamos direcciones guardadas
+                # 3. LÓGICA DE DIRECCIÓN (MODIFICADA)
                 with engine.connect() as conn:
+                    # Ahora traemos TODAS las direcciones del cliente sin importar el tipo_envio
                     q_dir = text("""
                         SELECT * FROM Direcciones 
-                        WHERE id_cliente = :id AND tipo_envio = :tipo AND activo = TRUE 
+                        WHERE id_cliente = :id AND activo = TRUE 
                         ORDER BY id_direccion DESC
                     """)
-                    df_dirs = pd.read_sql(q_dir, conn, params={"id": id_cliente, "tipo": cat_direccion})
+                    df_dirs = pd.read_sql(q_dir, conn, params={"id": id_cliente})
 
                 usar_guardada = False
                 datos_nuevos = {} 
@@ -148,11 +142,23 @@ def render_ventas():
                 opciones_visuales = {}
                 if not df_dirs.empty:
                     for idx, row in df_dirs.iterrows():
-                        if es_agencia:
-                            lbl = f"🏢 {row['agencia_nombre']} - {row['sede_entrega']}"
+                        # Detectamos si es agencia por la existencia del nombre de agencia
+                        es_agencia_bd = bool(row.get('agencia_nombre')) and pd.notna(row['agencia_nombre']) and str(row['agencia_nombre']).strip() != ""
+                        
+                        if es_agencia_bd:
+                            lbl = f"🏢 {row['agencia_nombre']} - {row.get('sede_entrega', '')}"
                         else:
-                            lbl = f"🏠 {row['direccion_texto']} ({row['distrito']})"
-                        if row['observacion']: lbl += f" | 👁️ {row['observacion'][:20]}..."
+                            lbl = f"🏠 {row.get('direccion_texto', '')} - {row.get('distrito', '')}"
+                            
+                        # Añadimos referencia visual rápida si existe
+                        if row.get('referencia') and pd.notna(row['referencia']):
+                            lbl += f" (Ref: {row['referencia']})"
+                            
+                        if row.get('observacion') and pd.notna(row['observacion']): 
+                            lbl += f" | 👁️ {str(row['observacion'])[:20]}..."
+                        
+                        # ID único para evitar errores en dict si hay direcciones idénticas
+                        lbl += f" [ID:{row['id_direccion']}]"
                         opciones_visuales[lbl] = row
 
                 KEY_NUEVA = "➕ Usar una Nueva Dirección..."
@@ -164,13 +170,20 @@ def render_ventas():
                 if seleccion_dir != KEY_NUEVA:
                     usar_guardada = True
                     dir_data = opciones_visuales[seleccion_dir]
-                    if es_agencia:
-                        texto_direccion_final = f"{dir_data['agencia_nombre']} - {dir_data['sede_entrega']} [{dir_data['dni_receptor']}]"
+                    
+                    es_agencia_bd = bool(dir_data.get('agencia_nombre')) and pd.notna(dir_data['agencia_nombre']) and str(dir_data['agencia_nombre']).strip() != ""
+                    
+                    if es_agencia_bd:
+                        texto_direccion_final = f"{dir_data.get('agencia_nombre', '')} - {dir_data.get('sede_entrega', '')} [DNI: {dir_data.get('dni_receptor', '')}]"
                         st.info(f"📦 Destino: **{texto_direccion_final}**")
                     else:
-                        texto_direccion_final = f"{dir_data['direccion_texto']} - {dir_data['distrito']}"
+                        texto_direccion_final = f"{dir_data.get('direccion_texto', '')} - {dir_data.get('distrito', '')}"
+                        if dir_data.get('referencia') and pd.notna(dir_data['referencia']):
+                            texto_direccion_final += f" (Ref: {dir_data['referencia']})"
                         st.info(f"🏠 Destino: **{texto_direccion_final}**")
-                        st.caption(f"📝 {dir_data['observacion']}")
+                        
+                        if dir_data.get('observacion') and pd.notna(dir_data['observacion']):
+                            st.caption(f"📝 {dir_data['observacion']}")
                 else:
                     st.warning("📝 Registro de Nuevos Datos:")
                     with st.container(border=True):
@@ -185,8 +198,8 @@ def render_ventas():
                             ref = c_ref.text_input("Referencia:")
                             gps = st.text_input("📍 GPS (Link Google Maps):")
                             obs_extra = st.text_input("Observación:")
-                            obs_full = f"REF: {ref} | GPS: {gps} | {obs_extra}"
-                            datos_nuevos = {"tipo": "MOTO", "nom": recibe, "tel": telf, "dir": direcc, "dist": dist, "obs": obs_full, "dni": "", "age": "", "sede": ""}
+                            
+                            datos_nuevos = {"tipo": "MOTO", "nom": recibe, "tel": telf, "dir": direcc, "dist": dist, "ref": ref, "gps": gps, "obs": obs_extra, "dni": "", "age": "", "sede": ""}
                             texto_direccion_final = f"{direcc} - {dist} (Ref: {ref})"
                         
                         elif es_agencia:
@@ -195,12 +208,13 @@ def render_ventas():
                             agencia = c_age.text_input("Agencia:", value="Shalom")
                             sede = st.text_input("Sede:")
                             obs_new = st.text_input("Obs:")
-                            datos_nuevos = {"tipo": "AGENCIA", "nom": recibe, "tel": telf, "dni": dni, "age": agencia, "sede": sede, "obs": obs_new, "dir": "", "dist": ""}
+                            
+                            datos_nuevos = {"tipo": "AGENCIA", "nom": recibe, "tel": telf, "dni": dni, "age": agencia, "sede": sede, "obs": obs_new, "dir": "", "dist": "", "ref": "", "gps": ""}
                             texto_direccion_final = f"{agencia} - {sede}"
                         
                         else:
                             obs_new = st.text_input("Observación / Lugar:")
-                            datos_nuevos = {"tipo": "OTROS", "nom": recibe, "tel": telf, "obs": obs_new, "dir": "", "dist": "", "dni": "", "age": "", "sede": ""}
+                            datos_nuevos = {"tipo": "OTROS", "nom": recibe, "tel": telf, "obs": obs_new, "dir": "", "dist": "", "dni": "", "age": "", "sede": "", "ref": "", "gps": ""}
                             texto_direccion_final = "Entrega Directa / Otro"
 
                 # 4. CLAVE AGENCIA
@@ -227,8 +241,8 @@ def render_ventas():
                             if not usar_guardada and datos_nuevos:
                                 conn.execute(text("""
                                     INSERT INTO Direcciones (id_cliente, tipo_envio, nombre_receptor, telefono_receptor, 
-                                    direccion_texto, distrito, dni_receptor, agencia_nombre, sede_entrega, observacion, activo)
-                                    VALUES (:id, :tipo, :nom, :tel, :dir, :dist, :dni, :age, :sede, :obs, TRUE)
+                                    direccion_texto, distrito, referencia, gps_link, dni_receptor, agencia_nombre, sede_entrega, observacion, activo)
+                                    VALUES (:id, :tipo, :nom, :tel, :dir, :dist, :ref, :gps, :dni, :age, :sede, :obs, TRUE)
                                 """), {"id": id_cliente, **datos_nuevos})
 
                             nota_full = f"{nota_venta} | Envío: {texto_direccion_final}"
@@ -275,7 +289,6 @@ def render_ventas():
                 detalle_motivo = st.text_input("Detalle (Opcional):", placeholder="Ej: Se rompió una luna...")
                 
                 if st.button("📉 CONFIRMAR SALIDA", type="primary"):
-                        # ... (Tu lógica de salida) ...
                         pass 
         else:
             st.info("El carrito está vacío.")
