@@ -15,26 +15,43 @@ from database import engine
 WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
 
+# --- IMPORTACIÓN ROBUSTA DE UTILS ---
 try:
-    from utils import marcar_chat_como_leido_waha as marcar_leido_waha 
+    from utils import marcar_chat_como_leido_waha as marcar_leido_waha
+    from utils import normalizar_telefono_maestro # 🚀 AHORA SÍ LO USAMOS
 except ImportError:
+    # Fallback por si falla el import
     def marcar_leido_waha(*args): pass
+    def normalizar_telefono_maestro(t): return "".join(filter(str.isdigit, str(t)))
 
 def marcar_leido_api(telefono, sesion):
     if not WAHA_URL: return
+    # Normalizamos también aquí por seguridad
+    tel_norm = normalizar_telefono_maestro(telefono)
     url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-    payload = {"session": sesion, "chatId": f"{telefono}@c.us"}
+    payload = {"session": sesion, "chatId": f"{tel_norm}@c.us"}
     try: requests.post(url, json=payload, headers=headers, timeout=5)
     except: pass
 
 def mandar_mensaje_api(telefono, texto, sesion):
     if not WAHA_URL: return False, "Falta WAHA_URL"
+    
+    # 🚀 CORRECCIÓN CRÍTICA: NORMALIZAR ANTES DE ENVIAR
+    # Esto asegura que vaya con 51 delante (Ej: 51999...)
+    telefono_final = normalizar_telefono_maestro(telefono)
+    
     url = f"{WAHA_URL.rstrip('/')}/api/sendText"
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-    payload = {"session": sesion, "chatId": f"{telefono}@c.us", "text": texto}
+    
+    payload = {
+        "session": sesion, 
+        "chatId": f"{telefono_final}@c.us", 
+        "text": texto
+    }
+    
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         if r.status_code in [200, 201]: return True, ""
@@ -89,7 +106,7 @@ def generar_html_media(archivo_bytes):
     except Exception: return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
 # ==========================================
-# 🕵️ VIGÍA INVISIBLE (DETECTA EL CAMBIO)
+# 🕵️ VIGÍA INVISIBLE
 # ==========================================
 try:
     run_poller = st.fragment(run_every=3) 
@@ -101,14 +118,14 @@ def poller_cambios_db():
     st.markdown("<div style='display:none;'>vigia_activo</div>", unsafe_allow_html=True)
     try:
         with engine.connect() as conn: 
-            conn.commit() # 💥 IMPORTANTE: Fuerza refresco de caché DB
+            conn.commit() 
             version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar() or 0
             
             if 'db_version' not in st.session_state:
                 st.session_state['db_version'] = version_actual
             elif st.session_state['db_version'] != version_actual:
                 st.session_state['db_version'] = version_actual
-                st.rerun() # 🚀 Recarga la página completa
+                st.rerun()
     except Exception:
         pass
 
@@ -116,12 +133,10 @@ def poller_cambios_db():
 # VISTA PRINCIPAL
 # ==========================================
 def render_chat():
-    c_titulo, c_hora = st.columns([70, 30])
-    c_titulo.title("💬 Chat Center")
-    hora_str = datetime.now().strftime("%H:%M:%S")
-    c_hora.caption(f"🔄 Actualizado: {hora_str}")
+    c_tit, c_time = st.columns([80, 20])
+    c_tit.title("💬 Chat Center")
+    c_time.caption(f"🔄 {datetime.now().strftime('%H:%M:%S')}")
 
-    # Activamos el vigía
     poller_cambios_db()
 
     def cambiar_chat(telefono):
@@ -133,17 +148,16 @@ def render_chat():
     telefono_actual = st.session_state['chat_actual_telefono']
     col_lista, col_chat = st.columns([35, 65])
 
-    # --- BANDEJA AGRUPADA ---
+    # --- BANDEJA ---
     with col_lista:
         st.subheader("Bandeja")
-        if st.button("🔄 Recargar Manual", use_container_width=True):
+        if st.button("🔄 Recargar", use_container_width=True):
             st.rerun()
         st.divider()
 
         try:
             with engine.connect() as conn:
-                conn.commit() # 💥 ROMPE-ESPEJISMO: Asegura leer datos FRESCOS de la Bandeja
-                
+                conn.commit() 
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
@@ -162,7 +176,7 @@ def render_chat():
                     else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
                     query += filtro
                 
-                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 150"
+                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 200"
                 df_clientes = pd.read_sql(text(query), conn)
 
             with st.container(height=600):
@@ -207,17 +221,16 @@ def render_chat():
                                         pass 
 
         except Exception as e:
-            st.error("Reconectando lista...")
+            st.error("Error cargando lista")
 
     # --- CHAT ---
     with col_chat:
         if not telefono_actual:
-            st.info("👈 Selecciona un chat de la izquierda.")
+            st.info("👈 Selecciona un chat.")
         else:
             try:
-                # Marcar leído
                 with engine.connect() as conn:
-                    conn.commit() # 💥 ROMPE-ESPEJISMO: Asegura ver conteo real
+                    conn.commit() 
                     unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
                     if unreads_query and unreads_query[0] > 0:
                         sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
@@ -226,10 +239,8 @@ def render_chat():
                         try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
                         except: pass
 
-                # Cargar Mensajes
                 with engine.connect() as conn:
-                    conn.commit() # 💥 ROMPE-ESPEJISMO: ESTE ES CRÍTICO PARA VER EL NUEVO MENSAJE
-                    
+                    conn.commit() 
                     tabla = get_table_name(conn)
                     info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
                     nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
