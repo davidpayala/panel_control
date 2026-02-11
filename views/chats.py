@@ -88,30 +88,19 @@ def generar_html_media(archivo_bytes):
             return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>{icono_texto}</a>"
     except Exception: return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
-
 # ==========================================
-# 🕵️ VIGÍA INVISIBLE DE SOLO LECTURA (Corregido)
+# 🕵️ VIGÍA INVISIBLE (Lógica 1/0)
 # ==========================================
 try:
     run_poller = st.fragment(run_every=3) 
-    TIENE_FRAGMENT = True
 except AttributeError:
     run_poller = lambda f: f
-    TIENE_FRAGMENT = False
 
 @run_poller
 def poller_cambios_db():
-    # 🚀 TRUCO VISUAL: Engañamos al navegador renderizando un elemento invisible. 
-    # Sin esto, el navegador cancela el temporizador para "ahorrar memoria".
-    st.markdown("<div style='display:none;'>vigia_activo</div>", unsafe_allow_html=True)
-    
     try:
         with engine.connect() as conn: 
             version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar()
-            
-            # 🚀 TRUCO DB: Obligamos a Postgres a cerrar el "modo lectura" para que no 
-            # nos devuelva un dato viejo almacenado en caché la próxima vez.
-            conn.commit() 
             
             if 'db_version' not in st.session_state:
                 st.session_state['db_version'] = version_actual
@@ -121,16 +110,11 @@ def poller_cambios_db():
     except Exception:
         pass
 
-
 # ==========================================
 # VISTA PRINCIPAL
 # ==========================================
 def render_chat():
     st.title("💬 Chat Center")
-
-    # 🚀 ALERTA DE COMPATIBILIDAD
-    if not TIENE_FRAGMENT:
-        st.error("⚠️ **AVISO:** Tu sistema usa una versión antigua de Streamlit. Para que los chats se actualicen solos, abre tu archivo `requirements.txt`, asegúrate de que diga `streamlit>=1.37.0` y vuelve a desplegar en Railway.")
 
     poller_cambios_db()
 
@@ -143,7 +127,7 @@ def render_chat():
     telefono_actual = st.session_state['chat_actual_telefono']
     col_lista, col_chat = st.columns([35, 65])
 
-    # --- BANDEJA ---
+    # --- BANDEJA AGRUPADA ---
     with col_lista:
         st.subheader("Bandeja")
         st.divider()
@@ -153,8 +137,9 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
+                # Modificado: Se incluye 'estado' en la consulta SQL
                 query = f"""
-                    SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id,
+                    SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id, c.estado,
                            (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos,
                            (SELECT MAX(fecha) FROM mensajes m WHERE m.telefono = c.telefono) as ultima_interaccion
                     FROM {tabla} c
@@ -168,20 +153,48 @@ def render_chat():
                     else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
                     query += filtro
                 
-                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 50"
+                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 100"
                 df_clientes = pd.read_sql(text(query), conn)
 
             with st.container(height=600):
                 if df_clientes.empty:
                     st.info("No se encontraron chats.")
                 else:
-                    for _, row in df_clientes.iterrows():
-                        t_row = row['telefono']
-                        c_leidos = row['no_leidos']
-                        icono = "🔴" if c_leidos > 0 else "👤"
-                        label = f"{icono} {row['nombre']}" + (f" ({c_leidos})" if c_leidos > 0 else "")
-                        tipo = "primary" if telefono_actual == t_row else "secondary"
-                        st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,))
+                    # LÓGICA DE AGRUPACIÓN
+                    cat_map = {
+                        "🆕 Sin empezar": ["Sin empezar"],
+                        "💬 Cotizando": ["Responder duda", "Interesado en venta"],
+                        "🏍️ Venta Motorizado": ["Venta motorizado", "Venta express moto"],
+                        "🏢 Venta Agencia": ["Venta agencia"],
+                        "🚚 En Ruta": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
+                        "✨ Post Venta": ["Pendiente agradecer", "Problema post"]
+                    }
+                    
+                    def asignar_categoria(estado):
+                        if not estado: return "📁 Otros"
+                        for cat, estados in cat_map.items():
+                            if estado in estados: return cat
+                        return "📁 Otros"
+                        
+                    df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
+                    orden_categorias = ["🆕 Sin empezar", "💬 Cotizando", "🏍️ Venta Motorizado", "🏢 Venta Agencia", "🚚 En Ruta", "✨ Post Venta", "📁 Otros"]
+
+                    for cat in orden_categorias:
+                        df_cat = df_clientes[df_clientes['categoria'] == cat]
+                        if not df_cat.empty:
+                            no_leidos_cat = int(df_cat['no_leidos'].sum())
+                            badge = f" 🔴 {no_leidos_cat}" if no_leidos_cat > 0 else ""
+                            
+                            chat_activo_en_cat = telefono_actual in df_cat['telefono'].values
+                            
+                            with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=(no_leidos_cat > 0 or chat_activo_en_cat)):
+                                for _, row in df_cat.iterrows():
+                                    t_row = row['telefono']
+                                    c_leidos = row['no_leidos']
+                                    icono = "🔴" if c_leidos > 0 else "👤"
+                                    label = f"{icono} {row['nombre']}" + (f" ({c_leidos})" if c_leidos > 0 else "")
+                                    tipo = "primary" if telefono_actual == t_row else "secondary"
+                                    st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,))
         except Exception as e:
             st.error("Reconectando...")
 
