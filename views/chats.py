@@ -20,12 +20,20 @@ try:
 except ImportError:
     def marcar_leido_waha(*args): pass
 
+def marcar_leido_api(telefono, sesion):
+    if not WAHA_URL: return
+    url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+    payload = {"session": sesion, "chatId": f"{telefono}@c.us"}
+    try: requests.post(url, json=payload, headers=headers, timeout=5)
+    except: pass
+
 def mandar_mensaje_api(telefono, texto, sesion):
     if not WAHA_URL: return False, "Falta WAHA_URL"
     url = f"{WAHA_URL.rstrip('/')}/api/sendText"
     headers = {"Content-Type": "application/json"}
     if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-    
     payload = {"session": sesion, "chatId": f"{telefono}@c.us", "text": texto}
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -49,7 +57,6 @@ def generar_html_media(archivo_bytes):
     try:
         b = bytes(archivo_bytes)
         b64 = base64.b64encode(b).decode('utf-8')
-        
         mime, ext, nombre_archivo = 'application/octet-stream', 'bin', 'Documento'
 
         if b.startswith(b'\xff\xd8'): mime, ext = 'image/jpeg', 'jpg'
@@ -83,36 +90,28 @@ def generar_html_media(archivo_bytes):
 
 
 # ==========================================
-# 🕵️ VIGÍA INVISIBLE DE BASE DE DATOS
+# 🕵️ LÓGICA 1/0 (DIRTY FLAG) ULTRA LIGERA
 # ==========================================
 try:
-    run_poller = st.fragment(run_every=10) # Frecuencia ampliada a 10s para proteger la DB
+    run_poller = st.fragment(run_every=3) # Como es ligero, podemos volver a 3s
 except AttributeError:
     run_poller = lambda f: f
 
 @run_poller
 def poller_cambios_db():
     try:
-        with engine.connect() as conn:
-            res = conn.execute(text("""
-                SELECT 
-                    COALESCE(MAX(id), 0), 
-                    COUNT(*), 
-                    COALESCE(SUM(CASE WHEN leido=FALSE AND tipo='ENTRANTE' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN estado_waha='leido' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN estado_waha='recibido' THEN 1 ELSE 0 END), 0)
-                FROM mensajes
-            """)).fetchone()
+        with engine.begin() as conn: # Usamos begin() para modificar la tabla directamente
+            # 2. Revisa el estado (True = 1, False = 0)
+            hay_cambios = conn.execute(text("SELECT hay_cambios FROM sync_estado WHERE id = 1")).scalar()
             
-            estado_actual = f"{res[0]}_{res[1]}_{res[2]}_{res[3]}_{res[4]}"
-            
-            if 'db_hash' not in st.session_state:
-                st.session_state['db_hash'] = estado_actual
-            elif st.session_state['db_hash'] != estado_actual:
-                st.session_state['db_hash'] = estado_actual
+            # 2.1 Si está en 1 (Hubo cambios)
+            if hay_cambios:
+                # Lo pone en 0 y recarga la pantalla
+                conn.execute(text("UPDATE sync_estado SET hay_cambios = FALSE WHERE id = 1"))
                 st.rerun()
+            # 2.2 Si está en 0, no hace nada y termina silenciosamente.
     except Exception:
-        pass # Ignora fallos silenciosamente si la BD se reinicia
+        pass
 
 
 # ==========================================
@@ -172,7 +171,7 @@ def render_chat():
                         tipo = "primary" if telefono_actual == t_row else "secondary"
                         st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,))
         except Exception as e:
-            st.error("Reconectando con la base de datos...")
+            st.error("Error cargando lista")
 
     # --- CHAT ---
     with col_chat:
@@ -181,11 +180,12 @@ def render_chat():
         else:
             try:
                 with engine.connect() as conn:
-                    unreads = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).scalar()
-                    if unreads and unreads > 0:
+                    unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
+                    if unreads_query and unreads_query[0] > 0:
+                        sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
                         conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
                         conn.commit()
-                        try: threading.Thread(target=marcar_leido_waha, args=(f"{telefono_actual}@c.us",)).start()
+                        try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
                         except: pass
 
                 with engine.connect() as conn:
@@ -311,11 +311,10 @@ def render_chat():
                 if txt:
                     ok, res = mandar_mensaje_api(telefono_actual, txt, sesion_elegida)
                     if ok:
-                        with st.spinner("Enviando..."): 
-                            time.sleep(1.5) 
+                        # Cuando nosotros enviamos el mensaje, forzamos recarga sin esperar al webhook
                         st.rerun()
                     else:
                         st.error(f"Error al enviar: {res}")
 
             except Exception as e:
-                st.error("Reconectando historial...")
+                st.error("Error en el chat")

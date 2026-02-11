@@ -13,14 +13,13 @@ app = Flask(__name__)
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
 
-# --- LOGGING ---
 def log_info(msg):
     print(f"[INFO] {msg}", file=sys.stdout, flush=True)
 
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🚑 PARCHE DB (LOGS CRUDOS Y SESIÓN) ---
+# --- 🚑 PARCHE DB: CREAMOS LA TABLA DE ESTADO (1/0) ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
@@ -30,7 +29,6 @@ def aplicar_parche_db():
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre VARCHAR(100)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS apellido VARCHAR(100)"))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id VARCHAR(100)"))
-            # NUEVO: Columna para saber de qué número es el chat
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS session_name VARCHAR(50)"))
             
             conn.execute(text("""
@@ -42,11 +40,22 @@ def aplicar_parche_db():
                     payload TEXT
                 )
             """))
+
+            # 🚀 LA MAGIA DEL ESTADO 1/0
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS sync_estado (
+                    id INT PRIMARY KEY,
+                    hay_cambios BOOLEAN DEFAULT FALSE
+                )
+            """))
+            conn.execute(text("""
+                INSERT INTO sync_estado (id, hay_cambios)
+                VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING
+            """))
     except: pass
 
 aplicar_parche_db()
 
-# --- FUNCIONES AUXILIARES ---
 def descargar_media_plus(media_url):
     try:
         if not media_url: return None
@@ -67,7 +76,6 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
-# --- GUARDAR LOG DIAGNÓSTICO ---
 def guardar_log_diagnostico(data):
     try:
         if isinstance(data, list): item = data[0]
@@ -98,9 +106,6 @@ def guardar_log_diagnostico(data):
     except Exception as e:
         log_error(f"Error guardando log diagnóstico: {e}")
 
-# ==============================================================================
-# 🧠 CEREBRO V29: ROBUST ID EXTRACTION & FILTERED LOGS
-# ==============================================================================
 def obtener_identidad(payload, session):
     try:
         from_me = payload.get('fromMe', False)
@@ -131,15 +136,11 @@ def obtener_identidad(payload, session):
             "es_grupo": es_grupo
         }
     except Exception as e:
-        log_error(f"Error identidad: {e}")
         return None
 
-# ==============================================================================
-# RUTAS FLASK
-# ==============================================================================
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V29 (Session Tracker Enabled)", 200
+    return "Webhook V31 (Dirty Flag 1/0 Enabled)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -164,6 +165,8 @@ def recibir_mensaje():
                     with engine.connect() as conn:
                         conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), 
                                     {"e": nuevo_estado, "w": msg_id})
+                        # 🚀 PONER ESTADO EN 1 (TRUE)
+                        conn.execute(text("UPDATE sync_estado SET hay_cambios = TRUE WHERE id = 1"))
                         conn.commit()
                 except: pass
                 continue 
@@ -250,7 +253,6 @@ def recibir_mensaje():
                     existe_msg = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if not existe_msg:
-                        # NUEVO: Guardamos la columna session_name
                         conn.execute(text("""
                             INSERT INTO mensajes (
                                 telefono, tipo, contenido, fecha, leido, archivo_data, 
@@ -276,6 +278,8 @@ def recibir_mensaje():
                             WHERE whatsapp_id = :wid
                         """), {"wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "d": archivo_bytes})
                     
+                    # 🚀 PONER ESTADO EN 1 (TRUE)
+                    conn.execute(text("UPDATE sync_estado SET hay_cambios = TRUE WHERE id = 1"))
                     conn.commit()
 
             except Exception as e:
