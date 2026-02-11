@@ -19,7 +19,7 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🚑 PARCHE DB: CREAMOS LA TABLA DE ESTADO (1/0) ---
+# --- 🚑 PARCHE DB: SISTEMA DE VERSIÓN (ANTI-BLOQUEOS) ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
@@ -41,16 +41,16 @@ def aplicar_parche_db():
                 )
             """))
 
-            # 🚀 LA MAGIA DEL ESTADO 1/0
+            # 🚀 NUEVO: Tabla de versión incremental. No usa True/False.
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS sync_estado (
                     id INT PRIMARY KEY,
-                    hay_cambios BOOLEAN DEFAULT FALSE
+                    version INT DEFAULT 0
                 )
             """))
             conn.execute(text("""
-                INSERT INTO sync_estado (id, hay_cambios)
-                VALUES (1, FALSE) ON CONFLICT (id) DO NOTHING
+                INSERT INTO sync_estado (id, version)
+                VALUES (1, 0) ON CONFLICT (id) DO NOTHING
             """))
     except: pass
 
@@ -140,7 +140,7 @@ def obtener_identidad(payload, session):
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    return "Webhook V31 (Dirty Flag 1/0 Enabled)", 200
+    return "Webhook V32 (Version Incremental Enabled)", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -165,8 +165,8 @@ def recibir_mensaje():
                     with engine.connect() as conn:
                         conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), 
                                     {"e": nuevo_estado, "w": msg_id})
-                        # 🚀 PONER ESTADO EN 1 (TRUE)
-                        conn.execute(text("UPDATE sync_estado SET hay_cambios = TRUE WHERE id = 1"))
+                        # 🚀 SUMAR +1 A LA VERSIÓN
+                        conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
                         conn.commit()
                 except: pass
                 continue 
@@ -278,8 +278,8 @@ def recibir_mensaje():
                             WHERE whatsapp_id = :wid
                         """), {"wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "d": archivo_bytes})
                     
-                    # 🚀 PONER ESTADO EN 1 (TRUE)
-                    conn.execute(text("UPDATE sync_estado SET hay_cambios = TRUE WHERE id = 1"))
+                    # 🚀 SUMAR +1 A LA VERSIÓN
+                    conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
                     conn.commit()
 
             except Exception as e:

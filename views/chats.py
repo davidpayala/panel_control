@@ -90,7 +90,7 @@ def generar_html_media(archivo_bytes):
 
 
 # ==========================================
-# 🕵️ LÓGICA 1/0 (DIRTY FLAG) CORREGIDA
+# 🕵️ VIGÍA INVISIBLE DE SOLO LECTURA
 # ==========================================
 try:
     run_poller = st.fragment(run_every=3) 
@@ -100,17 +100,15 @@ except AttributeError:
 @run_poller
 def poller_cambios_db():
     try:
-        with engine.connect() as conn: # 🚀 Usamos connect() en lugar de begin() para evitar Auto-Rollbacks
-            hay_cambios = conn.execute(text("SELECT hay_cambios FROM sync_estado WHERE id = 1")).scalar()
+        with engine.connect() as conn: 
+            # 🚀 LECTURA PURA: Jamás bloquea la base de datos
+            version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar()
             
-            if hay_cambios:
-                # 1. Apagamos la alarma
-                conn.execute(text("UPDATE sync_estado SET hay_cambios = FALSE WHERE id = 1"))
-                
-                # 2. GUARDAMOS expresamente el cambio ANTES de interrumpir
-                conn.commit() 
-                
-                # 3. Ahora sí, recargamos la página con seguridad
+            if 'db_version' not in st.session_state:
+                st.session_state['db_version'] = version_actual
+            elif st.session_state['db_version'] != version_actual:
+                # Si la versión cambió, simplemente guardamos el nuevo número y recargamos
+                st.session_state['db_version'] = version_actual
                 st.rerun()
     except Exception:
         pass
@@ -173,7 +171,7 @@ def render_chat():
                         tipo = "primary" if telefono_actual == t_row else "secondary"
                         st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,))
         except Exception as e:
-            st.error("Error cargando lista")
+            st.error("Reconectando...")
 
     # --- CHAT ---
     with col_chat:
