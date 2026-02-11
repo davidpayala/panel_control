@@ -34,6 +34,10 @@ def get_table_name(conn):
 def render_chat():
     st.title("💬 Chat Center")
 
+    # 🚀 SOLUCIÓN DOBLE CARGA: Usamos un Callback para cambiar el estado ANTES de recargar
+    def cambiar_chat(telefono):
+        st.session_state['chat_actual_telefono'] = telefono
+
     if 'chat_actual_telefono' not in st.session_state:
         st.session_state['chat_actual_telefono'] = None
 
@@ -81,9 +85,8 @@ def render_chat():
                         label = f"{icono} {row['nombre']}" + (f" ({c_leidos})" if c_leidos > 0 else "")
                         tipo = "primary" if telefono_actual == t_row else "secondary"
                         
-                        if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo):
-                            st.session_state['chat_actual_telefono'] = t_row
-                            st.rerun()
+                        # Al usar on_click, eliminamos el st.rerun() y el parpadeo doble
+                        st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,))
         except Exception as e:
             st.error("Error cargando lista")
             st.code(e)
@@ -96,14 +99,12 @@ def render_chat():
             st.info("👈 Selecciona un chat de la izquierda.")
         else:
             try:
-                # Marcar leído en WAHA en segundo plano
                 try: 
                     threading.Thread(target=marcar_leido_waha, args=(f"{telefono_actual}@c.us",)).start()
                 except: pass
 
                 with engine.connect() as conn:
                     tabla = get_table_name(conn)
-                    # Marcar leído en BD
                     conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
                     conn.commit()
                     
@@ -111,7 +112,6 @@ def render_chat():
                     nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
                     wsp_id = info.whatsapp_internal_id if hasattr(info, 'whatsapp_internal_id') else "Desconocido"
                     
-                    # 🔥 OPTIMIZACIÓN DE RENDIMIENTO: Solo traemos los últimos 100 mensajes 
                     msgs = pd.read_sql(text("""
                         SELECT * FROM (
                             SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha DESC LIMIT 100
@@ -129,7 +129,6 @@ def render_chat():
                     hoy = datetime.now().date()
                     ayer = hoy - timedelta(days=1)
 
-                    # 1. Construir bloques HTML sin indentación
                     for _, m in msgs.iterrows():
                         try: fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
                         except: fecha_msg = None
@@ -139,6 +138,7 @@ def render_chat():
                             elif fecha_msg == ayer: texto_fecha = "Ayer"
                             else: texto_fecha = fecha_msg.strftime("%d/%m/%Y")
                             
+                            # 🚀 SOLUCIÓN BUGS VISUALES: HTML 100% aplanado sin indentaciones
                             html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
                             ultima_fecha = fecha_msg
 
@@ -159,54 +159,32 @@ def render_chat():
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        # CORRECCIÓN DE BUGS: Controlar "None" si el mensaje es multimedia
                         contenido_texto = str(m['contenido']) if pd.notna(m['contenido']) else "📷 Archivo"
 
-                        # CORRECCIÓN DE BUGS VISUAL: Totalmente pegado a la izquierda para evitar <code> de Streamlit
-                        html_msg = f"""<div class='msg-row {clase_row}'>
-<div class='bubble {clase_bub}'>
-{reply_html}
-<div style='white-space: pre-wrap;'>{contenido_texto}</div>
-<div class='meta'>{hora} {icono_estado}</div>
-</div>
-</div>"""
+                        # HTML aplanado en una sola línea para evitar código de bloque Markdown
+                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}<div style='white-space: pre-wrap;'>{contenido_texto}</div><div class='meta'>{hora} {icono_estado}</div></div></div>"
                         html_blocks.append(html_msg)
 
-                    # 2. Invertir para el scroll automático
                     html_blocks.reverse()
 
-                    # 3. Renderizado único de alto rendimiento
-                    st.markdown(f"""
-                    <style>
-                        .chat-container {{
-                            display: flex;
-                            flex-direction: column-reverse;
-                            height: 550px;
-                            overflow-y: auto;
-                            padding: 10px;
-                            border: 1px solid rgba(128, 128, 128, 0.2);
-                            border-radius: 10px;
-                            background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png');
-                            background-color: transparent;
-                        }}
-                        .msg-row {{ display: flex; margin-bottom: 5px; }}
-                        .msg-mio {{ justify-content: flex-end; }}
-                        .msg-otro {{ justify-content: flex-start; }}
-                        .bubble {{ padding: 8px 12px; border-radius: 10px; font-size: 15px; max-width: 80%; display: flex; flex-direction: column; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
-                        .b-mio {{ background-color: #dcf8c6; color: black; border-top-right-radius: 0; }}
-                        .b-otro {{ background-color: #ffffff; color: black; border-top-left-radius: 0; }}
-                        .meta {{ font-size: 10px; color: #777; text-align: right; margin-top: 3px; display: inline-block; }}
-                        .check-read {{ color: #34B7F1; font-weight: bold; font-size: 12px; }}
-                        .check-sent {{ color: #999; font-size: 12px; }}
-                        .reply-box {{ background-color: rgba(0, 0, 0, 0.05); border-left: 4px solid #34B7F1; padding: 6px 8px; border-radius: 4px; font-size: 13px; margin-bottom: 6px; color: #555; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; }}
-                        .b-mio .reply-box {{ border-left-color: #075E54; background-color: rgba(0, 0, 0, 0.08); }}
-                        .date-separator {{ display: flex; justify-content: center; margin: 15px 0; }}
-                        .date-separator span {{ background-color: #e1f3fb; color: #555; padding: 4px 12px; border-radius: 10px; font-size: 12px; font-weight: bold; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
-                    </style>
-                    <div class='chat-container'>
-                        {''.join(html_blocks)}
-                    </div>
-                    """, unsafe_allow_html=True)
+                    css_y_html = f"""<style>
+.chat-container {{ display: flex; flex-direction: column-reverse; height: 550px; overflow-y: auto; padding: 10px; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 10px; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-color: transparent; }}
+.msg-row {{ display: flex; margin-bottom: 5px; }}
+.msg-mio {{ justify-content: flex-end; }}
+.msg-otro {{ justify-content: flex-start; }}
+.bubble {{ padding: 8px 12px; border-radius: 10px; font-size: 15px; max-width: 80%; display: flex; flex-direction: column; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
+.b-mio {{ background-color: #dcf8c6; color: black; border-top-right-radius: 0; }}
+.b-otro {{ background-color: #ffffff; color: black; border-top-left-radius: 0; }}
+.meta {{ font-size: 10px; color: #777; text-align: right; margin-top: 3px; display: inline-block; }}
+.check-read {{ color: #34B7F1; font-weight: bold; font-size: 12px; }}
+.check-sent {{ color: #999; font-size: 12px; }}
+.reply-box {{ background-color: rgba(0, 0, 0, 0.05); border-left: 4px solid #34B7F1; padding: 6px 8px; border-radius: 4px; font-size: 13px; margin-bottom: 6px; color: #555; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; }}
+.b-mio .reply-box {{ border-left-color: #075E54; background-color: rgba(0, 0, 0, 0.08); }}
+.date-separator {{ display: flex; justify-content: center; margin: 15px 0; }}
+.date-separator span {{ background-color: #e1f3fb; color: #555; padding: 4px 12px; border-radius: 10px; font-size: 12px; font-weight: bold; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
+</style><div class='chat-container'>{''.join(html_blocks)}</div>"""
+                    
+                    st.markdown(css_y_html, unsafe_allow_html=True)
 
                 # --- INPUT ---
                 with st.form("chat_form", clear_on_submit=True):
