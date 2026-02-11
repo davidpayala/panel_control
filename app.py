@@ -195,3 +195,4 @@ def main():
     elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico() # <--- AGREGADO
 if __name__ == "__main__":
     main()
+    
