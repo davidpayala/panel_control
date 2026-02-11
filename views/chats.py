@@ -7,6 +7,7 @@ import threading
 import base64
 import zipfile
 import io
+import requests
 from datetime import datetime, timedelta
 from database import engine 
 
@@ -15,13 +16,28 @@ WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
 
 try:
-    from utils import (
-        enviar_mensaje_whatsapp, 
-        marcar_chat_como_leido_waha as marcar_leido_waha 
-    )
+    from utils import marcar_chat_como_leido_waha as marcar_leido_waha 
 except ImportError:
-    def enviar_mensaje_whatsapp(*args): return False, "Error import"
     def marcar_leido_waha(*args): pass
+
+# --- FUNCIÓN DE ENVÍO DIRECTA ---
+def mandar_mensaje_api(telefono, texto, sesion):
+    if not WAHA_URL: return False, "Falta WAHA_URL"
+    url = f"{WAHA_URL.rstrip('/')}/api/{sesion}/sendText"
+    headers = {"Content-Type": "application/json"}
+    if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+    
+    payload = {
+        "chatId": f"{telefono}@c.us",
+        "text": texto
+    }
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        if r.status_code in [200, 201]:
+            return True, ""
+        return False, r.text
+    except Exception as e:
+        return False, str(e)
 
 def get_table_name(conn):
     try:
@@ -44,7 +60,6 @@ def generar_html_media(archivo_bytes):
         ext = 'bin'
         nombre_archivo = "Documento"
 
-        # Detector de firmas
         if b.startswith(b'\xff\xd8'): mime, ext = 'image/jpeg', 'jpg'
         elif b.startswith(b'\x89PNG'): mime, ext = 'image/png', 'png'
         elif b'WEBP' in b[:50]: mime, ext = 'image/webp', 'webp'
@@ -53,28 +68,20 @@ def generar_html_media(archivo_bytes):
         elif b.startswith(b'%PDF'): mime, ext = 'application/pdf', 'pdf'
         elif b.startswith(b'GIF8'): mime, ext = 'image/gif', 'gif'
         elif b.startswith(b'ID3') or b.startswith(b'\xff\xfb'): mime, ext = 'audio/mpeg', 'mp3'
-        
-        # 🚀 DETECTOR LOTTIE (STICKERS ANIMADOS ZIP)
         elif b.startswith(b'PK\x03\x04'): 
             try:
                 with zipfile.ZipFile(io.BytesIO(b)) as z:
                     json_filename = next((name for name in z.namelist() if name.endswith('.json')), None)
                     if json_filename:
-                        # Extraemos el código JSON animado
                         json_data = z.read(json_filename).decode('utf-8')
                         json_b64 = base64.b64encode(json_data.encode('utf-8')).decode('utf-8')
-                        
-                        # Creamos un minireproductor web independiente
                         lottie_html = f"""<!DOCTYPE html><html><head><script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script></head><body style="margin:0;overflow:hidden;background:transparent;"><lottie-player src="data:application/json;base64,{json_b64}" background="transparent" speed="1" style="width:150px;height:150px;" loop autoplay></lottie-player></body></html>"""
                         lottie_html_b64 = base64.b64encode(lottie_html.encode('utf-8')).decode('utf-8')
-                        
-                        # Lo incrustamos en la burbuja del chat
                         return f"<iframe src='data:text/html;base64,{lottie_html_b64}' width='150' height='150' frameborder='0' scrolling='no' allowtransparency='true' style='margin-bottom: 5px; pointer-events: none;'></iframe>"
             except Exception:
-                pass # Si no es Lottie, sigue como ZIP normal
+                pass 
             mime, ext = 'application/zip', 'zip'
 
-        # Renderizado estándar para el resto
         if mime.startswith('image/'):
             return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent;' />"
         elif mime.startswith('audio/'):
@@ -82,7 +89,8 @@ def generar_html_media(archivo_bytes):
         elif mime.startswith('video/'):
             return f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
         else:
-            return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>📄 Descargar Archivo</a>"
+            icono_texto = "🎞️ Sticker Animado (Descargar ZIP)" if ext == 'zip' else "📄 Descargar Archivo"
+            return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>{icono_texto}</a>"
     except Exception as e:
         return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
@@ -245,20 +253,49 @@ def render_chat():
 .session-tag {{ margin-left: 6px; padding: 1px 4px; border-radius: 4px; font-size: 9px; font-weight: 800; color: #666; background-color: rgba(0,0,0,0.06); }}
 .b-mio .session-tag {{ background-color: rgba(0,0,0,0.08); color: #444; }}
 </style><div class='chat-container'>{''.join(html_blocks)}</div>"""
-                    
                     st.markdown(css_y_html, unsafe_allow_html=True)
 
+                # --- LÓGICA DE SELECCIÓN Y ADVERTENCIA ---
+                ultima_sesion = None
+                if not msgs.empty and 'session_name' in msgs.columns:
+                    sesiones_validas = msgs['session_name'].dropna().astype(str).str.strip().str.lower()
+                    sesiones_validas = sesiones_validas[sesiones_validas != ""]
+                    if not sesiones_validas.empty:
+                        ultima_sesion = sesiones_validas.iloc[-1]
+
+                # Smart Default: Selecciona automáticamente la línea usada en el último mensaje
+                idx_sesion = 0
+                if ultima_sesion == 'default':
+                    idx_sesion = 1
+
+                st.write("") 
+                c_sel, c_warn = st.columns([30, 70])
+                with c_sel:
+                    sesion_elegida = st.selectbox(
+                        "Línea de envío:", 
+                        options=["principal", "default"], 
+                        index=idx_sesion,
+                        format_func=lambda x: "📱 KM (Principal)" if x == "principal" else "👓 LENTES (Default)",
+                        key=f"sess_{telefono_actual}",
+                        label_visibility="collapsed"
+                    )
+                with c_warn:
+                    if ultima_sesion and ultima_sesion != sesion_elegida:
+                        nombre_ult = "KM" if ultima_sesion == 'principal' else "LENTES"
+                        st.markdown(f"<div style='color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; padding: 6px 10px; border-radius: 5px; font-size: 13px; font-weight: bold;'>⚠️ OJO: El último mensaje fue en {nombre_ult}.</div>", unsafe_allow_html=True)
+
+                # --- INPUT ---
                 with st.form("chat_form", clear_on_submit=True):
                     c_in, c_btn = st.columns([85, 15])
                     txt = c_in.text_input("Mensaje", label_visibility="collapsed", placeholder="Escribe un mensaje...")
                     btn = c_btn.form_submit_button("➤")
                     
                     if btn and txt:
-                        ok, res = enviar_mensaje_whatsapp(telefono_actual, txt)
+                        ok, res = mandar_mensaje_api(telefono_actual, txt, sesion_elegida)
                         if ok:
                             with st.spinner("Enviando..."): time.sleep(1.5) 
                             st.rerun()
-                        else: st.error(f"Error: {res}")
+                        else: st.error(f"Error al enviar: {res}")
 
             except Exception as e:
                 st.error("Error cargando chat")
