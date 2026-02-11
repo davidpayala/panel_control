@@ -89,7 +89,7 @@ def generar_html_media(archivo_bytes):
     except Exception: return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
 
 # ==========================================
-# 🕵️ VIGÍA INVISIBLE (ACTUALIZADO)
+# 🕵️ VIGÍA INVISIBLE (DETECTA EL CAMBIO)
 # ==========================================
 try:
     run_poller = st.fragment(run_every=3) 
@@ -101,19 +101,14 @@ def poller_cambios_db():
     st.markdown("<div style='display:none;'>vigia_activo</div>", unsafe_allow_html=True)
     try:
         with engine.connect() as conn: 
-            conn.commit() # 💥 ROMPE-ESPEJISMO 1: Obliga a leer datos frescos
-            
-            # Si la tabla no existe aún, devolvemos 0 para no romper nada
-            try:
-                version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar() or 0
-            except:
-                version_actual = 0
+            conn.commit() # 💥 IMPORTANTE: Fuerza refresco de caché DB
+            version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar() or 0
             
             if 'db_version' not in st.session_state:
                 st.session_state['db_version'] = version_actual
             elif st.session_state['db_version'] != version_actual:
                 st.session_state['db_version'] = version_actual
-                st.rerun()
+                st.rerun() # 🚀 Recarga la página completa
     except Exception:
         pass
 
@@ -121,15 +116,13 @@ def poller_cambios_db():
 # VISTA PRINCIPAL
 # ==========================================
 def render_chat():
-    st.title("💬 Chat Center")
+    c_titulo, c_hora = st.columns([70, 30])
+    c_titulo.title("💬 Chat Center")
+    hora_str = datetime.now().strftime("%H:%M:%S")
+    c_hora.caption(f"🔄 Actualizado: {hora_str}")
 
     # Activamos el vigía
     poller_cambios_db()
-
-    # --- DEBUGGING VISUAL (Puedes borrar esto luego) ---
-    ver = st.session_state.get('db_version', 0)
-    # st.sidebar.caption(f"📡 Sincronización DB: v{ver}") 
-    # ---------------------------------------------------
 
     def cambiar_chat(telefono):
         st.session_state['chat_actual_telefono'] = telefono
@@ -143,13 +136,13 @@ def render_chat():
     # --- BANDEJA AGRUPADA ---
     with col_lista:
         st.subheader("Bandeja")
-        if st.button("🔄 Forzar Recarga", use_container_width=True):
+        if st.button("🔄 Recargar Manual", use_container_width=True):
             st.rerun()
         st.divider()
 
         try:
             with engine.connect() as conn:
-                conn.commit() # 💥 ROMPE-ESPEJISMO 2: Obliga a ver los chats nuevos REALES
+                conn.commit() # 💥 ROMPE-ESPEJISMO: Asegura leer datos FRESCOS de la Bandeja
                 
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
@@ -176,7 +169,6 @@ def render_chat():
                 if df_clientes.empty:
                     st.info("No se encontraron chats.")
                 else:
-                    # CONFIGURACIÓN DE ETAPAS
                     cat_map = {
                         "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"],
                         "ETAPA_1": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
@@ -189,7 +181,7 @@ def render_chat():
                         if not estado or str(estado).strip() == "": return "ETAPA_0"
                         for cat, estados in cat_map.items():
                             if estado in estados: return cat
-                        return "ETAPA_0" # Por defecto si no coincide
+                        return "ETAPA_0"
                         
                     df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
                     orden_categorias = ["ETAPA_2", "ETAPA_1", "ETAPA_3", "ETAPA_4", "ETAPA_0"]
@@ -199,7 +191,6 @@ def render_chat():
                         if not df_cat.empty:
                             no_leidos_cat = int(df_cat['no_leidos'].sum())
                             badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
-                            
                             chat_activo_aqui = telefono_actual in df_cat['telefono'].values
                             expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "ETAPA_2")
                             
@@ -214,6 +205,7 @@ def render_chat():
                                     
                                     if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,)):
                                         pass 
+
         except Exception as e:
             st.error("Reconectando lista...")
 
@@ -225,7 +217,7 @@ def render_chat():
             try:
                 # Marcar leído
                 with engine.connect() as conn:
-                    conn.commit() # 💥 ROMPE-ESPEJISMO 3
+                    conn.commit() # 💥 ROMPE-ESPEJISMO: Asegura ver conteo real
                     unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
                     if unreads_query and unreads_query[0] > 0:
                         sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
@@ -236,7 +228,7 @@ def render_chat():
 
                 # Cargar Mensajes
                 with engine.connect() as conn:
-                    conn.commit() # 💥 ROMPE-ESPEJISMO 4: ¡ESTE ES EL MÁS IMPORTANTE PARA VER MENSAJES NUEVOS!
+                    conn.commit() # 💥 ROMPE-ESPEJISMO: ESTE ES CRÍTICO PARA VER EL NUEVO MENSAJE
                     
                     tabla = get_table_name(conn)
                     info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
