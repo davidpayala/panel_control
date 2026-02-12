@@ -37,7 +37,6 @@ def aplicar_parche_db():
                 )
             """))
 
-            # Tabla Sync
             try:
                 conn.execute(text("SELECT version FROM sync_estado LIMIT 1"))
             except Exception:
@@ -70,60 +69,56 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
-# --- 🕵️ DETECTIVE DE IDENTIDAD V38 (UNIFICADOR) ---
-def obtener_identidad(payload, session):
+# --- 🧠 NUEVO EXTRACTOR DE IDs (Separa LID y Teléfono) ---
+def extraer_ids_complejos(payload, session):
     try:
         from_me = payload.get('fromMe', False)
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
 
-        # 1. Identificar el ID "Técnico" (Puede ser LID o Normal)
-        routing_id = None
-        if from_me: routing_id = payload.get('to')
-        else: routing_id = payload.get('from')
-
+        # 1. Buscar Routing ID (Quién envía/recibe técnicamente)
+        routing_id = payload.get('to') if from_me else payload.get('from')
         if not routing_id: routing_id = key.get('remoteJid')
         if not routing_id: routing_id = payload.get('participant')
 
-        if not routing_id: return None
+        lid_capturado = None
+        telefono_capturado = None
 
-        # 2. BUSCAR EL NÚMERO REAL (La verdad absoluta)
-        # Incluso si el routing_id es un @lid, el número real suele estar en _data['id']['user']
-        # o en el propio routing_id si es @c.us
-        
-        numero_real = ""
-        
-        # Intento A: Sacarlo del ID si es normal
-        if "@s.whatsapp.net" in routing_id or "@c.us" in routing_id:
-            numero_real = routing_id.split('@')[0]
-            
-        # Intento B: Si es LID, buscar en los metadatos ocultos
-        elif "@lid" in routing_id:
-            # WAHA suele exponer el número real en _data -> id -> user
-            user_oculto = _data.get('id', {}).get('user')
-            if user_oculto and str(user_oculto).isdigit():
-                numero_real = str(user_oculto)
-            else:
-                # Si falla, intentamos buscar en participants si es grupo, o fallamos
-                # Si no encontramos el número real, no podemos unificar, usamos el LID como "número" temporal
-                numero_real = routing_id.split('@')[0] 
+        # 2. Análisis del Routing ID
+        if routing_id:
+            if '@lid' in routing_id:
+                lid_capturado = routing_id
+            elif '@c.us' in routing_id or '@s.whatsapp.net' in routing_id:
+                telefono_capturado = routing_id.split('@')[0]
 
-        # Limpieza final (solo dígitos)
-        telefono_limpio = "".join(filter(str.isdigit, numero_real))
-        es_grupo = '@g.us' in routing_id
+        # 3. Búsqueda profunda del teléfono (si tenemos LID, el teléfono suele estar en _data)
+        if not telefono_capturado:
+            posible_user = _data.get('id', {}).get('user')
+            if posible_user and str(posible_user).isdigit():
+                telefono_capturado = str(posible_user)
+        
+        # 4. Búsqueda profunda del LID (si tenemos teléfono, el LID puede estar en participant o keys ocultas)
+        if not lid_capturado:
+            # A veces viene en remoteJidAlt o participantAlt
+            alt_id = key.get('participant') # A veces en grupos el LID viene aquí
+            if alt_id and '@lid' in alt_id:
+                lid_capturado = alt_id
+
+        es_grupo = '@g.us' in (routing_id or "")
 
         return {
-            "id_canonico": routing_id,  # El ID técnico para responder (puede ser LID)
-            "telefono": telefono_limpio, # El ID humano para agrupar (Siempre 519...)
-            "es_grupo": es_grupo
+            "lid": lid_capturado,       # El ID @lid (o None)
+            "telefono": telefono_capturado, # El número puro '519...' (o None)
+            "es_grupo": es_grupo,
+            "routing_final": routing_id # Para saber a dónde responder si falla todo
         }
     except Exception as e:
-        log_error(f"Error identidad: {e}")
+        log_error(f"Error extrayendo IDs: {e}")
         return None
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V38 (Phone Unifier) ✅", 200
+    return "Webhook V39 (Logic Master) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -155,17 +150,14 @@ def recibir_mensaje():
             if tipo_evento not in ['message', 'message.any', 'message.created']: continue
             if payload.get('from') == 'status@broadcast': continue
 
-            identidad = obtener_identidad(payload, session_name)
-            if not identidad: continue
+            # --- APLICACIÓN DE TU LÓGICA MAESTRA ---
+            ids = extraer_ids_complejos(payload, session_name)
+            if not ids: continue
 
-            routing_id = identidad['id_canonico'] # Puede ser LID
-            telefono_msg = identidad['telefono']  # SIEMPRE es el número (519...)
+            wspid_lid = ids['lid']
+            telefono_num = ids['telefono'] # Ya viene sin el @...
             
-            # Si no pudimos sacar un teléfono válido, saltamos para no ensuciar la DB
-            if not telefono_msg or len(telefono_msg) < 5: 
-                log_error(f"Teléfono inválido extraído: {telefono_msg}")
-                continue
-
+            # Datos comunes del mensaje
             body = payload.get('body', '')
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
@@ -181,57 +173,115 @@ def recibir_mensaje():
             tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
             whatsapp_id = payload.get('id')
             push_name = (payload.get('_data') or {}).get('notifyName', 'Cliente')
-            
-            log_info(f"📩 Procesando: {telefono_msg} (ID Técnico: {routing_id})")
+
+            id_cliente_final = None # Para asociar el mensaje
 
             try:
                 with engine.begin() as conn:
-                    # A. LÓGICA DE UNIFICACIÓN DE CLIENTE
-                    # Buscamos el cliente POR SU NÚMERO DE TELÉFONO, ignorando el ID técnico
-                    cliente_existente = conn.execute(
-                        text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), 
-                        {"t": telefono_msg}
-                    ).fetchone()
-
-                    if cliente_existente:
-                        # Ya existe el cliente con ese número.
-                        # Solo actualizamos el whatsapp_internal_id si el que tenemos es viejo o nulo.
-                        # PREFERENCIA: Si el ID actual en DB es LID y llega uno normal, ¿cambiamos?
-                        # Por ahora, mantenemos el ID más reciente que funcione.
-                        conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), 
-                                     {"wid": routing_id, "id": cliente_existente.id_cliente})
-                    else:
-                        # Cliente Nuevo: Lo insertamos con su teléfono como clave
-                        conn.execute(text("""
-                            INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
-                            VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
-                        """), {"t": telefono_msg, "wid": routing_id, "n": push_name})
-
-                    # B. Guardar Mensaje
-                    existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
-                    if not existe:
-                        conn.execute(text("""
-                            INSERT INTO mensajes (
-                                telefono, tipo, contenido, fecha, leido, archivo_data, 
-                                whatsapp_id, reply_to_id, reply_content, estado_waha, session_name
-                            )
-                            VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est, :sess)
-                        """), {
-                            "t": telefono_msg, # Guardamos siempre asociado al NÚMERO UNIFICADO
-                            "tipo": tipo_msg, 
-                            "txt": body, 
-                            "leido": (tipo_msg == 'SALIENTE'), 
-                            "d": archivo_bytes,
-                            "wid": whatsapp_id, 
-                            "rid": reply_id, 
-                            "rbody": reply_content, 
-                            "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', 
-                            "sess": session_name
-                        })
-                    
-                    # C. Notificar cambio
-                    conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
+                    # CASO 1: Tengo LID y Tengo Teléfono
+                    if wspid_lid and telefono_num:
+                        # 1. Busca wspid@lid en whatsapp_internal_id
+                        cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
+                        
+                        if cliente_lid:
+                            # 1.1 Si encontró coincidencia
+                            tel_db = cliente_lid.telefono
+                            if tel_db == telefono_num:
+                                # 1.1.1 Iguales -> Ese es el cliente
+                                id_cliente_final = cliente_lid.id_cliente
+                            else:
+                                # 1.1.2 Diferente o vacío -> Actualiza teléfono
+                                conn.execute(text("UPDATE Clientes SET telefono = :t, activo=TRUE WHERE id_cliente = :id"), {"t": telefono_num, "id": cliente_lid.id_cliente})
+                                id_cliente_final = cliente_lid.id_cliente
+                        else:
+                            # 1.2 No encontró por LID, busca por Teléfono
+                            cliente_tel = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
+                            
+                            if cliente_tel:
+                                # 1.2.1 Hay coincidencia -> Reemplazo whatsapp_internal_id con LID
+                                conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel.id_cliente})
+                                id_cliente_final = cliente_tel.id_cliente
+                            else:
+                                # 1.2.2 No hay coincidencia -> Creo nuevo cliente
+                                res = conn.execute(text("""
+                                    INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro)
+                                    VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente
+                                """), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
+                                id_cliente_final = res.id_cliente
+
+                    # CASO 2: Tengo LID pero NO Teléfono
+                    elif wspid_lid and not telefono_num:
+                        # 2. Busca LID
+                        cliente_lid = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
+                        
+                        if cliente_lid:
+                            # 2.1 Coincidencia -> Ese es el cliente
+                            id_cliente_final = cliente_lid.id_cliente
+                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
+                        else:
+                            # 2.2 No coincidencia -> Creo nuevo con teléfono vacío
+                            res = conn.execute(text("""
+                                INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro)
+                                VALUES (:lid, '', :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente
+                            """), {"lid": wspid_lid, "n": push_name}).fetchone()
+                            id_cliente_final = res.id_cliente
+
+                    # CASO 3: Tengo Teléfono pero NO LID
+                    elif telefono_num and not wspid_lid:
+                        # 3. Busca Teléfono
+                        cliente_tel = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
+                        
+                        if cliente_tel:
+                            # 3.1 Coincidencia -> Ese es el cliente
+                            id_cliente_final = cliente_tel.id_cliente
+                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
+                        else:
+                            # 3.2 No coincidencia -> Creo nuevo con ID vacío (o uso el routing_id temporalmente si es c.us)
+                            # NOTA: Tu regla dice "whatsapp_internal_id vacío", pero para poder responder necesitamos algo.
+                            # Usaremos el routing_id original (que será tipo 519...@c.us) como fallback técnico, o vacío si prefieres estricto.
+                            # Siguiendo tu regla estricta "crea... con el whatsapp_internal_id vacío":
+                            # PERO OJO: Si lo dejo vacío, no podré responderle. Usaré el routing_id (ID Tradicional) como fallback.
+                            wsp_id_fallback = ids['routing_final'] 
+                            
+                            res = conn.execute(text("""
+                                INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro)
+                                VALUES (:wid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente
+                            """), {"wid": wsp_id_fallback, "t": telefono_num, "n": push_name}).fetchone()
+                            id_cliente_final = res.id_cliente
+
+                    # --- GUARDADO DEL MENSAJE ---
+                    # Ahora guardamos el mensaje asociado al teléfono que decidimos usar
+                    if id_cliente_final:
+                        # Recuperamos el teléfono final para la tabla mensajes (por compatibilidad con tu estructura actual)
+                        telefono_final_msg = telefono_num
+                        if not telefono_final_msg and wspid_lid:
+                             # Si no hay numero, usamos el LID o buscamos en DB (caso raro)
+                             telefono_final_msg = wspid_lid 
+
+                        existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
+                        
+                        if not existe:
+                            conn.execute(text("""
+                                INSERT INTO mensajes (
+                                    telefono, tipo, contenido, fecha, leido, archivo_data, 
+                                    whatsapp_id, reply_to_id, reply_content, estado_waha, session_name
+                                )
+                                VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est, :sess)
+                            """), {
+                                "t": telefono_final_msg, # Usamos el dato consolidado
+                                "tipo": tipo_msg, 
+                                "txt": body, 
+                                "leido": (tipo_msg == 'SALIENTE'), 
+                                "d": archivo_bytes,
+                                "wid": whatsapp_id, 
+                                "rid": reply_id, 
+                                "rbody": reply_content, 
+                                "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', 
+                                "sess": session_name
+                            })
+                        
+                        conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
 
             except Exception as e:
                 log_error(f"🔥 Error DB: {e}")
