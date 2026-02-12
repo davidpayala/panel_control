@@ -150,7 +150,7 @@ def render_clientes():
                     new_estado = c3.selectbox("Estado", options=ESTADOS_CLIENTE, index=ESTADOS_CLIENTE.index(curr_est) if curr_est in ESTADOS_CLIENTE else 0)
                     
                     if row_full['whatsapp_internal_id']:
-                        st.warning(f"⚠️ ID vinculado: `{row_full['whatsapp_internal_id']}`. Cambiar el número moverá el historial de chat.")
+                        st.info(f"🆔 ID WSP Vinculado: `{row_full['whatsapp_internal_id']}` (No se modificará)")
                     
                     st.caption("Datos de Google (Bloqueados, requiere sincronización)")
                     c4, c5 = st.columns(2)
@@ -163,6 +163,7 @@ def render_clientes():
 
                     if st.form_submit_button("💾 Guardar Cambios y Migrar"):
                         with engine.begin() as conn:
+                            # CORRECCIÓN: Update explícito que NO toca whatsapp_internal_id
                             conn.execute(text("""
                                 UPDATE Clientes 
                                 SET nombre_corto=:nc, etiquetas=:e, telefono=:t, estado=:est
@@ -173,7 +174,7 @@ def render_clientes():
                                 conn.execute(text("UPDATE mensajes SET telefono = :new_tel WHERE telefono = :old_tel"), 
                                              {"new_tel": new_telefono, "old_tel": telefono_actual_db})
                                 st.toast(f"Historial migrado a {new_telefono}", icon="📦")
-                        st.success("Cambios aplicados.")
+                        st.success("Cambios aplicados (ID WSP intacto).")
                         time.sleep(1)
                         st.rerun()
 
