@@ -1,392 +1,184 @@
 import streamlit as st
+import os
+import requests
 import pandas as pd
 from sqlalchemy import text
-import time
-import os
-import threading
-import base64
-import zipfile
-import io
-import requests
-from datetime import datetime, timedelta
-from database import engine 
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from database import engine
+import json
 
-# --- CONFIGURACIÓN ---
-WAHA_URL = os.getenv("WAHA_URL")
-WAHA_KEY = os.getenv("WAHA_KEY")
+# ==============================================================================
+# CONFIGURACIÓN GENERAL
+# ==============================================================================
+WAHA_URL = os.getenv("WAHA_URL") 
+WAHA_KEY = os.getenv("WAHA_KEY") 
 
-# --- IMPORTACIÓN DE UTILS ---
-try:
-    from utils import marcar_chat_como_leido_waha as marcar_leido_waha
-    from utils import normalizar_telefono_maestro 
-except ImportError:
-    def marcar_leido_waha(*args): pass
-    def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
+# ==============================================================================
+# 🏆 1. NORMALIZACIÓN Y FORMATO (CRÍTICO PARA CHATS)
+# ==============================================================================
+def normalizar_telefono_maestro(entrada):
+    """
+    Convierte cualquier formato de teléfono a un estándar DB (solo números).
+    Maneja diccionarios de WAHA, cadenas con +51, etc.
+    Devuelve un diccionario con formatos útiles.
+    """
+    if not entrada: return None
+    raw_id = ""
 
-def marcar_leido_api(telefono, sesion):
+    # 1. Extraer el ID si es un objeto (payload de WAHA o dict propio)
+    if isinstance(entrada, dict):
+        if 'db' in entrada: return entrada # Ya estaba normalizado
+        
+        if entrada.get('fromMe', False):
+            raw_id = entrada.get('to', '')
+        else:
+            raw_id = entrada.get('from', '')
+            
+        if not raw_id:
+            raw_id = entrada.get('id', {}).get('remote', '') or entrada.get('participant', '')
+        if not raw_id:
+            raw_id = str(entrada.get('user', ''))
+    else:
+        raw_id = str(entrada)
+
+    # 2. Filtros de seguridad
+    if 'status@broadcast' in raw_id: return None
+    if '@g.us' in raw_id: return None
+    
+    # 3. Limpieza de caracteres
+    cadena_limpia = raw_id.split('@')[0] if '@' in raw_id else raw_id
+    solo_numeros = "".join(filter(str.isdigit, cadena_limpia))
+    
+    if not solo_numeros: return None
+    
+    # 4. Validaciones de longitud básica
+    if len(solo_numeros) > 15 or len(solo_numeros) < 7: return None
+
+    full = solo_numeros
+    local = solo_numeros
+    
+    # 5. Lógica específica para Perú (51)
+    if len(solo_numeros) == 9:
+        full = f"51{solo_numeros}"
+        local = solo_numeros
+    elif len(solo_numeros) == 11 and solo_numeros.startswith("51"):
+        full = solo_numeros
+        local = solo_numeros[2:]
+    
+    return {
+        "db": full,           # Para Base de Datos (ej: 51999888777)
+        "waha": f"{full}@c.us", # Para API WAHA
+        "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}" if len(local)==9 else f"+{full}",
+        "corto": local
+    }
+
+# ==============================================================================
+# 🔍 2. FUNCIONES DE GOOGLE CONTACTS (LAS QUE FALTABAN)
+# ==============================================================================
+def get_google_service():
+    """Autenticación silenciosa con Google"""
+    try:
+        # Busca el secreto en las variables de entorno de Railway
+        creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        if not creds_json: return None
+        
+        info = json.loads(creds_json)
+        creds = Credentials.from_authorized_user_info(info, ['https://www.googleapis.com/auth/contacts'])
+        return build('people', 'v1', credentials=creds)
+    except:
+        return None
+
+def buscar_contacto_google(telefono):
+    """
+    Busca un contacto en Google por número de teléfono.
+    Retorna un diccionario con los datos encontrados o 'encontrado': False.
+    """
+    datos = normalizar_telefono_maestro(telefono)
+    if not datos: return {'encontrado': False}
+    
+    service = get_google_service()
+    if not service: return {'encontrado': False, 'error': 'No auth'}
+
+    try:
+        # Buscamos por el número local (999...) y el internacional (51999...)
+        queries = [datos['corto'], datos['db']]
+        
+        for q in queries:
+            results = service.people().searchContacts(
+                query=q, readMask='names,phoneNumbers,emailAddresses'
+            ).execute()
+            
+            if results.get('results'):
+                person = results['results'][0]['person']
+                names = person.get('names', [])
+                nombre_completo = names[0].get('displayName', 'Sin Nombre') if names else "Sin Nombre"
+                
+                # Intentar separar nombre y apellido simple
+                partes = nombre_completo.split()
+                nombre = partes[0] if partes else ""
+                apellido = " ".join(partes[1:]) if len(partes) > 1 else ""
+
+                return {
+                    'encontrado': True,
+                    'nombre_completo': nombre_completo,
+                    'nombre': nombre,
+                    'apellido': apellido,
+                    'google_id': person.get('resourceName'),
+                    'telefono_google': q
+                }
+    except Exception as e:
+        print(f"Error Google Search: {e}")
+        
+    return {'encontrado': False}
+
+def crear_en_google(nombre, apellido, telefono, email=None):
+    """Crea un contacto en Google Contacts"""
+    service = get_google_service()
+    if not service: return False
+
+    try:
+        body = {
+            "names": [{"givenName": nombre, "familyName": apellido}],
+            "phoneNumbers": [{"value": telefono}],
+        }
+        if email:
+            body["emailAddresses"] = [{"value": email}]
+
+        service.people().createContact(body=body).execute()
+        return True
+    except:
+        return False
+
+# ==============================================================================
+# 💬 3. FUNCIONES WAHA (API)
+# ==============================================================================
+def marcar_chat_como_leido_waha(chat_id):
     if not WAHA_URL: return
     try:
-        res = normalizar_telefono_maestro(telefono)
-        # Manejo robusto del diccionario de utils.py
-        tel_final = res['db'] if isinstance(res, dict) else str(res)
+        # Aseguramos formato correcto
+        if "@" not in chat_id: chat_id = f"{chat_id}@c.us"
         
         url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-        payload = {"session": sesion, "chatId": f"{tel_final}@c.us"}
-        requests.post(url, json=payload, headers=headers, timeout=5)
+        
+        requests.post(url, json={"session": "default", "chatId": chat_id}, headers=headers, timeout=3)
     except: pass
 
-def mandar_mensaje_api(telefono, texto, sesion):
-    if not WAHA_URL: return False, "Falta WAHA_URL"
-    
+def obtener_perfil_waha(telefono):
+    """Intenta obtener la foto y el estado de WAHA"""
+    if not WAHA_URL: return None
     try:
-        # Normalización compatible con tu utils.py
-        res_norm = normalizar_telefono_maestro(telefono)
+        norm = normalizar_telefono_maestro(telefono)
+        if not norm: return None
         
-        if isinstance(res_norm, dict):
-            telefono_final = res_norm.get('db') # Sacamos solo el número DB
-        else:
-            telefono_final = str(res_norm) if res_norm else "".join(filter(str.isdigit, str(telefono)))
-            
-        if not telefono_final: return False, "Número inválido"
-
-        url = f"{WAHA_URL.rstrip('/')}/api/sendText"
+        url = f"{WAHA_URL.rstrip('/')}/api/contacts/{norm['waha']}"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
-        payload = {
-            "session": sesion, 
-            "chatId": f"{telefono_final}@c.us", 
-            "text": texto
-        }
-        
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
-        if r.status_code in [200, 201]: return True, ""
-        return False, r.text
-
-    except Exception as e:
-        return False, str(e)
-
-def get_table_name(conn):
-    try:
-        conn.execute(text("SELECT 1 FROM clientes LIMIT 1"))
-        return "clientes"
-    except:
-        return "\"Clientes\""
-
-# ==========================================
-# 🌟 MAGIA MULTIMEDIA
-# ==========================================
-def generar_html_media(archivo_bytes):
-    if not archivo_bytes: return ""
-    try:
-        b = bytes(archivo_bytes)
-        b64 = base64.b64encode(b).decode('utf-8')
-        mime, ext, nombre_archivo = 'application/octet-stream', 'bin', 'Documento'
-
-        if b.startswith(b'\xff\xd8'): mime, ext = 'image/jpeg', 'jpg'
-        elif b.startswith(b'\x89PNG'): mime, ext = 'image/png', 'png'
-        elif b'WEBP' in b[:50]: mime, ext = 'image/webp', 'webp'
-        elif b.startswith(b'OggS'): mime, ext = 'audio/ogg', 'ogg'
-        elif b'ftyp' in b[:20]: mime, ext = 'video/mp4', 'mp4'
-        elif b.startswith(b'%PDF'): mime, ext = 'application/pdf', 'pdf'
-        elif b.startswith(b'GIF8'): mime, ext = 'image/gif', 'gif'
-        elif b.startswith(b'ID3') or b.startswith(b'\xff\xfb'): mime, ext = 'audio/mpeg', 'mp3'
-        elif b.startswith(b'PK\x03\x04'): 
-            try:
-                with zipfile.ZipFile(io.BytesIO(b)) as z:
-                    json_filename = next((name for name in z.namelist() if name.endswith('.json')), None)
-                    if json_filename:
-                        json_data = z.read(json_filename).decode('utf-8')
-                        json_b64 = base64.b64encode(json_data.encode('utf-8')).decode('utf-8')
-                        lottie_html = f"""<!DOCTYPE html><html><head><script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script></head><body style="margin:0;overflow:hidden;background:transparent;"><lottie-player src="data:application/json;base64,{json_b64}" background="transparent" speed="1" style="width:150px;height:150px;" loop autoplay></lottie-player></body></html>"""
-                        lottie_html_b64 = base64.b64encode(lottie_html.encode('utf-8')).decode('utf-8')
-                        return f"<iframe src='data:text/html;base64,{lottie_html_b64}' width='150' height='150' frameborder='0' scrolling='no' allowtransparency='true' style='margin-bottom: 5px; pointer-events: none;'></iframe>"
-            except Exception: pass 
-            mime, ext = 'application/zip', 'zip'
-
-        if mime.startswith('image/'): return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent;' />"
-        elif mime.startswith('audio/'): return f"<audio controls style='max-width: 250px; height: 40px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></audio>"
-        elif mime.startswith('video/'): return f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
-        else:
-            icono_texto = "🎞️ Sticker Animado (Descargar ZIP)" if ext == 'zip' else "📄 Descargar Archivo"
-            return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>{icono_texto}</a>"
-    except Exception: return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
-
-# ==========================================
-# 🕵️ VIGÍA INVISIBLE
-# ==========================================
-try:
-    run_poller = st.fragment(run_every=3) 
-except AttributeError:
-    run_poller = lambda f: f
-
-@run_poller
-def poller_cambios_db():
-    st.markdown("<div style='display:none;'>vigia_activo</div>", unsafe_allow_html=True)
-    try:
-        with engine.connect() as conn: 
-            conn.commit() 
-            version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar() or 0
-            
-            if 'db_version' not in st.session_state:
-                st.session_state['db_version'] = version_actual
-            elif st.session_state['db_version'] != version_actual:
-                st.session_state['db_version'] = version_actual
-                st.rerun()
-    except Exception:
-        pass
-
-# ==========================================
-# VISTA PRINCIPAL
-# ==========================================
-def render_chat():
-    c_tit, c_time = st.columns([80, 20])
-    c_tit.title("💬 Chat Center")
-    c_time.caption(f"🔄 {datetime.now().strftime('%H:%M:%S')}")
-
-    poller_cambios_db()
-
-    def cambiar_chat(telefono):
-        st.session_state['chat_actual_telefono'] = telefono
-
-    if 'chat_actual_telefono' not in st.session_state:
-        st.session_state['chat_actual_telefono'] = None
-
-    telefono_actual = st.session_state['chat_actual_telefono']
-    col_lista, col_chat = st.columns([35, 65])
-
-    # --- BANDEJA ---
-    with col_lista:
-        st.subheader("Bandeja")
-        if st.button("🔄 Recargar", use_container_width=True):
-            st.rerun()
-        st.divider()
-
-        try:
-            with engine.connect() as conn:
-                conn.commit() 
-                tabla = get_table_name(conn)
-                busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
-                
-                query = f"""
-                    SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id, c.estado,
-                           (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos,
-                           (SELECT MAX(fecha) FROM mensajes m WHERE m.telefono = c.telefono) as ultima_interaccion
-                    FROM {tabla} c
-                    WHERE c.activo = TRUE
-                """
-                
-                if busqueda:
-                    busqueda_limpia = "".join(filter(str.isdigit, busqueda))
-                    filtro = f" AND (COALESCE(c.nombre_corto,'') ILIKE '%{busqueda}%'"
-                    if busqueda_limpia: filtro += f" OR c.telefono ILIKE '%{busqueda_limpia}%')"
-                    else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
-                    query += filtro
-                
-                # Aumentamos límite para que aparezcan todos
-                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 300"
-                df_clientes = pd.read_sql(text(query), conn)
-
-            with st.container(height=600):
-                if df_clientes.empty:
-                    st.info("No se encontraron chats.")
-                else:
-                    # --- MAPA DE ETAPAS ---
-                    cat_map = {
-                        "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"],
-                        "ETAPA_1": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
-                        "ETAPA_3": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
-                        "ETAPA_4": ["Pendiente agradecer", "Problema post"],
-                        "ETAPA_0": ["Sin empezar"]
-                    }
-                    
-                    def asignar_categoria(estado):
-                        # 1. Si es vacío -> ETAPA_0
-                        if not estado or str(estado).strip() == "": return "ETAPA_0"
-                        
-                        # 2. Si está en el mapa -> ETAPA_X
-                        for cat, estados in cat_map.items():
-                            if estado in estados: return cat
-                        
-                        # 3. Si tiene texto pero no está mapeado -> OTROS
-                        return "📁 Otros Estados"
-                        
-                    df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
-                    
-                    # Ordenamos, poniendo "Otros" al final
-                    orden_categorias = ["ETAPA_2", "ETAPA_1", "ETAPA_3", "ETAPA_4", "ETAPA_0", "📁 Otros Estados"]
-
-                    for cat in orden_categorias:
-                        df_cat = df_clientes[df_clientes['categoria'] == cat]
-                        if not df_cat.empty:
-                            no_leidos_cat = int(df_cat['no_leidos'].sum())
-                            badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
-                            chat_activo_aqui = telefono_actual in df_cat['telefono'].values
-                            
-                            # Expandimos si hay mensajes, si es el activo o si es la etapa principal
-                            expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "ETAPA_2")
-                            
-                            with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
-                                for _, row in df_cat.iterrows():
-                                    t_row = row['telefono']
-                                    c_leidos = row['no_leidos']
-                                    icono = "🔴" if c_leidos > 0 else "👤"
-                                    texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
-                                    
-                                    # Si es de "Otros", mostramos el estado entre corchetes para identificarlo
-                                    extra = f" [{row['estado']}]" if cat == "📁 Otros Estados" else ""
-                                    
-                                    label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
-                                    tipo = "primary" if telefono_actual == t_row else "secondary"
-                                    
-                                    if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,)):
-                                        pass 
-
-        except Exception as e:
-            st.error("Error cargando lista")
-
-    # --- CHAT ---
-    with col_chat:
-        if not telefono_actual:
-            st.info("👈 Selecciona un chat.")
-        else:
-            try:
-                with engine.connect() as conn:
-                    conn.commit() 
-                    unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
-                    if unreads_query and unreads_query[0] > 0:
-                        sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
-                        conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
-                        conn.commit()
-                        try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
-                        except: pass
-
-                with engine.connect() as conn:
-                    conn.commit() 
-                    tabla = get_table_name(conn)
-                    info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
-                    nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
-                    wsp_id = info.whatsapp_internal_id if hasattr(info, 'whatsapp_internal_id') else "Desconocido"
-                    estado_actual_cliente = info.estado if hasattr(info, 'estado') and info.estado else "Sin estado"
-                    
-                    msgs = pd.read_sql(text("""
-                        SELECT * FROM (
-                            SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha DESC LIMIT 100
-                        ) sub ORDER BY fecha ASC
-                    """), conn, params={"t": telefono_actual})
-
-                st.subheader(f"👤 {nombre}")
-                st.caption(f"📱 {telefono_actual} | 🆔 {wsp_id} | 🏷️ **{estado_actual_cliente}**")
-                
-                if msgs.empty: 
-                    st.caption("Inicio de la conversación.")
-                else:
-                    html_blocks = []
-                    ultima_fecha = None
-                    hoy = datetime.now().date()
-                    ayer = hoy - timedelta(days=1)
-
-                    for _, m in msgs.iterrows():
-                        try: fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
-                        except: fecha_msg = None
-
-                        if fecha_msg and fecha_msg != ultima_fecha:
-                            if fecha_msg == hoy: texto_fecha = "Hoy"
-                            elif fecha_msg == ayer: texto_fecha = "Ayer"
-                            else: texto_fecha = fecha_msg.strftime("%d/%m/%Y")
-                            html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
-                            ultima_fecha = fecha_msg
-
-                        es_mio = (m['tipo'] == 'SALIENTE')
-                        clase_row = "msg-mio" if es_mio else "msg-otro"
-                        clase_bub = "b-mio" if es_mio else "b-otro"
-                        hora = m['fecha'].strftime("%H:%M") if pd.notna(m['fecha']) else ""
-                        
-                        icono_estado = ""
-                        if es_mio:
-                            estado = m.get('estado_waha', 'pendiente')
-                            if estado == 'leido': icono_estado = "<span class='check-read'>✓✓</span>"
-                            elif estado == 'recibido': icono_estado = "<span class='check-sent'>✓✓</span>"
-                            elif estado == 'enviado': icono_estado = "<span class='check-sent'>✓</span>"
-                            else: icono_estado = "🕒"
-
-                        etiqueta_sess = ""
-                        if 'session_name' in m and pd.notna(m['session_name']):
-                            s_name = str(m['session_name']).strip().lower()
-                            if s_name == 'principal': etiqueta_sess = "<span class='session-tag'>KM</span>"
-                            elif s_name == 'default': etiqueta_sess = "<span class='session-tag'>LENTES</span>"
-
-                        reply_html = ""
-                        if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
-                            reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
-
-                        media_html = generar_html_media(m.get('archivo_data'))
-                        contenido_str = str(m['contenido']) if pd.notna(m['contenido']) else ""
-                        if contenido_str in ["📷 Archivo Multimedia", "📷 Archivo", "📷 Archivo (Recuperado)"] and media_html:
-                            contenido_str = ""
-                        texto_html = f"<div style='white-space: pre-wrap;'>{contenido_str}</div>" if contenido_str.strip() else ""
-                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
-                        html_blocks.append(html_msg)
-
-                    html_blocks.reverse()
-
-                    css_y_html = f"""<style>
-.chat-container {{ display: flex; flex-direction: column-reverse; height: 550px; overflow-y: auto; padding: 10px; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 10px; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-color: transparent; }}
-.msg-row {{ display: flex; margin-bottom: 5px; }}
-.msg-mio {{ justify-content: flex-end; }}
-.msg-otro {{ justify-content: flex-start; }}
-.bubble {{ padding: 8px 12px; border-radius: 10px; font-size: 15px; max-width: 80%; display: flex; flex-direction: column; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
-.b-mio {{ background-color: #dcf8c6; color: black; border-top-right-radius: 0; }}
-.b-otro {{ background-color: #ffffff; color: black; border-top-left-radius: 0; }}
-.meta {{ font-size: 10px; color: #777; text-align: right; margin-top: 3px; display: inline-block; }}
-.check-read {{ color: #34B7F1; font-weight: bold; font-size: 12px; }}
-.check-sent {{ color: #999; font-size: 12px; }}
-.reply-box {{ background-color: rgba(0, 0, 0, 0.05); border-left: 4px solid #34B7F1; padding: 6px 8px; border-radius: 4px; font-size: 13px; margin-bottom: 6px; color: #555; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; }}
-.b-mio .reply-box {{ border-left-color: #075E54; background-color: rgba(0, 0, 0, 0.08); }}
-.date-separator {{ display: flex; justify-content: center; margin: 15px 0; }}
-.date-separator span {{ background-color: #e1f3fb; color: #555; padding: 4px 12px; border-radius: 10px; font-size: 12px; font-weight: bold; box-shadow: 0 1px 0.5px rgba(0,0,0,0.13); }}
-.session-tag {{ margin-left: 6px; padding: 1px 4px; border-radius: 4px; font-size: 9px; font-weight: 800; color: #666; background-color: rgba(0,0,0,0.06); }}
-.b-mio .session-tag {{ background-color: rgba(0,0,0,0.08); color: #444; }}
-</style><div class='chat-container'>{''.join(html_blocks)}</div>"""
-                    st.markdown(css_y_html, unsafe_allow_html=True)
-
-                # --- LÓGICA DE SELECCIÓN DE SESIÓN ---
-                ultima_sesion = None
-                if not msgs.empty and 'session_name' in msgs.columns:
-                    sesiones_validas = msgs['session_name'].dropna().astype(str).str.strip().str.lower()
-                    sesiones_validas = sesiones_validas[sesiones_validas != ""]
-                    if not sesiones_validas.empty:
-                        ultima_sesion = sesiones_validas.iloc[-1]
-
-                idx_sesion = 0
-                if ultima_sesion == 'default': idx_sesion = 1
-
-                st.write("") 
-                c_sel, c_warn = st.columns([30, 70])
-                with c_sel:
-                    sesion_elegida = st.selectbox(
-                        "Línea de envío:", 
-                        options=["principal", "default"], 
-                        index=idx_sesion,
-                        format_func=lambda x: "📱 KM (Principal)" if x == "principal" else "👓 LENTES (Default)",
-                        key=f"sess_{telefono_actual}",
-                        label_visibility="collapsed"
-                    )
-                with c_warn:
-                    if ultima_sesion and ultima_sesion != sesion_elegida:
-                        nombre_ult = "KM" if ultima_sesion == 'principal' else "LENTES"
-                        st.markdown(f"<div style='color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; padding: 6px 10px; border-radius: 5px; font-size: 13px; font-weight: bold;'>⚠️ OJO: El último mensaje fue en {nombre_ult}.</div>", unsafe_allow_html=True)
-
-                txt = st.chat_input("Escribe un mensaje...")
-                
-                if txt:
-                    ok, res = mandar_mensaje_api(telefono_actual, txt, sesion_elegida)
-                    if ok:
-                        st.rerun()
-                    else:
-                        st.error(f"Error al enviar: {res}")
-
-            except Exception as e:
-                st.error("Error en el chat")
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+    except: pass
+    return None
