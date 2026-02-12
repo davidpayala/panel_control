@@ -21,55 +21,39 @@ try:
     from utils import normalizar_telefono_maestro 
 except ImportError:
     def marcar_leido_waha(*args): pass
-    # Fallback simple por si falla la importación
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
 
 def marcar_leido_api(telefono, sesion):
     if not WAHA_URL: return
     try:
-        # Normalizamos y extraemos solo el número DB
         res = normalizar_telefono_maestro(telefono)
         tel_final = res['db'] if isinstance(res, dict) else str(res)
-        
         url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-        
         payload = {"session": sesion, "chatId": f"{tel_final}@c.us"}
         requests.post(url, json=payload, headers=headers, timeout=5)
     except: pass
 
 def mandar_mensaje_api(telefono, texto, sesion):
     if not WAHA_URL: return False, "Falta WAHA_URL"
-    
-    # 🚀 CORRECCIÓN CRÍTICA: MANEJO DEL DICCIONARIO
     try:
         res_norm = normalizar_telefono_maestro(telefono)
-        
-        # Si devuelve un diccionario (como tu función actual), sacamos 'db'
         if isinstance(res_norm, dict):
             telefono_final = res_norm.get('db')
         else:
-            # Si por alguna razón devuelve string o nada
             telefono_final = str(res_norm) if res_norm else "".join(filter(str.isdigit, str(telefono)))
             
-        if not telefono_final:
-            return False, "Número inválido"
+        if not telefono_final: return False, "Número inválido"
 
         url = f"{WAHA_URL.rstrip('/')}/api/sendText"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
-        payload = {
-            "session": sesion, 
-            "chatId": f"{telefono_final}@c.us", 
-            "text": texto
-        }
-        
+        payload = {"session": sesion, "chatId": f"{telefono_final}@c.us", "text": texto}
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         if r.status_code in [200, 201]: return True, ""
         return False, r.text
-
     except Exception as e:
         return False, str(e)
 
@@ -190,7 +174,8 @@ def render_chat():
                     else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
                     query += filtro
                 
-                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 200"
+                # Aumentamos límite para que aparezcan todos los "Otros"
+                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 300"
                 df_clientes = pd.read_sql(text(query), conn)
 
             with st.container(height=600):
@@ -206,13 +191,20 @@ def render_chat():
                     }
                     
                     def asignar_categoria(estado):
+                        # Si es vacío -> ETAPA_0
                         if not estado or str(estado).strip() == "": return "ETAPA_0"
+                        
+                        # Si está en el mapa -> ETAPA_X
                         for cat, estados in cat_map.items():
                             if estado in estados: return cat
-                        return "ETAPA_0"
+                        
+                        # Si tiene texto pero no está en el mapa -> OTROS
+                        return "📁 Otros Estados"
                         
                     df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
-                    orden_categorias = ["ETAPA_2", "ETAPA_1", "ETAPA_3", "ETAPA_4", "ETAPA_0"]
+                    
+                    # Agregamos "📁 Otros Estados" a la lista de orden
+                    orden_categorias = ["ETAPA_2", "ETAPA_1", "ETAPA_3", "ETAPA_4", "ETAPA_0", "📁 Otros Estados"]
 
                     for cat in orden_categorias:
                         df_cat = df_clientes[df_clientes['categoria'] == cat]
@@ -220,6 +212,7 @@ def render_chat():
                             no_leidos_cat = int(df_cat['no_leidos'].sum())
                             badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
                             chat_activo_aqui = telefono_actual in df_cat['telefono'].values
+                            
                             expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "ETAPA_2")
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
@@ -228,7 +221,13 @@ def render_chat():
                                     c_leidos = row['no_leidos']
                                     icono = "🔴" if c_leidos > 0 else "👤"
                                     texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
-                                    label = f"{icono} {row['nombre']}{texto_leidos}"
+                                    
+                                    # Si es de "Otros", mostramos qué estado tiene para que sepas
+                                    extra_info = ""
+                                    if cat == "📁 Otros Estados":
+                                        extra_info = f" [{row['estado']}]"
+                                        
+                                    label = f"{icono} {row['nombre']}{extra_info}{texto_leidos}"
                                     tipo = "primary" if telefono_actual == t_row else "secondary"
                                     
                                     if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,)):
