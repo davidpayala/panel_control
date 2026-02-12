@@ -15,18 +15,17 @@ WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY") 
 
 # ==============================================================================
-# 🏆 1. NORMALIZACIÓN Y FORMATO (CRÍTICO PARA CHATS)
+# 🏆 1. NORMALIZACIÓN Y FORMATO (CRÍTICO)
 # ==============================================================================
 def normalizar_telefono_maestro(entrada):
     """
     Convierte cualquier formato de teléfono a un estándar DB (solo números).
-    Maneja diccionarios de WAHA, cadenas con +51, etc.
-    Devuelve un diccionario con formatos útiles.
+    Devuelve un diccionario con formatos útiles: db, waha, google, corto.
     """
     if not entrada: return None
     raw_id = ""
 
-    # 1. Extraer el ID si es un objeto (payload de WAHA o dict propio)
+    # 1. Extraer el ID si es un objeto
     if isinstance(entrada, dict):
         if 'db' in entrada: return entrada # Ya estaba normalizado
         
@@ -46,19 +45,19 @@ def normalizar_telefono_maestro(entrada):
     if 'status@broadcast' in raw_id: return None
     if '@g.us' in raw_id: return None
     
-    # 3. Limpieza de caracteres
+    # 3. Limpieza
     cadena_limpia = raw_id.split('@')[0] if '@' in raw_id else raw_id
     solo_numeros = "".join(filter(str.isdigit, cadena_limpia))
     
     if not solo_numeros: return None
     
-    # 4. Validaciones de longitud básica
+    # 4. Validaciones
     if len(solo_numeros) > 15 or len(solo_numeros) < 7: return None
 
     full = solo_numeros
     local = solo_numeros
     
-    # 5. Lógica específica para Perú (51)
+    # 5. Lógica Perú (51)
     if len(solo_numeros) == 9:
         full = f"51{solo_numeros}"
         local = solo_numeros
@@ -67,10 +66,10 @@ def normalizar_telefono_maestro(entrada):
         local = solo_numeros[2:]
     
     return {
-        "db": full,           # Para Base de Datos (ej: 51999888777)
-        "waha": f"{full}@c.us", # Para API WAHA
+        "db": full,           # 51999888777
+        "waha": f"{full}@c.us", # 51999888777@c.us
         "google": f"+51 {local[:3]} {local[3:6]} {local[6:]}" if len(local)==9 else f"+{full}",
-        "corto": local
+        "corto": local        # 999888777
     }
 
 # ==============================================================================
@@ -79,10 +78,8 @@ def normalizar_telefono_maestro(entrada):
 def get_google_service():
     """Autenticación silenciosa con Google"""
     try:
-        # Busca el secreto en las variables de entorno de Railway
         creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
         if not creds_json: return None
-        
         info = json.loads(creds_json)
         creds = Credentials.from_authorized_user_info(info, ['https://www.googleapis.com/auth/contacts'])
         return build('people', 'v1', credentials=creds)
@@ -90,10 +87,7 @@ def get_google_service():
         return None
 
 def buscar_contacto_google(telefono):
-    """
-    Busca un contacto en Google por número de teléfono.
-    Retorna un diccionario con los datos encontrados o 'encontrado': False.
-    """
+    """Busca un contacto en Google por número."""
     datos = normalizar_telefono_maestro(telefono)
     if not datos: return {'encontrado': False}
     
@@ -101,9 +95,7 @@ def buscar_contacto_google(telefono):
     if not service: return {'encontrado': False, 'error': 'No auth'}
 
     try:
-        # Buscamos por el número local (999...) y el internacional (51999...)
         queries = [datos['corto'], datos['db']]
-        
         for q in queries:
             results = service.people().searchContacts(
                 query=q, readMask='names,phoneNumbers,emailAddresses'
@@ -113,8 +105,6 @@ def buscar_contacto_google(telefono):
                 person = results['results'][0]['person']
                 names = person.get('names', [])
                 nombre_completo = names[0].get('displayName', 'Sin Nombre') if names else "Sin Nombre"
-                
-                # Intentar separar nombre y apellido simple
                 partes = nombre_completo.split()
                 nombre = partes[0] if partes else ""
                 apellido = " ".join(partes[1:]) if len(partes) > 1 else ""
@@ -129,65 +119,41 @@ def buscar_contacto_google(telefono):
                 }
     except Exception as e:
         print(f"Error Google Search: {e}")
-        
     return {'encontrado': False}
 
 def crear_en_google(nombre, apellido, telefono, email=None):
     """Crea un contacto en Google Contacts"""
     service = get_google_service()
     if not service: return False
-
     try:
         body = {
             "names": [{"givenName": nombre, "familyName": apellido}],
             "phoneNumbers": [{"value": telefono}],
         }
-        if email:
-            body["emailAddresses"] = [{"value": email}]
-
+        if email: body["emailAddresses"] = [{"value": email}]
         service.people().createContact(body=body).execute()
         return True
-    except:
-        return False
+    except: return False
 
 def actualizar_en_google(google_id, nombre, apellido, telefono, email=None):
-    """
-    Actualiza un contacto existente en Google Contacts.
-    Esta es la función que faltaba para facturacion.py.
-    """
+    """Actualiza un contacto existente (Necesario para Facturación)"""
     service = get_google_service()
     if not service: return False
-
     try:
-        # 1. Obtener el 'etag' actual (necesario para actualizar en Google People API)
-        persona = service.people().get(
-            resourceName=google_id,
-            personFields='metadata'
-        ).execute()
+        persona = service.people().get(resourceName=google_id, personFields='metadata').execute()
         etag = persona.get('etag')
-
-        # 2. Preparar los datos nuevos
         body = {
             "etag": etag,
             "names": [{"givenName": nombre, "familyName": apellido}],
             "phoneNumbers": [{"value": telefono}],
         }
         update_fields = 'names,phoneNumbers'
-
         if email:
             body["emailAddresses"] = [{"value": email}]
             update_fields += ',emailAddresses'
-
-        # 3. Ejecutar actualización
-        service.people().updateContact(
-            resourceName=google_id,
-            updatePersonFields=update_fields,
-            body=body
-        ).execute()
+        service.people().updateContact(resourceName=google_id, updatePersonFields=update_fields, body=body).execute()
         return True
-    except Exception as e:
-        print(f"Error actualizando en Google: {e}")
-        return False
+    except: return False
 
 # ==============================================================================
 # 💬 3. FUNCIONES WAHA (API)
@@ -195,29 +161,50 @@ def actualizar_en_google(google_id, nombre, apellido, telefono, email=None):
 def marcar_chat_como_leido_waha(chat_id):
     if not WAHA_URL: return
     try:
-        # Aseguramos formato correcto
         if "@" not in chat_id: chat_id = f"{chat_id}@c.us"
-        
         url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-        
         requests.post(url, json={"session": "default", "chatId": chat_id}, headers=headers, timeout=3)
     except: pass
 
 def obtener_perfil_waha(telefono):
-    """Intenta obtener la foto y el estado de WAHA"""
     if not WAHA_URL: return None
     try:
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return None
-        
         url = f"{WAHA_URL.rstrip('/')}/api/contacts/{norm['waha']}"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-        
         r = requests.get(url, headers=headers, timeout=5)
-        if r.status_code == 200:
-            return r.json()
+        if r.status_code == 200: return r.json()
     except: pass
     return None
+
+def enviar_mensaje_whatsapp(telefono, mensaje, session="default"):
+    """
+    Envía un mensaje de texto simple.
+    Usado por: Campañas, Notificaciones, etc.
+    """
+    if not WAHA_URL: return False
+    try:
+        # Usamos la normalización maestra para obtener el ID correcto
+        norm = normalizar_telefono_maestro(telefono)
+        if not norm: return False
+        
+        url = f"{WAHA_URL.rstrip('/')}/api/sendText"
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+        
+        # norm['waha'] ya trae el formato '51999...@c.us' listo
+        payload = {
+            "session": session,
+            "chatId": norm['waha'], 
+            "text": mensaje
+        }
+        
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        return r.status_code in [200, 201]
+    except Exception as e:
+        print(f"Error enviando mensaje: {e}")
+        return False
