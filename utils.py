@@ -137,7 +137,7 @@ def crear_en_google(nombre, apellido, telefono, email=None):
     except: return False
 
 def actualizar_en_google(google_id, nombre, apellido, telefono, email=None):
-    """Actualiza un contacto existente"""
+    """Actualiza un contacto existente (Necesario para Facturación)"""
     service = get_google_service()
     if not service: return False
     try:
@@ -157,7 +157,7 @@ def actualizar_en_google(google_id, nombre, apellido, telefono, email=None):
     except: return False
 
 # ==============================================================================
-# 💬 3. FUNCIONES WAHA (API)
+# 💬 3. FUNCIONES WAHA (API) - CHATS, CAMPAÑAS Y VERIFICACIÓN
 # ==============================================================================
 def marcar_chat_como_leido_waha(chat_id):
     if not WAHA_URL: return
@@ -183,7 +183,7 @@ def obtener_perfil_waha(telefono):
     return None
 
 def enviar_mensaje_whatsapp(telefono, mensaje, session="default"):
-    """Envía texto simple (Usado en Campañas y Notificaciones)"""
+    """Envía texto simple (Campañas y Notificaciones)"""
     if not WAHA_URL: return False
     try:
         norm = normalizar_telefono_maestro(telefono)
@@ -198,22 +198,17 @@ def enviar_mensaje_whatsapp(telefono, mensaje, session="default"):
         return r.status_code in [200, 201]
     except: return False
 
-# 🚀 LA FUNCIÓN PERDIDA (Recuperada para Campañas)
 def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_type, session="default"):
-    """
-    Envía archivos adjuntos (Imágenes, PDF, etc)
-    Usado exclusivamente por el módulo de Campañas.
-    """
+    """Envía archivos adjuntos (Campañas)"""
     if not WAHA_URL: return False
     try:
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return False
 
-        # Convertir a Base64
         b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
         data_uri = f"data:{mime_type};base64,{b64_data}"
 
-        url = f"{WAHA_URL.rstrip('/')}/api/sendImage" # WAHA suele ser inteligente con sendImage para todo file
+        url = f"{WAHA_URL.rstrip('/')}/api/sendImage"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
 
@@ -232,4 +227,37 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
         return r.status_code in [200, 201]
     except Exception as e:
         print(f"Error media: {e}")
+        return False
+
+# 🚀 LA FUNCIÓN QUE FALTABA
+def verificar_numero_waha(telefono):
+    """
+    Verifica si el número tiene WhatsApp activo.
+    Prueba en la sesión 'default' y 'principal' por seguridad.
+    """
+    if not WAHA_URL: return False
+    try:
+        norm = normalizar_telefono_maestro(telefono)
+        if not norm: return False
+        
+        # Probamos en ambas sesiones por si acaso
+        for sesion in ['default', 'principal']:
+            try:
+                url = f"{WAHA_URL.rstrip('/')}/api/{sesion}/contacts/check-exists"
+                headers = {"Content-Type": "application/json"}
+                if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+                
+                payload = {"chatId": norm['waha']}
+                r = requests.post(url, json=payload, headers=headers, timeout=5)
+                
+                if r.status_code == 200:
+                    data = r.json()
+                    # Si existe en alguna sesión, retornamos True
+                    if data.get('exists', False):
+                        return True
+            except:
+                continue
+                
+        return False
+    except:
         return False
