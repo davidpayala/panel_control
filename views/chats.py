@@ -40,7 +40,7 @@ def mandar_mensaje_api(telefono, texto, sesion):
     try:
         res_norm = normalizar_telefono_maestro(telefono)
         if isinstance(res_norm, dict):
-            telefono_final = res_norm.get('db')
+            telefono_final = res_norm.get('db') 
         else:
             telefono_final = str(res_norm) if res_norm else "".join(filter(str.isdigit, str(telefono)))
             
@@ -149,9 +149,21 @@ def render_chat():
     # --- BANDEJA ---
     with col_lista:
         st.subheader("Bandeja")
-        if st.button("🔄 Recargar", use_container_width=True):
+        c1, c2 = st.columns(2)
+        if c1.button("🔄 Recargar", use_container_width=True):
             st.rerun()
+        
+        # 🛠️ HERRAMIENTA 1: Marcar todo como leído
+        if c2.button("🧹 Limpiar", use_container_width=True, help="Marca TODOS los mensajes como leídos"):
+            with engine.connect() as conn:
+                conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE leido = FALSE"))
+                conn.commit()
+            st.rerun()
+            
         st.divider()
+
+        # 🛠️ HERRAMIENTA 2: Ver Inactivos/Ocultos
+        ver_todos = st.checkbox("📂 Ver Todos (Incl. Inactivos)", value=False)
 
         try:
             with engine.connect() as conn:
@@ -159,14 +171,19 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
+                # QUERY MAESTRA
                 query = f"""
                     SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id, c.estado,
                            (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos,
                            (SELECT MAX(fecha) FROM mensajes m WHERE m.telefono = c.telefono) as ultima_interaccion
                     FROM {tabla} c
-                    WHERE c.activo = TRUE
+                    WHERE 1=1
                 """
                 
+                # Si NO quiere ver todos, filtramos solo los activos
+                if not ver_todos:
+                    query += " AND c.activo = TRUE"
+
                 if busqueda:
                     busqueda_limpia = "".join(filter(str.isdigit, busqueda))
                     filtro = f" AND (COALESCE(c.nombre_corto,'') ILIKE '%{busqueda}%'"
@@ -174,8 +191,8 @@ def render_chat():
                     else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
                     query += filtro
                 
-                # Aumentamos límite para que aparezcan todos los "Otros"
-                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST, c.fecha_registro DESC LIMIT 300"
+                # Ordenar: No leídos primero, luego los más recientes
+                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST LIMIT 300"
                 df_clientes = pd.read_sql(text(query), conn)
 
             with st.container(height=600):
@@ -191,19 +208,12 @@ def render_chat():
                     }
                     
                     def asignar_categoria(estado):
-                        # Si es vacío -> ETAPA_0
                         if not estado or str(estado).strip() == "": return "ETAPA_0"
-                        
-                        # Si está en el mapa -> ETAPA_X
                         for cat, estados in cat_map.items():
                             if estado in estados: return cat
-                        
-                        # Si tiene texto pero no está en el mapa -> OTROS
                         return "📁 Otros Estados"
                         
                     df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
-                    
-                    # Agregamos "📁 Otros Estados" a la lista de orden
                     orden_categorias = ["ETAPA_2", "ETAPA_1", "ETAPA_3", "ETAPA_4", "ETAPA_0", "📁 Otros Estados"]
 
                     for cat in orden_categorias:
@@ -213,7 +223,7 @@ def render_chat():
                             badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
                             chat_activo_aqui = telefono_actual in df_cat['telefono'].values
                             
-                            expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "ETAPA_2")
+                            expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "ETAPA_2") or ver_todos
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
                                 for _, row in df_cat.iterrows():
@@ -221,20 +231,16 @@ def render_chat():
                                     c_leidos = row['no_leidos']
                                     icono = "🔴" if c_leidos > 0 else "👤"
                                     texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
+                                    extra = f" [{row['estado']}]" if cat == "📁 Otros Estados" else ""
                                     
-                                    # Si es de "Otros", mostramos qué estado tiene para que sepas
-                                    extra_info = ""
-                                    if cat == "📁 Otros Estados":
-                                        extra_info = f" [{row['estado']}]"
-                                        
-                                    label = f"{icono} {row['nombre']}{extra_info}{texto_leidos}"
+                                    label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
                                     tipo = "primary" if telefono_actual == t_row else "secondary"
                                     
                                     if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,)):
                                         pass 
 
         except Exception as e:
-            st.error("Error cargando lista")
+            st.error(f"Error cargando lista: {e}")
 
     # --- CHAT ---
     with col_chat:
