@@ -74,7 +74,7 @@ def normalizar_telefono_maestro(entrada):
     }
 
 # ==============================================================================
-# 🔍 2. FUNCIONES DE GOOGLE CONTACTS (LAS QUE FALTABAN)
+# 🔍 2. FUNCIONES DE GOOGLE CONTACTS
 # ==============================================================================
 def get_google_service():
     """Autenticación silenciosa con Google"""
@@ -148,6 +148,45 @@ def crear_en_google(nombre, apellido, telefono, email=None):
         service.people().createContact(body=body).execute()
         return True
     except:
+        return False
+
+def actualizar_en_google(google_id, nombre, apellido, telefono, email=None):
+    """
+    Actualiza un contacto existente en Google Contacts.
+    Esta es la función que faltaba para facturacion.py.
+    """
+    service = get_google_service()
+    if not service: return False
+
+    try:
+        # 1. Obtener el 'etag' actual (necesario para actualizar en Google People API)
+        persona = service.people().get(
+            resourceName=google_id,
+            personFields='metadata'
+        ).execute()
+        etag = persona.get('etag')
+
+        # 2. Preparar los datos nuevos
+        body = {
+            "etag": etag,
+            "names": [{"givenName": nombre, "familyName": apellido}],
+            "phoneNumbers": [{"value": telefono}],
+        }
+        update_fields = 'names,phoneNumbers'
+
+        if email:
+            body["emailAddresses"] = [{"value": email}]
+            update_fields += ',emailAddresses'
+
+        # 3. Ejecutar actualización
+        service.people().updateContact(
+            resourceName=google_id,
+            updatePersonFields=update_fields,
+            body=body
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"Error actualizando en Google: {e}")
         return False
 
 # ==============================================================================
