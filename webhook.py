@@ -6,7 +6,6 @@ import requests
 import sys
 import json
 from datetime import datetime
-from utils import normalizar_telefono_maestro, buscar_contacto_google
 
 app = Flask(__name__)
 
@@ -18,6 +17,39 @@ def log_info(msg):
 
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
+
+# --- 🛡️ ZONA DE SEGURIDAD: IMPORTACIÓN ROBUSTA ---
+# Intentamos importar utils. Si falla (por librerías de Google faltantes),
+# usamos una función de respaldo local para que el chat NO MUERA.
+try:
+    from utils import normalizar_telefono_maestro
+    log_info("✅ Utils importado correctamente.")
+except ImportError as e:
+    log_error(f"⚠️ Alerta: No se pudo importar utils ({e}). Usando modo respaldo.")
+    
+    # Función de respaldo (Copia exacta de la lógica de normalización)
+    def normalizar_telefono_maestro(entrada):
+        if not entrada: return None
+        raw_id = str(entrada)
+        if isinstance(entrada, dict):
+            raw_id = entrada.get('from', '') or entrada.get('to', '') or entrada.get('participant', '') or str(entrada.get('user', ''))
+            
+        cadena_limpia = raw_id.split('@')[0] if '@' in raw_id else raw_id
+        solo_numeros = "".join(filter(str.isdigit, cadena_limpia))
+        
+        if not solo_numeros or len(solo_numeros) < 7: return None
+        
+        full, local = solo_numeros, solo_numeros
+        if len(solo_numeros) == 9:
+            full = f"51{solo_numeros}"
+        elif len(solo_numeros) == 11 and solo_numeros.startswith("51"):
+            local = solo_numeros[2:]
+            
+        return {
+            "db": full,
+            "waha": f"{full}@c.us",
+            "corto": local
+        }
 
 # --- 🚑 PARCHE DB ---
 def aplicar_parche_db():
@@ -43,7 +75,6 @@ def aplicar_parche_db():
                 conn.execute(text("DROP TABLE IF EXISTS sync_estado"))
                 conn.execute(text("CREATE TABLE sync_estado (id INT PRIMARY KEY, version INT DEFAULT 0)"))
                 conn.execute(text("INSERT INTO sync_estado (id, version) VALUES (1, 0)"))
-
     except Exception as e:
         log_error(f"Error parche DB: {e}")
 
@@ -102,19 +133,18 @@ def extraer_ids_complejos(payload, session):
             if alt_id and '@lid' in alt_id:
                 lid_capturado = alt_id
 
-        # 🚀 4. NORMALIZACIÓN ESTRICTA (LA SOLUCIÓN)
-        # Convertimos el número crudo (ej: "999...") al formato DB (ej: "51999...")
+        # 🚀 4. NORMALIZACIÓN ESTRICTA
         telefono_normalizado = None
         if telefono_crudo:
             res = normalizar_telefono_maestro(telefono_crudo)
             if isinstance(res, dict):
                 telefono_normalizado = res.get('db')
             else:
-                telefono_normalizado = res # Si devuelve string
+                telefono_normalizado = res
 
         return {
             "lid": lid_capturado,
-            "telefono": telefono_normalizado, # AHORA SIEMPRE SERÁ 51xxxxxx
+            "telefono": telefono_normalizado, # SIEMPRE 51xxxxxx
             "routing_final": routing_id
         }
     except Exception as e:
@@ -123,7 +153,7 @@ def extraer_ids_complejos(payload, session):
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V40 (Strict Normalization) ✅", 200
+    return "Webhook V41 (Immortal Mode) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -131,6 +161,17 @@ def recibir_mensaje():
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
         
+        # LOGGING DE DIAGNÓSTICO (Con manejo de error)
+        try:
+            with engine.begin() as conn:
+                item = data[0] if isinstance(data, list) else data
+                p_str = json.dumps(item, ensure_ascii=False)
+                if len(p_str) > 10000: p_str = p_str[:10000]
+                conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
+                            {"s": item.get('session', 'unk'), "e": item.get('event', 'unk'), "p": p_str})
+                conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 50)"))
+        except: pass
+
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
@@ -158,7 +199,7 @@ def recibir_mensaje():
             if not ids: continue
 
             wspid_lid = ids['lid']
-            telefono_num = ids['telefono'] # Ya viene normalizado (51...)
+            telefono_num = ids['telefono']
             
             body = payload.get('body', '')
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
@@ -177,16 +218,13 @@ def recibir_mensaje():
             push_name = (payload.get('_data') or {}).get('notifyName', 'Cliente')
 
             id_cliente_final = None 
-
             log_info(f"📩 Procesando: {telefono_num} | LID: {wspid_lid}")
 
             try:
                 with engine.begin() as conn:
-                    
                     # CASO 1: LID + Teléfono
                     if wspid_lid and telefono_num:
                         cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
-                        
                         if cliente_lid:
                             if cliente_lid.telefono == telefono_num:
                                 id_cliente_final = cliente_lid.id_cliente
@@ -199,10 +237,7 @@ def recibir_mensaje():
                                 conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel.id_cliente})
                                 id_cliente_final = cliente_tel.id_cliente
                             else:
-                                res = conn.execute(text("""
-                                    INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro)
-                                    VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente
-                                """), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
+                                res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
                                 id_cliente_final = res.id_cliente
 
                     # CASO 2: LID solo
@@ -212,10 +247,7 @@ def recibir_mensaje():
                             id_cliente_final = cliente_lid.id_cliente
                             conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
                         else:
-                            res = conn.execute(text("""
-                                INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro)
-                                VALUES (:lid, '', :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente
-                            """), {"lid": wspid_lid, "n": push_name}).fetchone()
+                            res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, '', :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "n": push_name}).fetchone()
                             id_cliente_final = res.id_cliente
 
                     # CASO 3: Teléfono solo
@@ -225,40 +257,23 @@ def recibir_mensaje():
                             id_cliente_final = cliente_tel.id_cliente
                             conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
                         else:
-                            # Fallback ID técnico
                             wsp_id_fallback = ids['routing_final'] 
-                            res = conn.execute(text("""
-                                INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro)
-                                VALUES (:wid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente
-                            """), {"wid": wsp_id_fallback, "t": telefono_num, "n": push_name}).fetchone()
+                            res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:wid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"wid": wsp_id_fallback, "t": telefono_num, "n": push_name}).fetchone()
                             id_cliente_final = res.id_cliente
 
-                    # GUARDADO DEL MENSAJE (Usando el dato consolidado)
+                    # GUARDADO DEL MENSAJE
                     if id_cliente_final:
                         telefono_final_msg = telefono_num
-                        if not telefono_final_msg and wspid_lid:
-                             telefono_final_msg = wspid_lid 
+                        if not telefono_final_msg and wspid_lid: telefono_final_msg = wspid_lid 
 
                         existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
-                        
                         if not existe:
                             conn.execute(text("""
-                                INSERT INTO mensajes (
-                                    telefono, tipo, contenido, fecha, leido, archivo_data, 
-                                    whatsapp_id, reply_to_id, reply_content, estado_waha, session_name
-                                )
+                                INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content, estado_waha, session_name)
                                 VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est, :sess)
                             """), {
-                                "t": telefono_final_msg, 
-                                "tipo": tipo_msg, 
-                                "txt": body, 
-                                "leido": (tipo_msg == 'SALIENTE'), 
-                                "d": archivo_bytes,
-                                "wid": whatsapp_id, 
-                                "rid": reply_id, 
-                                "rbody": reply_content, 
-                                "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', 
-                                "sess": session_name
+                                "t": telefono_final_msg, "tipo": tipo_msg, "txt": body, "leido": (tipo_msg == 'SALIENTE'), "d": archivo_bytes,
+                                "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
                             })
                         
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
