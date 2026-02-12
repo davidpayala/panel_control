@@ -71,14 +71,13 @@ def descargar_media_plus(media_url):
     except: return None
 
 # ==============================================================================
-# 🕵️ FUNCIONES ESPECIALISTAS
+# 🕵️ FUNCIONES ESPECIALISTAS (LOCALES)
 # ==============================================================================
 
 def obtener_lid_waha(payload):
     try:
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
-        # En llamadas, el ID suele venir en payload.from o payload._data.chatId
         candidatos = [
             payload.get('from'), payload.get('to'), payload.get('participant'),
             key.get('remoteJid'), key.get('participant'), _data.get('lid'),
@@ -112,12 +111,46 @@ def obtener_telefono_waha(payload):
     except: return None
 
 # ==============================================================================
-# 🚀 WEBHOOK V46 (CALL SUPPORT ENABLED)
+# 📡 CONSULTA API WAHA (NUEVO)
+# ==============================================================================
+def resolver_pn_por_api(lid, session):
+    """
+    Consulta a WAHA el número real detrás de un LID.
+    GET /api/{session}/lids/{lid}
+    """
+    if not WAHA_URL or not lid: return None
+    try:
+        # WAHA pide escapar el @ con %40 en la URL
+        lid_safe = lid.replace('@', '%40')
+        url = f"{WAHA_URL.rstrip('/')}/api/{session}/lids/{lid_safe}"
+        
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+        
+        # Timeout corto para no congelar el webhook si WAHA está lento
+        r = requests.get(url, headers=headers, timeout=4)
+        
+        if r.status_code == 200:
+            data = r.json()
+            # Respuesta esperada: { "lid": "...", "pn": "51999...@c.us" }
+            pn = data.get('pn')
+            if pn:
+                log_info(f"✅ API WAHA Resuelto: {lid} -> {pn}")
+                return pn.split('@')[0]
+            else:
+                log_info(f"⚠️ API WAHA: No encontró PN para {lid}")
+    except Exception as e:
+        log_error(f"Error consultando API LID: {e}")
+    
+    return None
+
+# ==============================================================================
+# 🚀 WEBHOOK V48 (API RESOLVER ENABLED)
 # ==============================================================================
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V46 (Call Support) ✅", 200
+    return "Webhook V48 (API Resolver) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -142,7 +175,6 @@ def recibir_mensaje():
             session_name = evento.get('session', 'default')
             payload = evento.get('payload', {})
 
-            # --- GESTIÓN DE ACKS ---
             if tipo_evento == 'message.ack':
                 msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
@@ -155,38 +187,46 @@ def recibir_mensaje():
                 except: pass
                 continue 
 
-            # 🛑 FILTRO DE EVENTOS (Ahora incluye 'call.received')
             if tipo_evento not in ['message', 'message.any', 'message.created', 'call.received']: 
                 continue
             
             if payload.get('from') == 'status@broadcast': continue
 
-            # 1. Identificación
+            # 1. Identificación Local
             wspid_lid = obtener_lid_waha(payload)
             telefono_crudo = obtener_telefono_waha(payload)
             
-            # Normalización
+            # Normalización inicial
             telefono_num = None
             if telefono_crudo:
                 norm = normalizar_telefono_maestro(telefono_crudo)
                 if isinstance(norm, dict): telefono_num = norm.get('db')
                 else: telefono_num = norm
 
+            # 2. 🆘 RESCATE POR API (Si tenemos LID pero no Teléfono)
+            if wspid_lid and not telefono_num:
+                log_info(f"🕵️ Consultando API para LID: {wspid_lid}...")
+                telefono_rescatado = resolver_pn_por_api(wspid_lid, session_name)
+                
+                if telefono_rescatado:
+                    # Normalizamos el resultado de la API
+                    norm_api = normalizar_telefono_maestro(telefono_rescatado)
+                    if isinstance(norm_api, dict): telefono_num = norm_api.get('db')
+                    else: telefono_num = norm_api
+
             if not wspid_lid and not telefono_num:
-                log_error(f"⚠️ Rechazado: Sin ID ni Teléfono: {str(payload)[:100]}")
+                log_error(f"⚠️ Rechazado Total: Sin ID ni Teléfono.")
                 continue
 
-            log_info(f"🔎 Analizando ({tipo_evento}): Tel={telefono_num} | LID={wspid_lid}")
+            log_info(f"🔎 Procesando: Tel={telefono_num} | LID={wspid_lid}")
 
-            # --- PREPARACIÓN DEL CONTENIDO DEL MENSAJE ---
+            # Contenido
             body = ""
             archivo_bytes = None
             
             if tipo_evento == 'call.received':
-                # 📞 ES UNA LLAMADA
                 body = "📞 Llamada entrante"
             else:
-                # 💬 ES UN MENSAJE TEXTO/MEDIA
                 body = payload.get('body', '')
                 media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
                 archivo_bytes = descargar_media_plus(media_url) if media_url else None
@@ -199,7 +239,6 @@ def recibir_mensaje():
                 reply_id = raw_reply.get('id')
                 reply_content = raw_reply.get('body')
 
-            # Definir tipo y ID
             tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
             whatsapp_id = payload.get('id')
             push_name = (payload.get('_data') or {}).get('notifyName', 'Cliente')
@@ -208,16 +247,13 @@ def recibir_mensaje():
 
             try:
                 with engine.begin() as conn:
-                    
-                    # ==========================================================
-                    # 🧬 FUSIÓN DE DUPLICADOS
-                    # ==========================================================
+                    # FUSIÓN DE DUPLICADOS
                     if wspid_lid and telefono_num:
                         dueño_id = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
                         dueño_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
 
                         if dueño_id and dueño_tel and (dueño_id.id_cliente != dueño_tel.id_cliente):
-                            log_info(f"⚔️ Fusión detectada: Cliente Tel ({dueño_tel.id_cliente}) vs Cliente ID ({dueño_id.id_cliente})")
+                            log_info(f"⚔️ Fusión: {dueño_tel.id_cliente} absorbe a {dueño_id.id_cliente}")
                             id_sucio = f"MERGED_{wspid_lid}_{random.randint(1000,9999)}"
                             conn.execute(text("""
                                 UPDATE Clientes 
@@ -229,21 +265,17 @@ def recibir_mensaje():
                                 conn.execute(text("UPDATE mensajes SET telefono = :new_t WHERE telefono = :old_t"), 
                                             {"new_t": telefono_num, "old_t": dueño_id.telefono})
 
-                    # ==========================================================
-                    # 🚦 LÓGICA PRINCIPAL (Phone First)
-                    # ==========================================================
+                    # 🚦 LÓGICA PRINCIPAL
                     
-                    # CASO 1: LID + Teléfono
+                    # CASO 1: LID + Teléfono (Ahora es el caso más común gracias a la API)
                     if wspid_lid and telefono_num:
                         cliente_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
-                        
                         if cliente_tel:
                             if cliente_tel.whatsapp_internal_id != wspid_lid:
                                 conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel.id_cliente})
                             else:
                                 conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_tel.id_cliente})
                             id_cliente_final = cliente_tel.id_cliente
-                        
                         else:
                             cliente_lid = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
                             if cliente_lid:
@@ -253,14 +285,16 @@ def recibir_mensaje():
                                 res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
                                 id_cliente_final = res.id_cliente
 
-                    # CASO 2: Solo LID (Muy común en llamadas)
+                    # CASO 2: Solo LID (Solo si la API falló también)
                     elif wspid_lid and not telefono_num:
                         cliente_lid = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
                         if cliente_lid:
                             id_cliente_final = cliente_lid.id_cliente
                             conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
                         else:
-                            res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, '', :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "n": push_name}).fetchone()
+                            # FALLBACK ÚNICO: Si la API falló, usamos ID sintético para no perder el mensaje
+                            fake_phone = f"LID_{wspid_lid.split('@')[0]}"
+                            res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :fake, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "fake": fake_phone, "n": push_name}).fetchone()
                             id_cliente_final = res.id_cliente
 
                     # CASO 3: Solo Teléfono
@@ -276,7 +310,7 @@ def recibir_mensaje():
 
                     # GUARDADO
                     if id_cliente_final:
-                        t_msg = telefono_num if telefono_num else wspid_lid
+                        t_msg = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente = :id"), {"id": id_cliente_final}).scalar()
                         if not t_msg: t_msg = "DESCONOCIDO"
 
                         existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
