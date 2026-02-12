@@ -5,6 +5,7 @@ import os
 import requests
 import sys
 import json
+import random
 from datetime import datetime
 
 app = Flask(__name__)
@@ -18,7 +19,7 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🛡️ IMPORTACIÓN SEGURA DE UTILS ---
+# --- 🛡️ IMPORTACIÓN SEGURA ---
 try:
     from utils import normalizar_telefono_maestro
 except ImportError:
@@ -74,7 +75,6 @@ def descargar_media_plus(media_url):
 # ==============================================================================
 
 def obtener_lid_waha(payload):
-    """Busca ÚNICAMENTE un ID que termine en @lid"""
     try:
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
@@ -83,45 +83,39 @@ def obtener_lid_waha(payload):
             key.get('remoteJid'), key.get('participant'), _data.get('lid')
         ]
         for c in candidatos:
-            if c and isinstance(c, str) and '@lid' in c:
-                return c
+            if c and isinstance(c, str) and '@lid' in c: return c
         return None
     except: return None
 
 def obtener_telefono_waha(payload):
-    """Busca ÚNICAMENTE un ID numérico (c.us o s.whatsapp.net)"""
     try:
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
-
+        
         # 1. Prioridad: remoteJidAlt
         alt = key.get('remoteJidAlt')
         if alt and isinstance(alt, str) and ('@s.whatsapp.net' in alt or '@c.us' in alt):
             return alt.split('@')[0]
 
         # 2. Candidatos estándar
-        candidatos = [
-            payload.get('from'), payload.get('to'), key.get('remoteJid'), payload.get('participant')
-        ]
+        candidatos = [payload.get('from'), payload.get('to'), key.get('remoteJid'), payload.get('participant')]
         for c in candidatos:
             if c and isinstance(c, str) and ('@s.whatsapp.net' in c or '@c.us' in c):
                 return c.split('@')[0]
         
         # 3. User ID puro
         user_id = _data.get('id', {}).get('user')
-        if user_id and str(user_id).isdigit():
-            return str(user_id)
-
+        if user_id and str(user_id).isdigit(): return str(user_id)
         return None
     except: return None
 
 # ==============================================================================
-# 🚀 WEBHOOK PRINCIPAL (V44 - Lógica Prioridad Teléfono)
+# 🚀 WEBHOOK V45 (FUSION PROTOCOL ENABLED)
 # ==============================================================================
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V44 (Phone First Logic) ✅", 200
+    return "Webhook V45 (Fusion Protocol) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -129,7 +123,7 @@ def recibir_mensaje():
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
         
-        # Logging General de eventos
+        # LOGGING
         try:
             with engine.begin() as conn:
                 item = data[0] if isinstance(data, list) else data
@@ -147,7 +141,7 @@ def recibir_mensaje():
             payload = evento.get('payload', {})
 
             if tipo_evento == 'message.ack':
-                # Gestión de ACKS (Igual que antes)
+                # Gestión de ACKS
                 msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
                 estado_map = {1: 'enviado', 2: 'recibido', 3: 'leido', 4: 'reproducido'}
@@ -162,7 +156,7 @@ def recibir_mensaje():
             if tipo_evento not in ['message', 'message.any', 'message.created']: continue
             if payload.get('from') == 'status@broadcast': continue
 
-            # 1. Obtención de Identificadores
+            # 1. Identificación
             wspid_lid = obtener_lid_waha(payload)
             telefono_crudo = obtener_telefono_waha(payload)
             
@@ -173,10 +167,9 @@ def recibir_mensaje():
                 if isinstance(norm, dict): telefono_num = norm.get('db')
                 else: telefono_num = norm
 
-            # 🛑 LOG DE FALLO DE IDENTIFICACIÓN
             if not wspid_lid and not telefono_num:
-                log_error(f"⚠️ Mensaje RECHAZADO: No se encontró ni ID ni Teléfono en payload: {str(payload)[:200]}")
-                continue # Saltamos este mensaje
+                log_error(f"⚠️ Rechazado: Sin ID ni Teléfono: {str(payload)[:100]}")
+                continue
 
             log_info(f"🔎 Analizando: Tel={telefono_num} | LID={wspid_lid}")
 
@@ -203,36 +196,59 @@ def recibir_mensaje():
                 with engine.begin() as conn:
                     
                     # ==========================================================
-                    # 🚦 LÓGICA DE REGISTRO V44 (PRIORIDAD TELÉFONO)
+                    # 🧬 FUSIÓN DE DUPLICADOS (PREVENCIÓN DE ERRORES)
                     # ==========================================================
-
-                    # CASO 1: Tengo LID y Tengo Teléfono
                     if wspid_lid and telefono_num:
-                        # 1. Busca Telefono
+                        # Buscamos a los DOS posibles dueños
+                        dueño_id = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
+                        dueño_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
+
+                        # Si ambos existen y SON DIFERENTES -> Conflicto detectado
+                        if dueño_id and dueño_tel and (dueño_id.id_cliente != dueño_tel.id_cliente):
+                            log_info(f"⚔️ Fusión detectada: Cliente Tel ({dueño_tel.id_cliente}) vs Cliente ID ({dueño_id.id_cliente})")
+                            
+                            # 1. LIBERAR EL ID (Renombramos al cliente viejo/erróneo)
+                            # Para evitar el error UNIQUE, le cambiamos el ID al que tiene el teléfono incorrecto
+                            id_sucio = f"MERGED_{wspid_lid}_{random.randint(1000,9999)}"
+                            conn.execute(text("""
+                                UPDATE Clientes 
+                                SET whatsapp_internal_id = :fake, estado = 'Duplicado', activo = FALSE 
+                                WHERE id_cliente = :id
+                            """), {"fake": id_sucio, "id": dueño_id.id_cliente})
+                            
+                            # 2. MIGRAR MENSAJES (Opcional: movemos los msjs del viejo al nuevo para no perder historia)
+                            # Si el cliente viejo tenía un teléfono X, pasamos sus mensajes al teléfono correcto
+                            if dueño_id.telefono:
+                                conn.execute(text("UPDATE mensajes SET telefono = :new_t WHERE telefono = :old_t"), 
+                                            {"new_t": telefono_num, "old_t": dueño_id.telefono})
+
+                            # Ahora el ID está libre para ser asignado en la lógica principal.
+
+                    # ==========================================================
+                    # 🚦 LÓGICA PRINCIPAL (Ya segura sin colisiones)
+                    # ==========================================================
+                    
+                    # CASO 1: LID + Teléfono
+                    if wspid_lid and telefono_num:
                         cliente_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
                         
                         if cliente_tel:
-                            # 1.1 Encontró por Telefono
-                            id_actual = cliente_tel.whatsapp_internal_id
-                            if id_actual == wspid_lid:
-                                # 1.1.1 Son iguales -> Nada (solo activar)
-                                conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_tel.id_cliente})
-                            else:
-                                # 1.1.2 Diferentes -> Reemplaza por el ID nuevo (LID)
+                            # Ya existe el teléfono correcto. Le asignamos/actualizamos el ID.
+                            # (Como ya corrimos la Fusión, sabemos que el ID está libre o ya es de él)
+                            if cliente_tel.whatsapp_internal_id != wspid_lid:
                                 conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel.id_cliente})
-                            
+                            else:
+                                conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_tel.id_cliente})
                             id_cliente_final = cliente_tel.id_cliente
+                        
                         else:
-                            # 1.2 No encontró Telefono -> Busca ID
+                            # No existe el teléfono. Buscamos por ID (por si acaso quedó libre tras fusión o es nuevo)
                             cliente_lid = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
-                            
                             if cliente_lid:
-                                # 1.2.1 Encontró ID -> Reemplaza el Telefono
-                                # (Seguro hacerlo porque el paso 1 confirmó que el telefono no existe en otro lado)
                                 conn.execute(text("UPDATE Clientes SET telefono = :t, activo=TRUE WHERE id_cliente = :id"), {"t": telefono_num, "id": cliente_lid.id_cliente})
                                 id_cliente_final = cliente_lid.id_cliente
                             else:
-                                # 1.2.2 No encontró nada -> Crea Nuevo Cliente
+                                # Nuevo Total
                                 res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
                                 id_cliente_final = res.id_cliente
 
@@ -257,9 +273,7 @@ def recibir_mensaje():
                             res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:wid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"wid": fallback_id, "t": telefono_num, "n": push_name}).fetchone()
                             id_cliente_final = res.id_cliente
 
-                    # ==========================================================
-                    # 💾 GUARDAR EL MENSAJE
-                    # ==========================================================
+                    # GUARDADO
                     if id_cliente_final:
                         t_msg = telefono_num if telefono_num else wspid_lid
                         if not t_msg: t_msg = "DESCONOCIDO"

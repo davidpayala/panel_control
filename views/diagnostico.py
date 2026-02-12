@@ -11,7 +11,7 @@ from datetime import datetime
 WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
 # Intentamos adivinar la URL local del webhook, o usa la variable si existe
-WEBHOOK_INTERNAL_URL = os.getenv("WEBHOOK_URL", "http://localhost:5000/webhook")
+WEBHOOK_INTERNAL_URL = os.getenv("WEBHOOK_URL", "https://kmlentes-webhook.up.railway.app/webhook")
 
 def get_headers():
     h = {"Content-Type": "application/json"}
