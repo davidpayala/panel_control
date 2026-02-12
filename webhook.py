@@ -70,14 +70,14 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
-# --- IDENTIDAD INTELIGENTE V2 (Prioriza Teléfonos Reales) ---
+# --- 🕵️ DETECTIVE DE IDENTIDAD V38 (UNIFICADOR) ---
 def obtener_identidad(payload, session):
     try:
         from_me = payload.get('fromMe', False)
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
 
-        # 1. Buscar el ID Técnico (routing_id)
+        # 1. Identificar el ID "Técnico" (Puede ser LID o Normal)
         routing_id = None
         if from_me: routing_id = payload.get('to')
         else: routing_id = payload.get('from')
@@ -87,27 +87,35 @@ def obtener_identidad(payload, session):
 
         if not routing_id: return None
 
-        # 2. Intentar rescatar el número REAL si viene en un LID
-        # A veces el 'user' dentro de _data trae el número real aunque el from sea LID
-        posible_numero = _data.get('id', {}).get('user')
+        # 2. BUSCAR EL NÚMERO REAL (La verdad absoluta)
+        # Incluso si el routing_id es un @lid, el número real suele estar en _data['id']['user']
+        # o en el propio routing_id si es @c.us
         
-        telefono_limpio = ""
-        es_lid = '@lid' in routing_id
+        numero_real = ""
         
-        if es_lid and posible_numero and str(posible_numero).isdigit():
-            # Si es un LID pero encontramos el número escondido, lo usamos
-            telefono_limpio = str(posible_numero)
-        else:
-            # Si no, sacamos los números del routing_id
-            telefono_limpio = "".join(filter(str.isdigit, routing_id.split('@')[0]))
+        # Intento A: Sacarlo del ID si es normal
+        if "@s.whatsapp.net" in routing_id or "@c.us" in routing_id:
+            numero_real = routing_id.split('@')[0]
+            
+        # Intento B: Si es LID, buscar en los metadatos ocultos
+        elif "@lid" in routing_id:
+            # WAHA suele exponer el número real en _data -> id -> user
+            user_oculto = _data.get('id', {}).get('user')
+            if user_oculto and str(user_oculto).isdigit():
+                numero_real = str(user_oculto)
+            else:
+                # Si falla, intentamos buscar en participants si es grupo, o fallamos
+                # Si no encontramos el número real, no podemos unificar, usamos el LID como "número" temporal
+                numero_real = routing_id.split('@')[0] 
 
+        # Limpieza final (solo dígitos)
+        telefono_limpio = "".join(filter(str.isdigit, numero_real))
         es_grupo = '@g.us' in routing_id
 
         return {
-            "id_canonico": routing_id, # Este puede ser @lid o @c.us
-            "telefono": telefono_limpio,
-            "es_grupo": es_grupo,
-            "es_lid": es_lid
+            "id_canonico": routing_id,  # El ID técnico para responder (puede ser LID)
+            "telefono": telefono_limpio, # El ID humano para agrupar (Siempre 519...)
+            "es_grupo": es_grupo
         }
     except Exception as e:
         log_error(f"Error identidad: {e}")
@@ -115,7 +123,7 @@ def obtener_identidad(payload, session):
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V37 (LID Protection) ✅", 200
+    return "Webhook V38 (Phone Unifier) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -150,9 +158,13 @@ def recibir_mensaje():
             identidad = obtener_identidad(payload, session_name)
             if not identidad: continue
 
-            routing_id = identidad['id_canonico']
-            telefono_msg = identidad['telefono']
-            es_lid = identidad['es_lid']
+            routing_id = identidad['id_canonico'] # Puede ser LID
+            telefono_msg = identidad['telefono']  # SIEMPRE es el número (519...)
+            
+            # Si no pudimos sacar un teléfono válido, saltamos para no ensuciar la DB
+            if not telefono_msg or len(telefono_msg) < 5: 
+                log_error(f"Teléfono inválido extraído: {telefono_msg}")
+                continue
 
             body = payload.get('body', '')
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
@@ -170,50 +182,52 @@ def recibir_mensaje():
             whatsapp_id = payload.get('id')
             push_name = (payload.get('_data') or {}).get('notifyName', 'Cliente')
             
-            log_info(f"📩 Msg: {telefono_msg} | LID: {es_lid}")
+            log_info(f"📩 Procesando: {telefono_msg} (ID Técnico: {routing_id})")
 
             try:
                 with engine.begin() as conn:
-                    # A. Cliente
-                    # Buscamos por ID interno O por teléfono (para unificar LIDs con teléfonos existentes)
-                    cliente_existente = conn.execute(text("SELECT id_cliente, whatsapp_internal_id, telefono FROM Clientes WHERE whatsapp_internal_id = :wid OR telefono = :t"), {"wid": routing_id, "t": telefono_msg}).fetchone()
+                    # A. LÓGICA DE UNIFICACIÓN DE CLIENTE
+                    # Buscamos el cliente POR SU NÚMERO DE TELÉFONO, ignorando el ID técnico
+                    cliente_existente = conn.execute(
+                        text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), 
+                        {"t": telefono_msg}
+                    ).fetchone()
 
                     if cliente_existente:
-                        # LOGICA DE PROTECCIÓN DE ID:
-                        # Solo actualizamos el ID si el nuevo NO es un LID (es un @c.us bueno)
-                        # O si el cliente no tenía ID antes.
-                        # Si el cliente ya tiene un ID bueno y llega un LID, NO LO TOCAMOS.
-                        
-                        id_actual_db = cliente_existente.whatsapp_internal_id or ""
-                        debo_actualizar_id = True
-                        
-                        if es_lid and "@c.us" in id_actual_db:
-                            debo_actualizar_id = False # ¡PROTEGIDO!
-                        
-                        if debo_actualizar_id:
-                            conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), {"wid": routing_id, "id": cliente_existente.id_cliente})
-                        else:
-                            # Solo marcamos activo sin dañar el ID
-                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_existente.id_cliente})
-                            
-                        # Si no tenía teléfono guardado y ahora lo tenemos, lo guardamos
-                        if not cliente_existente.telefono and telefono_msg:
-                             conn.execute(text("UPDATE Clientes SET telefono=:t WHERE id_cliente=:id"), {"t": telefono_msg, "id": cliente_existente.id_cliente})
-
+                        # Ya existe el cliente con ese número.
+                        # Solo actualizamos el whatsapp_internal_id si el que tenemos es viejo o nulo.
+                        # PREFERENCIA: Si el ID actual en DB es LID y llega uno normal, ¿cambiamos?
+                        # Por ahora, mantenemos el ID más reciente que funcione.
+                        conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), 
+                                     {"wid": routing_id, "id": cliente_existente.id_cliente})
                     else:
-                        # Cliente Nuevo
-                        conn.execute(text("INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro) VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())"), {"t": telefono_msg, "wid": routing_id, "n": push_name})
+                        # Cliente Nuevo: Lo insertamos con su teléfono como clave
+                        conn.execute(text("""
+                            INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro)
+                            VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())
+                        """), {"t": telefono_msg, "wid": routing_id, "n": push_name})
 
-                    # B. Mensaje
+                    # B. Guardar Mensaje
                     existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                     
                     if not existe:
                         conn.execute(text("""
-                            INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content, estado_waha, session_name)
+                            INSERT INTO mensajes (
+                                telefono, tipo, contenido, fecha, leido, archivo_data, 
+                                whatsapp_id, reply_to_id, reply_content, estado_waha, session_name
+                            )
                             VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est, :sess)
                         """), {
-                            "t": telefono_msg, "tipo": tipo_msg, "txt": body, "leido": (tipo_msg == 'SALIENTE'), "d": archivo_bytes,
-                            "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
+                            "t": telefono_msg, # Guardamos siempre asociado al NÚMERO UNIFICADO
+                            "tipo": tipo_msg, 
+                            "txt": body, 
+                            "leido": (tipo_msg == 'SALIENTE'), 
+                            "d": archivo_bytes,
+                            "wid": whatsapp_id, 
+                            "rid": reply_id, 
+                            "rbody": reply_content, 
+                            "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', 
+                            "sess": session_name
                         })
                     
                     # C. Notificar cambio
