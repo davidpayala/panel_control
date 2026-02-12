@@ -19,16 +19,14 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🚑 PARCHE DB: RECONSTRUCCIÓN NUCLEAR ---
+# --- 🚑 PARCHE DB ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
-            # 1. Asegurar tablas básicas
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS whatsapp_internal_id VARCHAR(150)"))
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS session_name VARCHAR(50)"))
             
-            # 2. Tabla Logs
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS webhook_logs (
                     id SERIAL PRIMARY KEY,
@@ -39,25 +37,16 @@ def aplicar_parche_db():
                 )
             """))
 
-            # 3. VERIFICACIÓN Y RECONSTRUCCIÓN DE SYNC_ESTADO
+            # Tabla Sync
             try:
-                # Intentamos leer la columna version. Si falla, salta al except.
                 conn.execute(text("SELECT version FROM sync_estado LIMIT 1"))
             except Exception:
-                log_info("⚠️ Tabla sync_estado antigua detectada. Reconstruyendo...")
-                # Si falla, borramos la tabla vieja y la creamos bien
                 conn.execute(text("DROP TABLE IF EXISTS sync_estado"))
-                conn.execute(text("""
-                    CREATE TABLE sync_estado (
-                        id INT PRIMARY KEY,
-                        version INT DEFAULT 0
-                    )
-                """))
+                conn.execute(text("CREATE TABLE sync_estado (id INT PRIMARY KEY, version INT DEFAULT 0)"))
                 conn.execute(text("INSERT INTO sync_estado (id, version) VALUES (1, 0)"))
-                log_info("✅ Tabla sync_estado reconstruida correctamente.")
 
     except Exception as e:
-        log_error(f"Error en parche DB: {e}")
+        log_error(f"Error parche DB: {e}")
 
 aplicar_parche_db()
 
@@ -81,12 +70,14 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
+# --- IDENTIDAD INTELIGENTE V2 (Prioriza Teléfonos Reales) ---
 def obtener_identidad(payload, session):
     try:
         from_me = payload.get('fromMe', False)
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
 
+        # 1. Buscar el ID Técnico (routing_id)
         routing_id = None
         if from_me: routing_id = payload.get('to')
         else: routing_id = payload.get('from')
@@ -96,13 +87,27 @@ def obtener_identidad(payload, session):
 
         if not routing_id: return None
 
-        telefono_limpio = "".join(filter(str.isdigit, routing_id.split('@')[0]))
+        # 2. Intentar rescatar el número REAL si viene en un LID
+        # A veces el 'user' dentro de _data trae el número real aunque el from sea LID
+        posible_numero = _data.get('id', {}).get('user')
+        
+        telefono_limpio = ""
+        es_lid = '@lid' in routing_id
+        
+        if es_lid and posible_numero and str(posible_numero).isdigit():
+            # Si es un LID pero encontramos el número escondido, lo usamos
+            telefono_limpio = str(posible_numero)
+        else:
+            # Si no, sacamos los números del routing_id
+            telefono_limpio = "".join(filter(str.isdigit, routing_id.split('@')[0]))
+
         es_grupo = '@g.us' in routing_id
 
         return {
-            "id_canonico": routing_id,
+            "id_canonico": routing_id, # Este puede ser @lid o @c.us
             "telefono": telefono_limpio,
-            "es_grupo": es_grupo
+            "es_grupo": es_grupo,
+            "es_lid": es_lid
         }
     except Exception as e:
         log_error(f"Error identidad: {e}")
@@ -110,7 +115,7 @@ def obtener_identidad(payload, session):
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V36 (Sync Fix) ✅", 200
+    return "Webhook V37 (LID Protection) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -118,23 +123,6 @@ def recibir_mensaje():
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
         
-        # --- LOGGING DE DIAGNÓSTICO (Con manejo de errores) ---
-        try:
-            with engine.begin() as conn:
-                item = data[0] if isinstance(data, list) else data
-                p_str = json.dumps(item, ensure_ascii=False)
-                # Recortamos payload si es gigante para evitar errores
-                if len(p_str) > 10000: p_str = p_str[:10000] + "...(truncado)"
-                
-                conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
-                            {"s": item.get('session', 'unk'), "e": item.get('event', 'unk'), "p": p_str})
-                
-                # Limpieza automática
-                conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 50)"))
-        except Exception as e:
-            log_error(f"Fallo al guardar log de diagnóstico: {e}")
-        # ------------------------------------------------------
-
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
@@ -164,7 +152,7 @@ def recibir_mensaje():
 
             routing_id = identidad['id_canonico']
             telefono_msg = identidad['telefono']
-            # es_grupo = identidad['es_grupo'] # No usado por ahora
+            es_lid = identidad['es_lid']
 
             body = payload.get('body', '')
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
@@ -182,16 +170,38 @@ def recibir_mensaje():
             whatsapp_id = payload.get('id')
             push_name = (payload.get('_data') or {}).get('notifyName', 'Cliente')
             
-            log_info(f"📩 Procesando: {telefono_msg}")
+            log_info(f"📩 Msg: {telefono_msg} | LID: {es_lid}")
 
             try:
                 with engine.begin() as conn:
                     # A. Cliente
-                    cliente_existente = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id = :wid OR telefono = :t"), {"wid": routing_id, "t": telefono_msg}).fetchone()
+                    # Buscamos por ID interno O por teléfono (para unificar LIDs con teléfonos existentes)
+                    cliente_existente = conn.execute(text("SELECT id_cliente, whatsapp_internal_id, telefono FROM Clientes WHERE whatsapp_internal_id = :wid OR telefono = :t"), {"wid": routing_id, "t": telefono_msg}).fetchone()
 
                     if cliente_existente:
-                        conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), {"wid": routing_id, "id": cliente_existente.id_cliente})
+                        # LOGICA DE PROTECCIÓN DE ID:
+                        # Solo actualizamos el ID si el nuevo NO es un LID (es un @c.us bueno)
+                        # O si el cliente no tenía ID antes.
+                        # Si el cliente ya tiene un ID bueno y llega un LID, NO LO TOCAMOS.
+                        
+                        id_actual_db = cliente_existente.whatsapp_internal_id or ""
+                        debo_actualizar_id = True
+                        
+                        if es_lid and "@c.us" in id_actual_db:
+                            debo_actualizar_id = False # ¡PROTEGIDO!
+                        
+                        if debo_actualizar_id:
+                            conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :wid, activo=TRUE WHERE id_cliente = :id"), {"wid": routing_id, "id": cliente_existente.id_cliente})
+                        else:
+                            # Solo marcamos activo sin dañar el ID
+                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_existente.id_cliente})
+                            
+                        # Si no tenía teléfono guardado y ahora lo tenemos, lo guardamos
+                        if not cliente_existente.telefono and telefono_msg:
+                             conn.execute(text("UPDATE Clientes SET telefono=:t WHERE id_cliente=:id"), {"t": telefono_msg, "id": cliente_existente.id_cliente})
+
                     else:
+                        # Cliente Nuevo
                         conn.execute(text("INSERT INTO Clientes (telefono, whatsapp_internal_id, nombre_corto, estado, activo, fecha_registro) VALUES (:t, :wid, :n, 'Sin empezar', TRUE, NOW())"), {"t": telefono_msg, "wid": routing_id, "n": push_name})
 
                     # B. Mensaje
