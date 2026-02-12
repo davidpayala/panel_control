@@ -7,6 +7,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from database import engine
 import json
+import base64
 
 # ==============================================================================
 # CONFIGURACIÓN GENERAL
@@ -136,7 +137,7 @@ def crear_en_google(nombre, apellido, telefono, email=None):
     except: return False
 
 def actualizar_en_google(google_id, nombre, apellido, telefono, email=None):
-    """Actualiza un contacto existente (Necesario para Facturación)"""
+    """Actualiza un contacto existente"""
     service = get_google_service()
     if not service: return False
     try:
@@ -182,13 +183,9 @@ def obtener_perfil_waha(telefono):
     return None
 
 def enviar_mensaje_whatsapp(telefono, mensaje, session="default"):
-    """
-    Envía un mensaje de texto simple.
-    Usado por: Campañas, Notificaciones, etc.
-    """
+    """Envía texto simple (Usado en Campañas y Notificaciones)"""
     if not WAHA_URL: return False
     try:
-        # Usamos la normalización maestra para obtener el ID correcto
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return False
         
@@ -196,15 +193,43 @@ def enviar_mensaje_whatsapp(telefono, mensaje, session="default"):
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
-        # norm['waha'] ya trae el formato '51999...@c.us' listo
-        payload = {
-            "session": session,
-            "chatId": norm['waha'], 
-            "text": mensaje
-        }
-        
+        payload = {"session": session, "chatId": norm['waha'], "text": mensaje}
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         return r.status_code in [200, 201]
+    except: return False
+
+# 🚀 LA FUNCIÓN PERDIDA (Recuperada para Campañas)
+def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_type, session="default"):
+    """
+    Envía archivos adjuntos (Imágenes, PDF, etc)
+    Usado exclusivamente por el módulo de Campañas.
+    """
+    if not WAHA_URL: return False
+    try:
+        norm = normalizar_telefono_maestro(telefono)
+        if not norm: return False
+
+        # Convertir a Base64
+        b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
+        data_uri = f"data:{mime_type};base64,{b64_data}"
+
+        url = f"{WAHA_URL.rstrip('/')}/api/sendImage" # WAHA suele ser inteligente con sendImage para todo file
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+
+        payload = {
+            "session": session,
+            "chatId": norm['waha'],
+            "file": {
+                "mimetype": mime_type,
+                "filename": nombre_archivo,
+                "url": data_uri
+            },
+            "caption": caption
+        }
+
+        r = requests.post(url, json=payload, headers=headers, timeout=30)
+        return r.status_code in [200, 201]
     except Exception as e:
-        print(f"Error enviando mensaje: {e}")
+        print(f"Error media: {e}")
         return False
