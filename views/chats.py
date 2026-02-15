@@ -68,15 +68,11 @@ def get_table_name(conn):
 # 🌟 MAGIA MULTIMEDIA (BLINDADA)
 # ==========================================
 def generar_html_media(archivo_bytes):
-    # Validación estricta para evitar errores de None/NaN
     if archivo_bytes is None: return ""
     try:
-        if pd.isna(archivo_bytes): return "" # Chequeo pandas NaN
-    except: pass
-    
-    try:
+        # CONVERSIÓN CRÍTICA: memoryview -> bytes
         b = bytes(archivo_bytes)
-        if not b: return "" # Bytes vacíos
+        if not b: return ""
         
         b64 = base64.b64encode(b).decode('utf-8')
         mime, ext, nombre_archivo = 'application/octet-stream', 'bin', 'Documento'
@@ -102,7 +98,6 @@ def generar_html_media(archivo_bytes):
             except Exception: pass 
             mime, ext = 'application/zip', 'zip'
 
-        # IMAGEN: Agregamos pointer-events para indicar que no es clickeable en HTML
         if mime.startswith('image/'): 
             return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent; cursor: default;' />"
         elif mime.startswith('audio/'): return f"<audio controls style='max-width: 250px; height: 40px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></audio>"
@@ -143,7 +138,6 @@ def render_chat():
     c_tit, c_time = st.columns([80, 20])
     c_tit.title("💬 Chat Center")
     
-    # HORA LIMA UTC-5
     lima_time = datetime.utcnow() - timedelta(hours=5)
     c_time.caption(f"🔄 {lima_time.strftime('%H:%M:%S')}")
 
@@ -294,7 +288,7 @@ def render_chat():
                         st.rerun()
 
                 # =========================================
-                # 🖼️ GALERÍA MULTIMEDIA (TRY-CATCH ROBUSTO)
+                # 🖼️ GALERÍA MULTIMEDIA (CORREGIDA)
                 # =========================================
                 try:
                     if not msgs.empty and 'archivo_data' in msgs.columns:
@@ -307,13 +301,16 @@ def render_chat():
                             try:
                                 if pd.isna(raw_data): continue
                                 
-                                # Convertir a bytes de forma segura
+                                # 🟢 SOLUCIÓN: Conversión explícita memoryview -> bytes
                                 b_data = bytes(raw_data)
                                 if not b_data: continue
                                 
                                 # Verificar firma de imagen
                                 if b_data.startswith(b'\xff\xd8') or b_data.startswith(b'\x89PNG') or b'WEBP' in b_data[:50]:
-                                    imagenes.append(m)
+                                    # Guardamos los bytes convertidos en el objeto para usarlo luego
+                                    m_dict = m.to_dict()
+                                    m_dict['bytes_limpios'] = b_data
+                                    imagenes.append(m_dict)
                             except: continue
                         
                         if imagenes:
@@ -323,13 +320,14 @@ def render_chat():
                                 for i, img_msg in enumerate(reversed(imagenes)):
                                     with cols[i % 4]:
                                         fecha_corta = img_msg['fecha'].strftime("%d/%m %H:%M") if pd.notna(img_msg['fecha']) else ""
+                                        # Usamos los bytes limpios que guardamos
                                         st.image(
-                                            img_msg['archivo_data'], 
+                                            img_msg['bytes_limpios'], 
                                             caption=fecha_corta,
                                             use_container_width=True
                                         )
                 except Exception as e:
-                    st.warning(f"No se pudo cargar la galería: {e}")
+                    st.warning(f"Error galería: {e}")
 
                 st.divider()
 
@@ -444,5 +442,4 @@ def render_chat():
                         st.error(f"Error al enviar: {res}")
 
             except Exception as e:
-                # AHORA EL ERROR ES VISIBLE Y DETALLADO
                 st.error(f"Error detallado en el chat: {str(e)}")
