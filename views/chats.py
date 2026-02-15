@@ -65,12 +65,19 @@ def get_table_name(conn):
         return "\"Clientes\""
 
 # ==========================================
-# 🌟 MAGIA MULTIMEDIA
+# 🌟 MAGIA MULTIMEDIA (BLINDADA)
 # ==========================================
 def generar_html_media(archivo_bytes):
-    if not archivo_bytes: return ""
+    # Validación estricta para evitar errores de None/NaN
+    if archivo_bytes is None: return ""
+    try:
+        if pd.isna(archivo_bytes): return "" # Chequeo pandas NaN
+    except: pass
+    
     try:
         b = bytes(archivo_bytes)
+        if not b: return "" # Bytes vacíos
+        
         b64 = base64.b64encode(b).decode('utf-8')
         mime, ext, nombre_archivo = 'application/octet-stream', 'bin', 'Documento'
 
@@ -103,7 +110,7 @@ def generar_html_media(archivo_bytes):
         else:
             icono_texto = "🎞️ Sticker Animado (Descargar ZIP)" if ext == 'zip' else "📄 Descargar Archivo"
             return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>{icono_texto}</a>"
-    except Exception: return "<div style='color: red; font-size: 11px;'>Error cargando archivo</div>"
+    except Exception: return "<div style='color: gray; font-size: 10px;'>Archivo no disponible</div>"
 
 # ==========================================
 # 🕵️ VIGÍA INVISIBLE
@@ -240,6 +247,7 @@ def render_chat():
             st.info("👈 Selecciona un chat.")
         else:
             try:
+                # Marcar leido
                 with engine.connect() as conn:
                     conn.commit() 
                     unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
@@ -250,6 +258,7 @@ def render_chat():
                         try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
                         except: pass
 
+                # Cargar datos cliente
                 with engine.connect() as conn:
                     conn.commit() 
                     tabla = get_table_name(conn)
@@ -285,26 +294,32 @@ def render_chat():
                         st.rerun()
 
                 # =========================================
-                # 🖼️ GALERÍA MULTIMEDIA (NUEVO)
+                # 🖼️ GALERÍA MULTIMEDIA (TRY-CATCH ROBUSTO)
                 # =========================================
-                if not msgs.empty:
-                    # Filtramos mensajes que tienen archivo no nulo
-                    media_msgs = msgs[msgs['archivo_data'].notna()].copy()
-                    if not media_msgs.empty:
+                try:
+                    if not msgs.empty and 'archivo_data' in msgs.columns:
                         imagenes = []
-                        for _, m in media_msgs.iterrows():
-                            # Detección básica de cabeceras de imagen
+                        # Iteración manual segura
+                        for _, m in msgs.iterrows():
+                            raw_data = m.get('archivo_data')
+                            if raw_data is None: continue
+                            
                             try:
-                                b = bytes(m['archivo_data'])
-                                if b.startswith(b'\xff\xd8') or b.startswith(b'\x89PNG') or b'WEBP' in b[:50]:
+                                if pd.isna(raw_data): continue
+                                
+                                # Convertir a bytes de forma segura
+                                b_data = bytes(raw_data)
+                                if not b_data: continue
+                                
+                                # Verificar firma de imagen
+                                if b_data.startswith(b'\xff\xd8') or b_data.startswith(b'\x89PNG') or b'WEBP' in b_data[:50]:
                                     imagenes.append(m)
-                            except: pass
+                            except: continue
                         
                         if imagenes:
                             with st.expander(f"🖼️ Galería de Imágenes ({len(imagenes)})"):
                                 st.caption("Haz click en las flechas de la imagen para ver en pantalla completa.")
                                 cols = st.columns(4)
-                                # Mostrar en orden inverso (más nuevas primero)
                                 for i, img_msg in enumerate(reversed(imagenes)):
                                     with cols[i % 4]:
                                         fecha_corta = img_msg['fecha'].strftime("%d/%m %H:%M") if pd.notna(img_msg['fecha']) else ""
@@ -313,6 +328,8 @@ def render_chat():
                                             caption=fecha_corta,
                                             use_container_width=True
                                         )
+                except Exception as e:
+                    st.warning(f"No se pudo cargar la galería: {e}")
 
                 st.divider()
 
@@ -427,4 +444,5 @@ def render_chat():
                         st.error(f"Error al enviar: {res}")
 
             except Exception as e:
-                st.error("Error en el chat")
+                # AHORA EL ERROR ES VISIBLE Y DETALLADO
+                st.error(f"Error detallado en el chat: {str(e)}")
