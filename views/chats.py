@@ -133,7 +133,10 @@ def poller_cambios_db():
 def render_chat():
     c_tit, c_time = st.columns([80, 20])
     c_tit.title("💬 Chat Center")
-    c_time.caption(f"🔄 {datetime.now().strftime('%H:%M:%S')}")
+    
+    # RELOJ DE SERVIDOR AJUSTADO
+    lima_time = datetime.utcnow() - timedelta(hours=5)
+    c_time.caption(f"🔄 {lima_time.strftime('%H:%M:%S')}")
 
     poller_cambios_db()
 
@@ -199,22 +202,32 @@ def render_chat():
                 if df_clientes.empty:
                     st.info("No se encontraron chats.")
                 else:
+                    # 🏷️ NUEVOS NOMBRES DE ETAPAS
                     cat_map = {
-                        "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"],
-                        "ETAPA_1": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
-                        "ETAPA_3": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
-                        "ETAPA_4": ["Pendiente agradecer", "Problema post"],
-                        "ETAPA_0": ["Sin empezar"]
+                        "💰 Venta realizada": ["Venta motorizado", "Venta agencia", "Venta express moto"],
+                        "🗣️ Conversación / Cotizando": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
+                        "🚚 En camino": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
+                        "🛡️ Post-Venta": ["Pendiente agradecer", "Problema post"],
+                        "🆕 Sin empezar": ["Sin empezar"]
                     }
                     
                     def asignar_categoria(estado):
-                        if not estado or str(estado).strip() == "": return "ETAPA_0"
+                        if not estado or str(estado).strip() == "": return "🆕 Sin empezar"
                         for cat, estados in cat_map.items():
                             if estado in estados: return cat
                         return "📁 Otros Estados"
                         
                     df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
-                    orden_categorias = ["ETAPA_2", "ETAPA_1", "ETAPA_3", "ETAPA_4", "ETAPA_0", "📁 Otros Estados"]
+                    
+                    # 📋 NUEVO ORDEN DE VISUALIZACIÓN
+                    orden_categorias = [
+                        "💰 Venta realizada", 
+                        "🗣️ Conversación / Cotizando", 
+                        "🚚 En camino", 
+                        "🛡️ Post-Venta", 
+                        "🆕 Sin empezar", 
+                        "📁 Otros Estados"
+                    ]
 
                     for cat in orden_categorias:
                         df_cat = df_clientes[df_clientes['categoria'] == cat]
@@ -223,7 +236,8 @@ def render_chat():
                             badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
                             chat_activo_aqui = telefono_actual in df_cat['telefono'].values
                             
-                            expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "ETAPA_2") or ver_todos
+                            # Expandir si hay mensajes, si es el chat activo o si es "Venta realizada"
+                            expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "💰 Venta realizada") or ver_todos
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
                                 for _, row in df_cat.iterrows():
@@ -280,7 +294,11 @@ def render_chat():
                 else:
                     html_blocks = []
                     ultima_fecha = None
-                    hoy = datetime.now().date()
+                    
+                    # 🕒 FIX DE FECHA LIMA (UTC-5)
+                    # Calculamos el 'Hoy' real de Lima, no el del servidor UTC
+                    ahora_lima = datetime.utcnow() - timedelta(hours=5)
+                    hoy = ahora_lima.date()
                     ayer = hoy - timedelta(days=1)
 
                     for _, m in msgs.iterrows():
