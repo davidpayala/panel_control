@@ -95,7 +95,9 @@ def generar_html_media(archivo_bytes):
             except Exception: pass 
             mime, ext = 'application/zip', 'zip'
 
-        if mime.startswith('image/'): return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent;' />"
+        # IMAGEN: Agregamos pointer-events para indicar que no es clickeable en HTML
+        if mime.startswith('image/'): 
+            return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent; cursor: default;' />"
         elif mime.startswith('audio/'): return f"<audio controls style='max-width: 250px; height: 40px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></audio>"
         elif mime.startswith('video/'): return f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
         else:
@@ -152,7 +154,6 @@ def render_chat():
     # --- BANDEJA ---
     with col_lista:
         st.subheader("Bandeja")
-        # Ya no hay botones de recarga ni checks, solo el buscador y la lista limpia
         
         try:
             with engine.connect() as conn:
@@ -160,7 +161,6 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # QUERY (Solo activos por defecto)
                 query = f"""
                     SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id, c.estado,
                            (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos,
@@ -183,7 +183,6 @@ def render_chat():
                 if df_clientes.empty:
                     st.info("No se encontraron chats.")
                 else:
-                    # MAPA DE ETAPAS ACTUALIZADO
                     cat_map = {
                         "💰 Venta realizada": ["Venta motorizado", "Venta agencia", "Venta express moto"],
                         "🗣️ Conversación": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
@@ -241,7 +240,6 @@ def render_chat():
             st.info("👈 Selecciona un chat.")
         else:
             try:
-                # Marcar leido
                 with engine.connect() as conn:
                     conn.commit() 
                     unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
@@ -252,7 +250,6 @@ def render_chat():
                         try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
                         except: pass
 
-                # Cargar datos cliente
                 with engine.connect() as conn:
                     conn.commit() 
                     tabla = get_table_name(conn)
@@ -266,17 +263,11 @@ def render_chat():
                         ) sub ORDER BY fecha ASC
                     """), conn, params={"t": telefono_actual})
 
-                # --- HEADER DEL CHAT (Con Selector de Estado) ---
+                # --- HEADER ---
                 st.subheader(f"👤 {nombre}")
-                
-                # Columnas: Telefono a la izq, Selector de Estado a la derecha
                 c_head_1, c_head_2 = st.columns([40, 60])
-                
-                with c_head_1:
-                    st.caption(f"📱 {telefono_actual}")
-                    
+                with c_head_1: st.caption(f"📱 {telefono_actual}")
                 with c_head_2:
-                    # Lista maestra de estados
                     OPCIONES_ESTADO = [
                         "Sin empezar",
                         "Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional",
@@ -284,30 +275,48 @@ def render_chat():
                         "En camino moto", "En camino agencia", "Contraentrega agencia",
                         "Pendiente agradecer", "Problema post"
                     ]
+                    try: idx_estado = OPCIONES_ESTADO.index(estado_actual_cliente)
+                    except: idx_estado = 0
                     
-                    # Buscamos índice actual
-                    try:
-                        idx_estado = OPCIONES_ESTADO.index(estado_actual_cliente)
-                    except:
-                        idx_estado = 0 # Default si es un estado raro
-
-                    nuevo_estado = st.selectbox(
-                        "Estado del Cliente:", 
-                        OPCIONES_ESTADO, 
-                        index=idx_estado, 
-                        key=f"st_{telefono_actual}",
-                        label_visibility="collapsed"
-                    )
-
-                    # Si cambió, guardamos en DB
+                    nuevo_estado = st.selectbox("Estado del Cliente:", OPCIONES_ESTADO, index=idx_estado, key=f"st_{telefono_actual}", label_visibility="collapsed")
                     if nuevo_estado != estado_actual_cliente:
                         with engine.begin() as conn:
                             conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE telefono = :t"), {"e": nuevo_estado, "t": telefono_actual})
                         st.rerun()
 
+                # =========================================
+                # 🖼️ GALERÍA MULTIMEDIA (NUEVO)
+                # =========================================
+                if not msgs.empty:
+                    # Filtramos mensajes que tienen archivo no nulo
+                    media_msgs = msgs[msgs['archivo_data'].notna()].copy()
+                    if not media_msgs.empty:
+                        imagenes = []
+                        for _, m in media_msgs.iterrows():
+                            # Detección básica de cabeceras de imagen
+                            try:
+                                b = bytes(m['archivo_data'])
+                                if b.startswith(b'\xff\xd8') or b.startswith(b'\x89PNG') or b'WEBP' in b[:50]:
+                                    imagenes.append(m)
+                            except: pass
+                        
+                        if imagenes:
+                            with st.expander(f"🖼️ Galería de Imágenes ({len(imagenes)})"):
+                                st.caption("Haz click en las flechas de la imagen para ver en pantalla completa.")
+                                cols = st.columns(4)
+                                # Mostrar en orden inverso (más nuevas primero)
+                                for i, img_msg in enumerate(reversed(imagenes)):
+                                    with cols[i % 4]:
+                                        fecha_corta = img_msg['fecha'].strftime("%d/%m %H:%M") if pd.notna(img_msg['fecha']) else ""
+                                        st.image(
+                                            img_msg['archivo_data'], 
+                                            caption=fecha_corta,
+                                            use_container_width=True
+                                        )
+
                 st.divider()
 
-                # --- HISTORIAL DE MENSAJES ---
+                # --- CHAT ---
                 if msgs.empty: 
                     st.caption("Inicio de la conversación.")
                 else:
