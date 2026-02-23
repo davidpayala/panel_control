@@ -98,6 +98,7 @@ def render_facturacion():
                     st.markdown("---")
                     st.markdown("#### 🧾 Datos de Factura")
                     numero_boleta = st.text_input("N° Boleta (EB01...)", placeholder="Ingresa el número")
+                    sin_boleta = st.checkbox("🚫 Registrar sin boleta") # NUEVO CHECKBOX
                     
                     btn_guardar = st.form_submit_button("✅ Guardar y Archivar", type="primary")
             
@@ -108,21 +109,25 @@ def render_facturacion():
 
             # --- 5. LÓGICA DE GUARDADO ---
             if btn_guardar:
-                if not numero_boleta:
-                    st.warning("⚠️ Debes ingresar el Número de Boleta para continuar.")
+                if not numero_boleta and not sin_boleta:
+                    st.warning("⚠️ Debes ingresar el Número de Boleta o marcar 'Registrar sin boleta' para continuar.")
                 else:
                     nombre_formateado = nuevo_nombre.strip().title() if nuevo_nombre else ""
                     apellido_formateado = nuevo_apellido.strip().title() if nuevo_apellido else ""
-                    boleta_limpia = numero_boleta.strip().upper() 
+                    
+                    # Si marca sin boleta, asignamos un texto por defecto
+                    boleta_limpia = "SIN_BOLETA" if sin_boleta else numero_boleta.strip().upper() 
 
                     with engine.connect() as conn:
                         trans = conn.begin() 
                         try:
-                            # 1. VERIFICAR DUPLICADOS DENTRO DE LA TRANSACCIÓN
-                            existe_boleta = conn.execute(
-                                text("SELECT id_venta FROM Ventas WHERE numero_boleta = :b"),
-                                {"b": boleta_limpia}
-                            ).fetchone()
+                            # 1. VERIFICAR DUPLICADOS DENTRO DE LA TRANSACCIÓN (Omitir si es sin boleta)
+                            existe_boleta = None
+                            if not sin_boleta:
+                                existe_boleta = conn.execute(
+                                    text("SELECT id_venta FROM Ventas WHERE numero_boleta = :b"),
+                                    {"b": boleta_limpia}
+                                ).fetchone()
 
                             if existe_boleta:
                                 st.error(f"⛔ ¡ERROR! La boleta '{boleta_limpia}' ya está registrada en la Venta #{existe_boleta[0]}.")
@@ -165,7 +170,11 @@ def render_facturacion():
                                 # D. Confirmar todo
                                 trans.commit()
                                 st.balloons()
-                                st.success(f"¡Correcto! Venta guardada con boleta {boleta_limpia}.")
+                                if sin_boleta:
+                                    st.success("¡Correcto! Venta archivada sin boleta.")
+                                else:
+                                    st.success(f"¡Correcto! Venta guardada con boleta {boleta_limpia}.")
+                                
                                 time.sleep(1.5)
                                 st.rerun()
                                 
@@ -176,13 +185,16 @@ def render_facturacion():
 def render_reporte_mensual():
     st.subheader("📊 Reporte Mensual para Declaración")
     
+    # Se agrega el filtro para excluir 'SIN_BOLETA'
     query_reporte = text("""
         SELECT 
             TO_CHAR(fecha_facturacion, 'YYYY-MM') AS "Mes",
             COUNT(id_venta) AS "Cant. Boletas",
             SUM(total_venta) AS "Total Ventas (S/)"
         FROM Ventas
-        WHERE facturado = TRUE
+        WHERE facturado = TRUE 
+          AND numero_boleta != 'SIN_BOLETA'
+          AND numero_boleta IS NOT NULL
         GROUP BY 1
         ORDER BY 1 DESC
     """)
@@ -208,11 +220,14 @@ def render_reporte_mensual():
         mes_seleccionar = st.selectbox("Ver detalle de un mes específico:", df_reporte["Mes"].unique())
         
         if mes_seleccionar:
+            # También se filtra en el detalle para consistencia
             query_detalle = text("""
                 SELECT v.fecha_facturacion, v.numero_boleta, c.nombre || ' ' || c.apellido as cliente, v.total_venta
                 FROM Ventas v
                 JOIN Clientes c ON v.id_cliente = c.id_cliente
                 WHERE TO_CHAR(v.fecha_facturacion, 'YYYY-MM') = :mes
+                  AND v.numero_boleta != 'SIN_BOLETA'
+                  AND v.numero_boleta IS NOT NULL
                 ORDER BY v.fecha_facturacion ASC
             """)
             with engine.connect() as conn:
