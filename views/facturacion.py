@@ -172,3 +172,50 @@ def render_facturacion():
                         except Exception as e:
                             trans.rollback()
                             st.error(f"Error al guardar: {e}")
+
+def render_reporte_mensual():
+    st.subheader("📊 Reporte Mensual para Declaración")
+    
+    query_reporte = text("""
+        SELECT 
+            TO_CHAR(fecha_facturacion, 'YYYY-MM') AS "Mes",
+            COUNT(id_venta) AS "Cant. Boletas",
+            SUM(total_venta) AS "Total Ventas (S/)"
+        FROM Ventas
+        WHERE facturado = TRUE
+        GROUP BY 1
+        ORDER BY 1 DESC
+    """)
+    
+    with engine.connect() as conn:
+        df_reporte = pd.read_sql(query_reporte, conn)
+    
+    if df_reporte.empty:
+        st.warning("No hay datos facturados para generar reportes.")
+    else:
+        st.dataframe(df_reporte, use_container_width=True, hide_index=True)
+        
+        # Opción para descargar en Excel/CSV
+        csv = df_reporte.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Descargar Reporte (CSV)",
+            data=csv,
+            file_name='reporte_mensual_facturacion.csv',
+            mime='text/csv',
+        )
+
+        # --- DETALLE DEL MES SELECCIONADO ---
+        mes_seleccionar = st.selectbox("Ver detalle de un mes específico:", df_reporte["Mes"].unique())
+        
+        if mes_seleccionar:
+            query_detalle = text("""
+                SELECT v.fecha_facturacion, v.numero_boleta, c.nombre || ' ' || c.apellido as cliente, v.total_venta
+                FROM Ventas v
+                JOIN Clientes c ON v.id_cliente = c.id_cliente
+                WHERE TO_CHAR(v.fecha_facturacion, 'YYYY-MM') = :mes
+                ORDER BY v.fecha_facturacion ASC
+            """)
+            with engine.connect() as conn:
+                df_detalle = pd.read_sql(query_detalle, conn, params={"mes": mes_seleccionar})
+            st.write(f"Detalle de {mes_seleccionar}:")
+            st.table(df_detalle)
