@@ -190,7 +190,7 @@ def main():
     elif seleccion_interna == "SEGUIMIENTO": seguimiento.render_seguimiento()
     elif seleccion_interna == "CATALOGO": catalogo.render_catalogo()
     # Dentro de app.py, en la sección de Facturación
-    elif seleccion_interna == "Facturación":
+    elif seleccion_interna == "FACTURACION":
         tab1, tab2 = st.tabs(["📝 Registro de Boletas", "📊 Reporte Mensual"])
         
         with tab1:
