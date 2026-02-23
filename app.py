@@ -189,7 +189,17 @@ def main():
     elif seleccion_interna == "CLIENTES": clientes.render_clientes()
     elif seleccion_interna == "SEGUIMIENTO": seguimiento.render_seguimiento()
     elif seleccion_interna == "CATALOGO": catalogo.render_catalogo()
-    elif seleccion_interna == "FACTURACION": facturacion.render_facturacion()
+    # Dentro de app.py, en la sección de Facturación
+    elif seleccion_interna == "Facturación":
+        tab1, tab2 = st.tabs(["📝 Registro de Boletas", "📊 Reporte Mensual"])
+        
+        with tab1:
+            # Aquí llamas a la función que ya tenías para registrar
+            facturacion.render_facturacion() 
+            
+        with tab2:
+            # Aquí llamas a la nueva función de reportes
+            facturacion.render_reporte_mensual()
     elif seleccion_interna == "CHAT": chats.render_chat()
     elif seleccion_interna == "CAMPANAS": campanas.render_campanas()
     elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico() # <--- AGREGADO
