@@ -19,13 +19,11 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# --- 🛡️ IMPORTACIÓN SEGURA ---
 try:
     from utils import normalizar_telefono_maestro
 except ImportError:
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
 
-# --- 🚑 PARCHE DB ---
 def aplicar_parche_db():
     try:
         with engine.begin() as conn:
@@ -71,7 +69,7 @@ def descargar_media_plus(media_url):
     except: return None
 
 # ==============================================================================
-# 🕵️ FUNCIONES LOCALES
+# 🕵️ FUNCIONES LOCALES (MEJORADAS PARA LLAMADAS)
 # ==============================================================================
 def obtener_lid_local(payload):
     try:
@@ -91,21 +89,30 @@ def obtener_telefono_local(payload):
     try:
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
+        
+        # 1. NOVEDAD: CAMPOS EXCLUSIVOS DE LLAMADAS DESCONOCIDAS
+        call_creator = payload.get('callCreator') or _data.get('callCreator') or payload.get('peerJid')
+        if call_creator and isinstance(call_creator, str) and ('@s.whatsapp.net' in call_creator or '@c.us' in call_creator):
+            return call_creator.split('@')[0]
+
+        # 2. Prioridad: remoteJidAlt
         alt = key.get('remoteJidAlt')
         if alt and isinstance(alt, str) and ('@s.whatsapp.net' in alt or '@c.us' in alt):
             return alt.split('@')[0]
+
+        # 3. Candidatos estándar
         candidatos = [payload.get('from'), payload.get('to'), key.get('remoteJid'), payload.get('participant')]
         for c in candidatos:
             if c and isinstance(c, str) and ('@s.whatsapp.net' in c or '@c.us' in c):
                 return c.split('@')[0]
+        
+        # 4. User ID puro
         user_id = _data.get('id', {}).get('user')
         if user_id and str(user_id).isdigit(): return str(user_id)
+        
         return None
     except: return None
 
-# ==============================================================================
-# 📡 API RESOLVER
-# ==============================================================================
 def resolver_telefono_api(lid, session):
     if not WAHA_URL or not lid: return None
     try:
@@ -125,12 +132,12 @@ def resolver_telefono_api(lid, session):
     return None
 
 # ==============================================================================
-# 🚀 WEBHOOK V50 (RACE CONDITION SHIELD)
+# 🚀 WEBHOOK PRINCIPAL V51
 # ==============================================================================
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V50 (Race Shield) ✅", 200
+    return "Webhook V51 (Call Finder) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -138,7 +145,6 @@ def recibir_mensaje():
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
         
-        # Logging DB
         try:
             with engine.begin() as conn:
                 item = data[0] if isinstance(data, list) else data
@@ -156,7 +162,6 @@ def recibir_mensaje():
             payload = evento.get('payload', {})
 
             if tipo_evento == 'message.ack':
-                # ... Lógica ACK igual ...
                 msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
                 estado_map = {1: 'enviado', 2: 'recibido', 3: 'leido', 4: 'reproducido'}
@@ -172,7 +177,6 @@ def recibir_mensaje():
                 continue
             if payload.get('from') == 'status@broadcast': continue
 
-            # 1. EXTRACCIÓN
             wspid_lid = obtener_lid_local(payload)
             telefono_crudo = obtener_telefono_local(payload)
             
@@ -182,10 +186,8 @@ def recibir_mensaje():
                 if isinstance(norm, dict): telefono_num = norm.get('db')
                 else: telefono_num = norm
 
-            # 2. LOGGING DETALLADO ANTES DE PROCESAR
             log_info(f"🏁 Inicio Proceso: Tel={telefono_num} | LID={wspid_lid}")
 
-            # Datos mensaje
             body = "📞 Llamada entrante" if tipo_evento == 'call.received' else payload.get('body', '')
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
@@ -201,19 +203,11 @@ def recibir_mensaje():
 
             try:
                 with engine.begin() as conn:
-                    
-                    # =========================================================
-                    # 🚦 LÓGICA V50 con "SAFE INSERT"
-                    # =========================================================
-
-                    # CASO A: ID + Teléfono
+                    # CASO A
                     if wspid_lid and telefono_num:
                         cliente_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
-                        
                         if cliente_tel:
-                            # Log Diagnóstico
                             if cliente_tel.whatsapp_internal_id != wspid_lid:
-                                log_info(f"🔄 Actualizando LID de cliente {cliente_tel.id_cliente}")
                                 conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel.id_cliente})
                             else:
                                 conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_tel.id_cliente})
@@ -224,22 +218,16 @@ def recibir_mensaje():
                                 conn.execute(text("UPDATE Clientes SET telefono = :t, activo=TRUE WHERE id_cliente = :id"), {"t": telefono_num, "id": cliente_lid.id_cliente})
                                 id_cliente_final = cliente_lid.id_cliente
                             else:
-                                # INSERT SEGURO (Anti-Race Condition)
                                 try:
                                     res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
                                     id_cliente_final = res.id_cliente
                                 except Exception as e:
-                                    if "UniqueViolation" in str(e) or "duplicate key" in str(e):
-                                        log_info(f"🏎️ Race Condition Detectada en CASO A (Tel: {telefono_num}). Recuperando...")
-                                        # Si falló, es porque YA EXISTE. Lo buscamos de nuevo.
-                                        id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
-                                    else:
-                                        raise e
+                                    if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
+                                    else: raise e
 
-                    # CASO B: Solo ID
+                    # CASO B
                     elif wspid_lid and not telefono_num:
                         cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
-
                         if cliente_lid:
                             if cliente_lid.telefono and len(cliente_lid.telefono) > 5:
                                 id_cliente_final = cliente_lid.id_cliente
@@ -249,52 +237,35 @@ def recibir_mensaje():
                                 if tel_api:
                                     norm_api = normalizar_telefono_maestro(tel_api)
                                     final_tel = norm_api.get('db') if isinstance(norm_api, dict) else norm_api
-                                    
-                                    # Update Seguro
                                     try:
                                         conn.execute(text("UPDATE Clientes SET telefono = :t, activo=TRUE WHERE id_cliente = :id"), {"t": final_tel, "id": cliente_lid.id_cliente})
                                     except Exception as e:
-                                        if "UniqueViolation" in str(e):
-                                            # Si falla el update es porque ese teléfono YA estaba en otro cliente. Fusión forzada.
-                                            log_info("🏎️ Conflicto en Update API. Usando cliente existente.")
-                                            id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono=:t"), {"t": final_tel}).scalar()
-                                            
+                                        if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono=:t"), {"t": final_tel}).scalar()
                                 if not id_cliente_final: id_cliente_final = cliente_lid.id_cliente
-                        
                         else:
-                            # No existe en DB -> API
                             tel_api = resolver_telefono_api(wspid_lid, session_name)
-                            
                             if tel_api:
                                 norm_api = normalizar_telefono_maestro(tel_api)
                                 final_tel = norm_api.get('db') if isinstance(norm_api, dict) else norm_api
-                                
                                 cliente_tel_api = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": final_tel}).fetchone()
-                                
                                 if cliente_tel_api:
                                     conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel_api.id_cliente})
                                     id_cliente_final = cliente_tel_api.id_cliente
                                 else:
-                                    # INSERT SEGURO
                                     try:
                                         res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "t": final_tel, "n": push_name}).fetchone()
                                         id_cliente_final = res.id_cliente
                                     except Exception as e:
-                                        if "UniqueViolation" in str(e):
-                                            log_info(f"🏎️ Race Condition CASO B API (Tel: {final_tel}). Recuperando...")
-                                            id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": final_tel}).scalar()
+                                        if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": final_tel}).scalar()
                                         else: raise e
                             else:
-                                # Fallback ID Sintético
                                 fake = f"LID_{wspid_lid.split('@')[0]}"
                                 try:
                                     res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :f, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "f": fake, "n": push_name}).fetchone()
                                     id_cliente_final = res.id_cliente
-                                except:
-                                    # Si falla hasta el fake, buscamos por LID
-                                    id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id=:lid"), {"lid": wspid_lid}).scalar()
+                                except: id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id=:lid"), {"lid": wspid_lid}).scalar()
 
-                    # CASO C: Solo Teléfono
+                    # CASO C
                     elif telefono_num and not wspid_lid:
                         cliente_tel = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
                         if cliente_tel:
@@ -302,17 +273,14 @@ def recibir_mensaje():
                             conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
                         else:
                             fallback_id = payload.get('from')
-                            # INSERT SEGURO
                             try:
                                 res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:wid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"wid": fallback_id, "t": telefono_num, "n": push_name}).fetchone()
                                 id_cliente_final = res.id_cliente
                             except Exception as e:
-                                if "UniqueViolation" in str(e):
-                                    log_info(f"🏎️ Race Condition CASO C (Tel: {telefono_num}). Recuperando...")
-                                    id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
+                                if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
                                 else: raise e
 
-                    # 💾 GUARDADO MENSAJE
+                    # GUARDADO
                     if id_cliente_final:
                         t_msg = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente = :id"), {"id": id_cliente_final}).scalar()
                         if not t_msg: t_msg = "DESCONOCIDO"

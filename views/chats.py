@@ -15,7 +15,6 @@ from database import engine
 WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
 
-# --- IMPORTACIÓN DE UTILS ---
 try:
     from utils import marcar_chat_como_leido_waha as marcar_leido_waha
     from utils import normalizar_telefono_maestro 
@@ -64,13 +63,9 @@ def get_table_name(conn):
     except:
         return "\"Clientes\""
 
-# ==========================================
-# 🌟 MAGIA MULTIMEDIA (BLINDADA)
-# ==========================================
 def generar_html_media(archivo_bytes):
     if archivo_bytes is None: return ""
     try:
-        # CONVERSIÓN CRÍTICA: memoryview -> bytes
         b = bytes(archivo_bytes)
         if not b: return ""
         
@@ -107,9 +102,6 @@ def generar_html_media(archivo_bytes):
             return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>{icono_texto}</a>"
     except Exception: return "<div style='color: gray; font-size: 10px;'>Archivo no disponible</div>"
 
-# ==========================================
-# 🕵️ VIGÍA INVISIBLE
-# ==========================================
 try:
     run_poller = st.fragment(run_every=3) 
 except AttributeError:
@@ -130,6 +122,19 @@ def poller_cambios_db():
                 st.rerun()
     except Exception:
         pass
+
+# --- FUNCIÓN AUXILIAR PARA RENDERIZAR BOTONES DE CHAT ---
+def render_boton_chat(row, cat, telefono_actual, cambiar_chat_func):
+    t_row = row['telefono']
+    c_leidos = row['no_leidos']
+    icono = "🔴" if c_leidos > 0 else "👤"
+    texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
+    extra = f" [{row['estado']}]" if cat == "📁 Otros Estados" else ""
+    
+    label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
+    tipo = "primary" if telefono_actual == t_row else "secondary"
+    
+    st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat_func, args=(t_row,))
 
 # ==========================================
 # VISTA PRINCIPAL
@@ -154,8 +159,16 @@ def render_chat():
 
     # --- BANDEJA ---
     with col_lista:
-        st.subheader("Bandeja")
-        
+        c_h1, c_h2 = st.columns([75, 25])
+        with c_h1:
+            st.subheader("Bandeja")
+        with c_h2:
+            # BOTÓN LIMPIAR RESTAURADO
+            if st.button("🧹", help="Marcar todos los chats pendientes como leídos", use_container_width=True):
+                with engine.begin() as conn:
+                    conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE leido = FALSE AND tipo = 'ENTRANTE'"))
+                st.rerun()
+
         try:
             with engine.connect() as conn:
                 conn.commit() 
@@ -219,18 +232,21 @@ def render_chat():
                             expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "💰 Venta realizada")
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
-                                for _, row in df_cat.iterrows():
-                                    t_row = row['telefono']
-                                    c_leidos = row['no_leidos']
-                                    icono = "🔴" if c_leidos > 0 else "👤"
-                                    texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
-                                    extra = f" [{row['estado']}]" if cat == "📁 Otros Estados" else ""
-                                    
-                                    label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
-                                    tipo = "primary" if telefono_actual == t_row else "secondary"
-                                    
-                                    if st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat, args=(t_row,)):
-                                        pass 
+                                
+                                # SUB-AGRUPACIONES PARA "CONVERSACIÓN"
+                                if cat == "🗣️ Conversación":
+                                    sub_estados_ordenados = ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"]
+                                    for sub in sub_estados_ordenados:
+                                        df_sub = df_cat[df_cat['estado'] == sub]
+                                        if not df_sub.empty:
+                                            # Separador Visual
+                                            st.markdown(f"<div style='font-size: 11px; color: #777; margin-top: 10px; margin-bottom: 2px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;'>📌 {sub}</div>", unsafe_allow_html=True)
+                                            for _, row in df_sub.iterrows():
+                                                render_boton_chat(row, cat, telefono_actual, cambiar_chat)
+                                else:
+                                    # Resto de categorías normal
+                                    for _, row in df_cat.iterrows():
+                                        render_boton_chat(row, cat, telefono_actual, cambiar_chat)
 
         except Exception as e:
             st.error(f"Error cargando lista: {e}")
@@ -287,27 +303,19 @@ def render_chat():
                             conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE telefono = :t"), {"e": nuevo_estado, "t": telefono_actual})
                         st.rerun()
 
-                # =========================================
-                # 🖼️ GALERÍA MULTIMEDIA (CORREGIDA)
-                # =========================================
+                # --- GALERÍA MULTIMEDIA ---
                 try:
                     if not msgs.empty and 'archivo_data' in msgs.columns:
                         imagenes = []
-                        # Iteración manual segura
                         for _, m in msgs.iterrows():
                             raw_data = m.get('archivo_data')
                             if raw_data is None: continue
                             
                             try:
                                 if pd.isna(raw_data): continue
-                                
-                                # 🟢 SOLUCIÓN: Conversión explícita memoryview -> bytes
                                 b_data = bytes(raw_data)
                                 if not b_data: continue
-                                
-                                # Verificar firma de imagen
                                 if b_data.startswith(b'\xff\xd8') or b_data.startswith(b'\x89PNG') or b'WEBP' in b_data[:50]:
-                                    # Guardamos los bytes convertidos en el objeto para usarlo luego
                                     m_dict = m.to_dict()
                                     m_dict['bytes_limpios'] = b_data
                                     imagenes.append(m_dict)
@@ -320,7 +328,6 @@ def render_chat():
                                 for i, img_msg in enumerate(reversed(imagenes)):
                                     with cols[i % 4]:
                                         fecha_corta = img_msg['fecha'].strftime("%d/%m %H:%M") if pd.notna(img_msg['fecha']) else ""
-                                        # Usamos los bytes limpios que guardamos
                                         st.image(
                                             img_msg['bytes_limpios'], 
                                             caption=fecha_corta,
