@@ -289,10 +289,58 @@ def render_ventas():
                 detalle_motivo = st.text_input("Detalle (Opcional):", placeholder="Ej: Se rompió una luna...")
                 
                 if st.button("📉 CONFIRMAR SALIDA", type="primary"):
-                        pass 
-        else:
-            st.info("El carrito está vacío.")
-            
-        if st.button("🗑️ Limpiar Todo", key="btn_limpiar_carrito"):
-            st.session_state.carrito = []
-            st.rerun()
+                    try:
+                        with engine.connect() as conn:
+                            trans = conn.begin()
+                            items_procesados = 0
+
+                            for item in st.session_state.carrito:
+                                # Solo descontar si el item pertenece al inventario (tiene SKU)
+                                if item['es_inventario']:
+                                    # 1. Reducir stock y devolver el nuevo valor
+                                    res_s = conn.execute(
+                                        text("UPDATE Variantes SET stock_interno = stock_interno - :c WHERE sku=:s RETURNING stock_interno"),
+                                        {"c": int(item['cantidad']), "s": item['sku']}
+                                    )
+                                    nuevo_s = res_s.scalar()
+
+                                    # 2. Si se quedó sin stock, vaciar ubicación
+                                    if nuevo_s <= 0: 
+                                        conn.execute(
+                                            text("UPDATE Variantes SET ubicacion = '' WHERE sku=:s"), 
+                                            {"s": item['sku']}
+                                        )
+
+                                    # 3. Registrar el movimiento en el historial
+                                    nota_completa = f"{motivo_salida}"
+                                    if detalle_motivo:
+                                        nota_completa += f" - {detalle_motivo}"
+
+                                    conn.execute(
+                                        text("""
+                                            INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota)
+                                            VALUES (:sku, 'SALIDA', :c, :ant, :nue, :nota)
+                                        """), 
+                                        {
+                                            "sku": item['sku'],
+                                            "c": int(item['cantidad']),
+                                            "ant": nuevo_s + int(item['cantidad']),
+                                            "nue": nuevo_s,
+                                            "nota": nota_completa
+                                        }
+                                    )
+                                    items_procesados += 1
+                            
+                            trans.commit()
+                        
+                        if items_procesados > 0:
+                            st.success(f"✅ ¡Salida registrada correctamente! ({items_procesados} productos actualizados)")
+                        else:
+                            st.warning("⚠️ El carrito solo tenía items manuales, no se descontó nada del inventario.")
+                            
+                        st.session_state.carrito = []
+                        time.sleep(1.5)
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"❌ Error al procesar la salida: {e}")
