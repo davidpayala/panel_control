@@ -22,17 +22,24 @@ except ImportError:
     def marcar_leido_waha(*args): pass
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
 
-def marcar_leido_api(telefono, sesion):
-    if not WAHA_URL: return
+# ==========================================
+# 📡 RESOLUTOR API PARA LIDs
+# ==========================================
+def resolver_telefono_api(lid, session):
+    if not WAHA_URL or not lid: return None
     try:
-        res = normalizar_telefono_maestro(telefono)
-        tel_final = res['db'] if isinstance(res, dict) else str(res)
-        url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
+        lid_safe = lid.replace('@', '%40')
+        url = f"{WAHA_URL.rstrip('/')}/api/{session}/lids/{lid_safe}"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-        payload = {"session": sesion, "chatId": f"{tel_final}@c.us"}
-        requests.post(url, json=payload, headers=headers, timeout=5)
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            pn = data.get('pn')
+            if pn:
+                return pn.split('@')[0]
     except: pass
+    return None
 
 def mandar_mensaje_api(telefono, texto, sesion):
     if not WAHA_URL: return False, "Falta WAHA_URL"
@@ -81,16 +88,6 @@ def generar_html_media(archivo_bytes):
         elif b.startswith(b'GIF8'): mime, ext = 'image/gif', 'gif'
         elif b.startswith(b'ID3') or b.startswith(b'\xff\xfb'): mime, ext = 'audio/mpeg', 'mp3'
         elif b.startswith(b'PK\x03\x04'): 
-            try:
-                with zipfile.ZipFile(io.BytesIO(b)) as z:
-                    json_filename = next((name for name in z.namelist() if name.endswith('.json')), None)
-                    if json_filename:
-                        json_data = z.read(json_filename).decode('utf-8')
-                        json_b64 = base64.b64encode(json_data.encode('utf-8')).decode('utf-8')
-                        lottie_html = f"""<!DOCTYPE html><html><head><script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script></head><body style="margin:0;overflow:hidden;background:transparent;"><lottie-player src="data:application/json;base64,{json_b64}" background="transparent" speed="1" style="width:150px;height:150px;" loop autoplay></lottie-player></body></html>"""
-                        lottie_html_b64 = base64.b64encode(lottie_html.encode('utf-8')).decode('utf-8')
-                        return f"<iframe src='data:text/html;base64,{lottie_html_b64}' width='150' height='150' frameborder='0' scrolling='no' allowtransparency='true' style='margin-bottom: 5px; pointer-events: none;'></iframe>"
-            except Exception: pass 
             mime, ext = 'application/zip', 'zip'
 
         if mime.startswith('image/'): 
@@ -114,16 +111,13 @@ def poller_cambios_db():
         with engine.connect() as conn: 
             conn.commit() 
             version_actual = conn.execute(text("SELECT version FROM sync_estado WHERE id = 1")).scalar() or 0
-            
             if 'db_version' not in st.session_state:
                 st.session_state['db_version'] = version_actual
             elif st.session_state['db_version'] != version_actual:
                 st.session_state['db_version'] = version_actual
                 st.rerun()
-    except Exception:
-        pass
+    except Exception: pass
 
-# --- FUNCIÓN AUXILIAR PARA RENDERIZAR BOTONES DE CHAT ---
 def render_boton_chat(row, cat, telefono_actual, cambiar_chat_func):
     t_row = row['telefono']
     c_leidos = row['no_leidos']
@@ -133,7 +127,6 @@ def render_boton_chat(row, cat, telefono_actual, cambiar_chat_func):
     
     label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
     tipo = "primary" if telefono_actual == t_row else "secondary"
-    
     st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat_func, args=(t_row,))
 
 # ==========================================
@@ -159,15 +152,16 @@ def render_chat():
 
     # --- BANDEJA ---
     with col_lista:
-        c_h1, c_h2 = st.columns([75, 25])
+        c_h1, c_h2 = st.columns([85, 15])
         with c_h1:
             st.subheader("Bandeja")
         with c_h2:
-            # BOTÓN LIMPIAR RESTAURADO
-            if st.button("🧹", help="Marcar todos los chats pendientes como leídos", use_container_width=True):
-                with engine.begin() as conn:
-                    conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE leido = FALSE AND tipo = 'ENTRANTE'"))
-                st.rerun()
+            # 1. BOTÓN DE LIMPIEZA CON CONFIRMACIÓN
+            with st.expander("🧹"):
+                if st.button("✅ Confirmar", help="Marcar TODO como leído", use_container_width=True):
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE leido = FALSE AND tipo = 'ENTRANTE'"))
+                    st.rerun()
 
         try:
             with engine.connect() as conn:
@@ -175,11 +169,13 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
+                # 4. CONSULTA SQL TURBO OPTIMIZADA (LEFT JOIN en lugar de Subqueries)
                 query = f"""
                     SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id, c.estado,
-                           (SELECT COUNT(*) FROM mensajes m WHERE m.telefono = c.telefono AND m.leido = FALSE AND m.tipo = 'ENTRANTE') as no_leidos,
-                           (SELECT MAX(fecha) FROM mensajes m WHERE m.telefono = c.telefono) as ultima_interaccion
+                           COALESCE(SUM(CASE WHEN m.leido = FALSE AND m.tipo = 'ENTRANTE' THEN 1 ELSE 0 END), 0) as no_leidos,
+                           MAX(m.fecha) as ultima_interaccion
                     FROM {tabla} c
+                    LEFT JOIN mensajes m ON c.telefono = m.telefono
                     WHERE c.activo = TRUE
                 """
                 
@@ -190,7 +186,7 @@ def render_chat():
                     else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
                     query += filtro
                 
-                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST LIMIT 300"
+                query += " GROUP BY c.telefono, c.nombre_corto, c.whatsapp_internal_id, c.estado ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST"
                 df_clientes = pd.read_sql(text(query), conn)
 
             with st.container(height=600):
@@ -213,18 +209,16 @@ def render_chat():
                         
                     df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
                     
-                    orden_categorias = [
-                        "💰 Venta realizada", 
-                        "🗣️ Conversación", 
-                        "🚚 En camino", 
-                        "🛡️ Post-Venta", 
-                        "🆕 Sin empezar", 
-                        "📁 Otros Estados"
-                    ]
+                    orden_categorias = ["💰 Venta realizada", "🗣️ Conversación", "🚚 En camino", "🛡️ Post-Venta", "🆕 Sin empezar", "📁 Otros Estados"]
 
                     for cat in orden_categorias:
                         df_cat = df_clientes[df_clientes['categoria'] == cat]
                         if not df_cat.empty:
+                            
+                            # 2. LÍMITE SOLO PARA "SIN EMPEZAR"
+                            if cat == "🆕 Sin empezar":
+                                df_cat = df_cat.head(30)
+                                
                             no_leidos_cat = int(df_cat['no_leidos'].sum())
                             badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
                             chat_activo_aqui = telefono_actual in df_cat['telefono'].values
@@ -232,19 +226,15 @@ def render_chat():
                             expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "💰 Venta realizada")
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
-                                
-                                # SUB-AGRUPACIONES PARA "CONVERSACIÓN"
                                 if cat == "🗣️ Conversación":
                                     sub_estados_ordenados = ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"]
                                     for sub in sub_estados_ordenados:
                                         df_sub = df_cat[df_cat['estado'] == sub]
                                         if not df_sub.empty:
-                                            # Separador Visual
                                             st.markdown(f"<div style='font-size: 11px; color: #777; margin-top: 10px; margin-bottom: 2px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;'>📌 {sub}</div>", unsafe_allow_html=True)
                                             for _, row in df_sub.iterrows():
                                                 render_boton_chat(row, cat, telefono_actual, cambiar_chat)
                                 else:
-                                    # Resto de categorías normal
                                     for _, row in df_cat.iterrows():
                                         render_boton_chat(row, cat, telefono_actual, cambiar_chat)
 
@@ -257,6 +247,34 @@ def render_chat():
             st.info("👈 Selecciona un chat.")
         else:
             try:
+                # 3. AUTO-RESOLUCIÓN DE LIDs SINTÉTICOS AL HACER CLICK
+                if telefono_actual.startswith("LID_"):
+                    with st.spinner("🕵️‍♂️ Consultando número real en WAHA..."):
+                        with engine.connect() as conn:
+                            info = conn.execute(text(f"SELECT whatsapp_internal_id FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
+                            if info and info.whatsapp_internal_id and info.whatsapp_internal_id.endswith("@lid"):
+                                num_real = resolver_telefono_api(info.whatsapp_internal_id, "default")
+                                if not num_real: num_real = resolver_telefono_api(info.whatsapp_internal_id, "principal")
+                                
+                                if num_real:
+                                    norm = normalizar_telefono_maestro(num_real)
+                                    real_db = norm.get('db') if isinstance(norm, dict) else norm
+                                    if real_db:
+                                        # Hacemos el Merge en Base de Datos
+                                        with engine.begin() as t_conn:
+                                            existente = t_conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono=:t"), {"t": real_db}).fetchone()
+                                            if existente:
+                                                # Fusionar
+                                                t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
+                                                t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE telefono=:o"), {"fake": f"MERGED_{telefono_actual}", "o": telefono_actual})
+                                                t_conn.execute(text(f"UPDATE {tabla} SET whatsapp_internal_id=:lid WHERE telefono=:n"), {"lid": info.whatsapp_internal_id, "n": real_db})
+                                            else:
+                                                # Actualizar directo
+                                                t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
+                                                t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
+                                        st.session_state['chat_actual_telefono'] = real_db
+                                        st.rerun()
+
                 # Marcar leido
                 with engine.connect() as conn:
                     conn.commit() 
@@ -271,7 +289,6 @@ def render_chat():
                 # Cargar datos cliente
                 with engine.connect() as conn:
                     conn.commit() 
-                    tabla = get_table_name(conn)
                     info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
                     nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
                     estado_actual_cliente = info.estado if hasattr(info, 'estado') and info.estado else "Sin empezar"
@@ -310,7 +327,6 @@ def render_chat():
                         for _, m in msgs.iterrows():
                             raw_data = m.get('archivo_data')
                             if raw_data is None: continue
-                            
                             try:
                                 if pd.isna(raw_data): continue
                                 b_data = bytes(raw_data)
@@ -328,17 +344,13 @@ def render_chat():
                                 for i, img_msg in enumerate(reversed(imagenes)):
                                     with cols[i % 4]:
                                         fecha_corta = img_msg['fecha'].strftime("%d/%m %H:%M") if pd.notna(img_msg['fecha']) else ""
-                                        st.image(
-                                            img_msg['bytes_limpios'], 
-                                            caption=fecha_corta,
-                                            use_container_width=True
-                                        )
+                                        st.image(img_msg['bytes_limpios'], caption=fecha_corta, use_container_width=True)
                 except Exception as e:
                     st.warning(f"Error galería: {e}")
 
                 st.divider()
 
-                # --- CHAT ---
+                # --- CHAT OPTIMIZADO ---
                 if msgs.empty: 
                     st.caption("Inicio de la conversación.")
                 else:
@@ -382,7 +394,12 @@ def render_chat():
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        media_html = generar_html_media(m.get('archivo_data'))
+                        # 4. OPTIMIZACIÓN: Solo llamar a generar_html_media si hay datos
+                        raw_data = m.get('archivo_data')
+                        media_html = ""
+                        if raw_data is not None and not pd.isna(raw_data):
+                            media_html = generar_html_media(raw_data)
+
                         contenido_str = str(m['contenido']) if pd.notna(m['contenido']) else ""
                         if contenido_str in ["📷 Archivo Multimedia", "📷 Archivo", "📷 Archivo (Recuperado)"] and media_html:
                             contenido_str = ""
