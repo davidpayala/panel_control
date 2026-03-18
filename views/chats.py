@@ -70,35 +70,9 @@ def get_table_name(conn):
     except:
         return "\"Clientes\""
 
-def generar_html_media(archivo_bytes):
-    if archivo_bytes is None: return ""
-    try:
-        b = bytes(archivo_bytes)
-        if not b: return ""
-        
-        b64 = base64.b64encode(b).decode('utf-8')
-        mime, ext, nombre_archivo = 'application/octet-stream', 'bin', 'Documento'
-
-        if b.startswith(b'\xff\xd8'): mime, ext = 'image/jpeg', 'jpg'
-        elif b.startswith(b'\x89PNG'): mime, ext = 'image/png', 'png'
-        elif b'WEBP' in b[:50]: mime, ext = 'image/webp', 'webp'
-        elif b.startswith(b'OggS'): mime, ext = 'audio/ogg', 'ogg'
-        elif b'ftyp' in b[:20]: mime, ext = 'video/mp4', 'mp4'
-        elif b.startswith(b'%PDF'): mime, ext = 'application/pdf', 'pdf'
-        elif b.startswith(b'GIF8'): mime, ext = 'image/gif', 'gif'
-        elif b.startswith(b'ID3') or b.startswith(b'\xff\xfb'): mime, ext = 'audio/mpeg', 'mp3'
-        elif b.startswith(b'PK\x03\x04'): 
-            mime, ext = 'application/zip', 'zip'
-
-        if mime.startswith('image/'): 
-            return f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent; cursor: default;' />"
-        elif mime.startswith('audio/'): return f"<audio controls style='max-width: 250px; height: 40px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></audio>"
-        elif mime.startswith('video/'): return f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
-        else:
-            icono_texto = "🎞️ Sticker Animado (Descargar ZIP)" if ext == 'zip' else "📄 Descargar Archivo"
-            return f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>{icono_texto}</a>"
-    except Exception: return "<div style='color: gray; font-size: 10px;'>Archivo no disponible</div>"
-
+# ==========================================
+# 🕵️ VIGÍA INVISIBLE
+# ==========================================
 try:
     run_poller = st.fragment(run_every=3) 
 except AttributeError:
@@ -123,7 +97,9 @@ def render_boton_chat(row, cat, telefono_actual, cambiar_chat_func):
     c_leidos = row['no_leidos']
     icono = "🔴" if c_leidos > 0 else "👤"
     texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
-    extra = f" [{row['estado']}]" if cat == "📁 Otros Estados" else ""
+    
+    # Mostrar el estado real si está en la bandeja de "Nuevos" o "Otros"
+    extra = f" [{row['estado']}]" if cat in ["📁 Otros Estados", "🔴 Mensajes Nuevos"] else ""
     
     label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
     tipo = "primary" if telefono_actual == t_row else "secondary"
@@ -150,13 +126,12 @@ def render_chat():
     telefono_actual = st.session_state['chat_actual_telefono']
     col_lista, col_chat = st.columns([35, 65])
 
-    # --- BANDEJA ---
+    # --- BANDEJA DE ENTRADA ---
     with col_lista:
         c_h1, c_h2 = st.columns([85, 15])
         with c_h1:
             st.subheader("Bandeja")
         with c_h2:
-            # 1. BOTÓN DE LIMPIEZA CON CONFIRMACIÓN
             with st.expander("🧹"):
                 if st.button("✅ Confirmar", help="Marcar TODO como leído", use_container_width=True):
                     with engine.begin() as conn:
@@ -169,7 +144,6 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # 4. CONSULTA SQL TURBO OPTIMIZADA (LEFT JOIN en lugar de Subqueries)
                 query = f"""
                     SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id, c.estado,
                            COALESCE(SUM(CASE WHEN m.leido = FALSE AND m.tipo = 'ENTRANTE' THEN 1 ELSE 0 END), 0) as no_leidos,
@@ -201,21 +175,32 @@ def render_chat():
                         "🆕 Sin empezar": ["Sin empezar"]
                     }
                     
-                    def asignar_categoria(estado):
+                    # 🚀 LÓGICA DE PRIORIDAD: Si no está leído, va al grupo de Nuevos
+                    def asignar_categoria(row):
+                        if row['no_leidos'] > 0: return "🔴 Mensajes Nuevos"
+                        estado = row['estado']
                         if not estado or str(estado).strip() == "": return "🆕 Sin empezar"
                         for cat, estados in cat_map.items():
                             if estado in estados: return cat
                         return "📁 Otros Estados"
                         
-                    df_clientes['categoria'] = df_clientes['estado'].apply(asignar_categoria)
+                    df_clientes['categoria'] = df_clientes.apply(asignar_categoria, axis=1)
                     
-                    orden_categorias = ["💰 Venta realizada", "🗣️ Conversación", "🚚 En camino", "🛡️ Post-Venta", "🆕 Sin empezar", "📁 Otros Estados"]
+                    # ORDEN MODIFICADO: Prioridad alta arriba, Sin empezar al fondo
+                    orden_categorias = [
+                        "🔴 Mensajes Nuevos",
+                        "💰 Venta realizada", 
+                        "🗣️ Conversación", 
+                        "🚚 En camino", 
+                        "🛡️ Post-Venta", 
+                        "📁 Otros Estados",
+                        "🆕 Sin empezar"
+                    ]
 
                     for cat in orden_categorias:
                         df_cat = df_clientes[df_clientes['categoria'] == cat]
                         if not df_cat.empty:
                             
-                            # 2. LÍMITE SOLO PARA "SIN EMPEZAR"
                             if cat == "🆕 Sin empezar":
                                 df_cat = df_cat.head(30)
                                 
@@ -223,7 +208,8 @@ def render_chat():
                             badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
                             chat_activo_aqui = telefono_actual in df_cat['telefono'].values
                             
-                            expandido = (no_leidos_cat > 0) or chat_activo_aqui or (cat == "💰 Venta realizada")
+                            # Expandido automático si son nuevos o si estoy viendo este chat
+                            expandido = (cat == "🔴 Mensajes Nuevos") or chat_activo_aqui or (cat == "💰 Venta realizada")
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
                                 if cat == "🗣️ Conversación":
@@ -247,7 +233,7 @@ def render_chat():
             st.info("👈 Selecciona un chat.")
         else:
             try:
-                # 3. AUTO-RESOLUCIÓN DE LIDs SINTÉTICOS AL HACER CLICK
+                # AUTO-RESOLUCIÓN LIDs (Se mantiene)
                 if telefono_actual.startswith("LID_"):
                     with st.spinner("🕵️‍♂️ Consultando número real en WAHA..."):
                         with engine.connect() as conn:
@@ -260,16 +246,13 @@ def render_chat():
                                     norm = normalizar_telefono_maestro(num_real)
                                     real_db = norm.get('db') if isinstance(norm, dict) else norm
                                     if real_db:
-                                        # Hacemos el Merge en Base de Datos
                                         with engine.begin() as t_conn:
                                             existente = t_conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono=:t"), {"t": real_db}).fetchone()
                                             if existente:
-                                                # Fusionar
                                                 t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
                                                 t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE telefono=:o"), {"fake": f"MERGED_{telefono_actual}", "o": telefono_actual})
                                                 t_conn.execute(text(f"UPDATE {tabla} SET whatsapp_internal_id=:lid WHERE telefono=:n"), {"lid": info.whatsapp_internal_id, "n": real_db})
                                             else:
-                                                # Actualizar directo
                                                 t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
                                                 t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
                                         st.session_state['chat_actual_telefono'] = real_db
@@ -286,7 +269,7 @@ def render_chat():
                         try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
                         except: pass
 
-                # Cargar datos cliente
+                # Cargar datos
                 with engine.connect() as conn:
                     conn.commit() 
                     info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
@@ -320,47 +303,21 @@ def render_chat():
                             conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE telefono = :t"), {"e": nuevo_estado, "t": telefono_actual})
                         st.rerun()
 
-                # --- GALERÍA MULTIMEDIA ---
-                try:
-                    if not msgs.empty and 'archivo_data' in msgs.columns:
-                        imagenes = []
-                        for _, m in msgs.iterrows():
-                            raw_data = m.get('archivo_data')
-                            if raw_data is None: continue
-                            try:
-                                if pd.isna(raw_data): continue
-                                b_data = bytes(raw_data)
-                                if not b_data: continue
-                                if b_data.startswith(b'\xff\xd8') or b_data.startswith(b'\x89PNG') or b'WEBP' in b_data[:50]:
-                                    m_dict = m.to_dict()
-                                    m_dict['bytes_limpios'] = b_data
-                                    imagenes.append(m_dict)
-                            except: continue
-                        
-                        if imagenes:
-                            with st.expander(f"🖼️ Galería de Imágenes ({len(imagenes)})"):
-                                st.caption("Haz click en las flechas de la imagen para ver en pantalla completa.")
-                                cols = st.columns(4)
-                                for i, img_msg in enumerate(reversed(imagenes)):
-                                    with cols[i % 4]:
-                                        fecha_corta = img_msg['fecha'].strftime("%d/%m %H:%M") if pd.notna(img_msg['fecha']) else ""
-                                        st.image(img_msg['bytes_limpios'], caption=fecha_corta, use_container_width=True)
-                except Exception as e:
-                    st.warning(f"Error galería: {e}")
-
-                st.divider()
-
-                # --- CHAT OPTIMIZADO ---
-                if msgs.empty: 
-                    st.caption("Inicio de la conversación.")
-                else:
-                    html_blocks = []
+                # =========================================
+                # 🚀 MOTOR DE RENDERIZADO UNIFICADO Y OPTIMIZADO
+                # =========================================
+                html_blocks = []
+                imagenes_galeria = []
+                
+                if not msgs.empty:
                     ultima_fecha = None
                     ahora_lima = datetime.utcnow() - timedelta(hours=5)
                     hoy = ahora_lima.date()
                     ayer = hoy - timedelta(days=1)
 
+                    # Bucle Único (Procesa HTML y Galería a la vez)
                     for _, m in msgs.iterrows():
+                        # --- FECHAS ---
                         try: fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
                         except: fecha_msg = None
 
@@ -371,6 +328,7 @@ def render_chat():
                             html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
                             ultima_fecha = fecha_msg
 
+                        # --- CONFIG BURBUJA ---
                         es_mio = (m['tipo'] == 'SALIENTE')
                         clase_row = "msg-mio" if es_mio else "msg-otro"
                         clase_bub = "b-mio" if es_mio else "b-otro"
@@ -394,21 +352,59 @@ def render_chat():
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        # 4. OPTIMIZACIÓN: Solo llamar a generar_html_media si hay datos
-                        raw_data = m.get('archivo_data')
+                        # --- PROCESAMIENTO MULTIMEDIA OPTIMIZADO ---
                         media_html = ""
+                        raw_data = m.get('archivo_data')
                         if raw_data is not None and not pd.isna(raw_data):
-                            media_html = generar_html_media(raw_data)
+                            try:
+                                b = bytes(raw_data)
+                                if b:
+                                    b64 = base64.b64encode(b).decode('utf-8')
+                                    mime, ext, nombre_archivo = 'application/octet-stream', 'bin', 'Documento'
+
+                                    if b.startswith(b'\xff\xd8'): mime, ext = 'image/jpeg', 'jpg'
+                                    elif b.startswith(b'\x89PNG'): mime, ext = 'image/png', 'png'
+                                    elif b'WEBP' in b[:50]: mime, ext = 'image/webp', 'webp'
+                                    elif b.startswith(b'OggS'): mime, ext = 'audio/ogg', 'ogg'
+                                    elif b'ftyp' in b[:20]: mime, ext = 'video/mp4', 'mp4'
+                                    elif b.startswith(b'%PDF'): mime, ext = 'application/pdf', 'pdf'
+
+                                    # Si es imagen -> Va a la galería Y al chat
+                                    if mime.startswith('image/'):
+                                        media_html = f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent; cursor: default;' />"
+                                        fecha_corta = m['fecha'].strftime("%d/%m %H:%M") if pd.notna(m['fecha']) else ""
+                                        imagenes_galeria.append({"bytes": b, "caption": fecha_corta})
+                                    # Otros formatos
+                                    elif mime.startswith('audio/'): media_html = f"<audio controls style='max-width: 250px; height: 40px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></audio>"
+                                    elif mime.startswith('video/'): media_html = f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
+                                    else:
+                                        media_html = f"<a href='data:{mime};base64,{b64}' download='{nombre_archivo}.{ext}' style='display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px; text-decoration: none; color: inherit; font-size: 13px; font-weight: bold; margin-bottom: 5px; border: 1px solid rgba(0,0,0,0.1);'>📄 Descargar Archivo</a>"
+                            except:
+                                media_html = "<div style='color: gray; font-size: 10px;'>Archivo corrupto</div>"
 
                         contenido_str = str(m['contenido']) if pd.notna(m['contenido']) else ""
                         if contenido_str in ["📷 Archivo Multimedia", "📷 Archivo", "📷 Archivo (Recuperado)"] and media_html:
                             contenido_str = ""
                         texto_html = f"<div style='white-space: pre-wrap;'>{contenido_str}</div>" if contenido_str.strip() else ""
+                        
                         html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
                         html_blocks.append(html_msg)
 
-                    html_blocks.reverse()
+                    html_blocks.reverse() # Invertir para CSS flex-reverse
 
+                # --- RENDERIZAR GALERÍA ---
+                if imagenes_galeria:
+                    with st.expander(f"🖼️ Galería de Imágenes ({len(imagenes_galeria)})"):
+                        st.caption("Haz click en las flechas de la imagen para ver en pantalla completa.")
+                        cols = st.columns(4)
+                        for i, img in enumerate(reversed(imagenes_galeria)):
+                            with cols[i % 4]:
+                                st.image(img['bytes'], caption=img['caption'], use_container_width=True)
+                
+                st.divider()
+
+                # --- RENDERIZAR CHAT ---
+                if not msgs.empty:
                     css_y_html = f"""<style>
 .chat-container {{ display: flex; flex-direction: column-reverse; height: 500px; overflow-y: auto; padding: 10px; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 10px; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-color: transparent; }}
 .msg-row {{ display: flex; margin-bottom: 5px; }}
@@ -428,8 +424,10 @@ def render_chat():
 .b-mio .session-tag {{ background-color: rgba(0,0,0,0.08); color: #444; }}
 </style><div class='chat-container'>{''.join(html_blocks)}</div>"""
                     st.markdown(css_y_html, unsafe_allow_html=True)
+                else:
+                    st.caption("Inicio de la conversación.")
 
-                # --- INPUT ---
+                # --- INPUT DE ESCRITURA ---
                 ultima_sesion = None
                 if not msgs.empty and 'session_name' in msgs.columns:
                     sesiones_validas = msgs['session_name'].dropna().astype(str).str.strip().str.lower()
