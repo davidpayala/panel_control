@@ -7,6 +7,9 @@ import sys
 import json
 import random
 from datetime import datetime
+import io
+from PIL import Image
+
 
 app = Flask(__name__)
 
@@ -68,6 +71,46 @@ def descargar_media_plus(media_url):
         return r.content if r.status_code == 200 else None
     except: return None
 
+def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
+    if not image_bytes or len(image_bytes) <= max_bytes:
+        return image_bytes
+
+    try:
+        # Abrir la imagen desde los bytes en memoria
+        img = Image.open(io.BytesIO(image_bytes))
+        formato = img.format
+        
+        # Solo comprimir si es un formato de imagen soportado
+        if formato not in ['JPEG', 'PNG', 'WEBP']:
+            return image_bytes
+
+        # Reducir dimensiones al 50%
+        nuevo_ancho = int(img.width * 0.5)
+        nuevo_alto = int(img.height * 0.5)
+        
+        # Usar LANCZOS para mantener la calidad al redimensionar (en versiones nuevas de Pillow)
+        try:
+            resample_filter = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample_filter = Image.ANTIALIAS
+            
+        img = img.resize((nuevo_ancho, nuevo_alto), resample_filter)
+
+        # Guardar la imagen comprimida en memoria
+        output = io.BytesIO()
+        if formato == 'PNG':
+            # Convertir a RGB si es PNG con paleta para evitar errores de guardado, o simplemente guardar optimizado
+            img.save(output, format='PNG', optimize=True)
+        else:
+            # Para JPEG y WEBP, bajar calidad al 70%
+            img.save(output, format=formato, quality=70, optimize=True)
+
+        return output.getvalue()
+    except Exception as e:
+        log_error(f"Error al comprimir imagen: {e}")
+        # Si falla la compresión, devolvemos None para que no intente guardar un archivo > 2MB y rompa la BD
+        return None
+    
 # ==============================================================================
 # 🕵️ FUNCIONES LOCALES (MEJORADAS PARA LLAMADAS)
 # ==============================================================================
@@ -191,6 +234,11 @@ def recibir_mensaje():
             body = "📞 Llamada entrante" if tipo_evento == 'call.received' else payload.get('body', '')
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
+            
+            # --- NUEVA LÍNEA PARA COMPRIMIR ---
+            if archivo_bytes:
+                archivo_bytes = comprimir_imagen_waha(archivo_bytes)
+                
             if archivo_bytes and not body: body = "📷 Archivo Multimedia"
             
             tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
