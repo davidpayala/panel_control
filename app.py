@@ -144,44 +144,67 @@ def render_login():
 
 # --- FUNCIÓN PRINCIPAL ---
 def main():
+    # 1. VERIFICAR SESIÓN PRIMERO
     if 'usuario' not in st.session_state:
         render_login()
         return  # Detiene la ejecución aquí si no hay sesión
 
-    # --- BARRA LATERAL ---
+    # 2. INICIALIZAR CARRITO
+    if 'carrito' not in st.session_state:
+        st.session_state.carrito = []
+
+    # 3. CONTADOR DE CHATS NO LEÍDOS (Debe ir aquí arriba)
+    try:
+        with engine.connect() as conn:
+            n_no_leidos = conn.execute(text(
+                "SELECT COUNT(*) FROM mensajes WHERE leido = FALSE AND tipo = 'ENTRANTE'"
+            )).scalar()
+    except:
+        n_no_leidos = 0
+
+    # Creamos la variable que luego usará el menú
+    texto_dinamico_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
+
+    # 4. BARRA LATERAL Y MENÚ
     with st.sidebar:
-        st.write(f"👤 Bienvenido, {st.session_state['usuario']} ({st.session_state['rol']})")
-        if st.button("Cerrar Sesión"):
+        st.write(f"👤 Bienvenido, **{st.session_state['usuario']}** ({st.session_state['rol']})")
+        if st.button("🚪 Cerrar Sesión"):
             st.session_state.clear()
             st.rerun()
             
+        st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
         st.title("Menú K&M")
         
-        # Filtrar opciones según permisos
         OPCIONES_BASE = [
             "VENTA", "COMPRAS", "INVENTARIO", "CLIENTES", 
             "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO"
         ]
-        
+
+        # Lógica de Roles
         if st.session_state['rol'] == 'Admin':
-            OPCIONES_MENU = OPCIONES_BASE + ["USUARIOS"] # El admin ve todo + Gestor de usuarios
+            OPCIONES_MENU = OPCIONES_BASE + ["USUARIOS"] # El admin ve la pestaña extra
         else:
             OPCIONES_MENU = [opc for opc in OPCIONES_BASE if opc in st.session_state['modulos']]
 
         if "indice_menu" not in st.session_state:
             st.session_state.indice_menu = 0
 
+        # Función de formato (AQUÍ reconoce a texto_dinamico_chat correctamente)
         def formatear_menu(opcion):
             mapeo = {
                 "VENTA": "🛒 Venta (POS)", "COMPRAS": "📦 Compras", 
                 "INVENTARIO": "🔎 Inventario", "CLIENTES": "👤 Clientes",
                 "SEGUIMIENTO": "📆 Seguimiento", "CATALOGO": "🔧 Catálogo",
                 "FACTURACION": "💰 Facturación", "CHAT": texto_dinamico_chat,
-                "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico"
+                "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico",
+                "USUARIOS": "👥 Usuarios"
             }
             return mapeo.get(opcion, opcion)
 
-        # Usamos index puro, sin key, para evitar el reinicio
+        # Evitar error de índice si el rol cambia a uno con menos permisos
+        if st.session_state.indice_menu >= len(OPCIONES_MENU):
+            st.session_state.indice_menu = 0
+
         seleccion_interna = st.radio(
             "Ir a:", 
             OPCIONES_MENU,
@@ -189,15 +212,14 @@ def main():
             format_func=formatear_menu
         )
         
-        # Actualizamos el estado manualmente
         if seleccion_interna in OPCIONES_MENU:
             st.session_state.indice_menu = OPCIONES_MENU.index(seleccion_interna)
 
         st.divider()
-        st.caption("Sistema v2.6 - DB & Nav Fix")
+        st.caption("Sistema v3.0 - Control de Acceso")
 
     # --- RENDERIZADO DE VISTAS ---
-    st.title(f" {formatear_menu(seleccion_interna)}") 
+    st.title(f"{formatear_menu(seleccion_interna)}") 
     st.markdown("---")
 
     if seleccion_interna == "VENTA": ventas.render_ventas()
@@ -206,20 +228,18 @@ def main():
     elif seleccion_interna == "CLIENTES": clientes.render_clientes()
     elif seleccion_interna == "SEGUIMIENTO": seguimiento.render_seguimiento()
     elif seleccion_interna == "CATALOGO": catalogo.render_catalogo()
-    # Dentro de app.py, en la sección de Facturación
     elif seleccion_interna == "FACTURACION":
         tab1, tab2 = st.tabs(["📝 Registro de Boletas", "📊 Reporte Mensual"])
-        
-        with tab1:
-            # Aquí llamas a la función que ya tenías para registrar
-            facturacion.render_facturacion() 
-            
-        with tab2:
-            # Aquí llamas a la nueva función de reportes
-            facturacion.render_reporte_mensual()
+        with tab1: facturacion.render_facturacion() 
+        with tab2: facturacion.render_reporte_mensual()
     elif seleccion_interna == "CHAT": chats.render_chat()
     elif seleccion_interna == "CAMPANAS": campanas.render_campanas()
-    elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico() # <--- AGREGADO
+    elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico()
+    elif seleccion_interna == "USUARIOS": 
+        # Aquí puedes llamar a una nueva vista usuarios.render_usuarios() 
+        # o colocar el código del formulario directamente:
+        st.warning("Módulo de Gestión de Usuarios en construcción...")
+
 if __name__ == "__main__":
     main()
     
