@@ -123,33 +123,50 @@ def iniciar_sistema_db():
     return True
 
 # LLAMAR A LA FUNCIÓN CON CACHÉ
-iniciar_sistema_db()
+def render_login():
+    st.title("🔐 Acceso al Sistema")
+    with st.form("login_form"):
+        user = st.text_input("Usuario")
+        pwd = st.text_input("Contraseña", type="password")
+        submit = st.form_submit_button("Ingresar")
+
+        if submit:
+            with engine.connect() as conn:
+                res = conn.execute(text("SELECT rol, modulos FROM Usuarios WHERE usuario=:u AND password=:p"), 
+                                   {"u": user, "p": pwd}).fetchone()
+                if res:
+                    st.session_state['usuario'] = user
+                    st.session_state['rol'] = res.rol
+                    st.session_state['modulos'] = res.modulos.split(',') if res.modulos else []
+                    st.rerun()
+                else:
+                    st.error("Credenciales incorrectas")
 
 # --- FUNCIÓN PRINCIPAL ---
 def main():
-    if 'carrito' not in st.session_state:
-        st.session_state.carrito = []
+    if 'usuario' not in st.session_state:
+        render_login()
+        return  # Detiene la ejecución aquí si no hay sesión
 
-    # Contador de No Leídos
-    try:
-        with engine.connect() as conn:
-            n_no_leidos = conn.execute(text(
-                "SELECT COUNT(*) FROM mensajes WHERE leido = FALSE AND tipo = 'ENTRANTE'"
-            )).scalar()
-    except:
-        n_no_leidos = 0
-
-    texto_dinamico_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
-
-    # --- BARRA LATERAL (VERSIÓN CORREGIDA - SIN KEY) ---
+    # --- BARRA LATERAL ---
     with st.sidebar:
-        st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
+        st.write(f"👤 Bienvenido, {st.session_state['usuario']} ({st.session_state['rol']})")
+        if st.button("Cerrar Sesión"):
+            st.session_state.clear()
+            st.rerun()
+            
         st.title("Menú K&M")
         
-        OPCIONES_MENU = [
+        # Filtrar opciones según permisos
+        OPCIONES_BASE = [
             "VENTA", "COMPRAS", "INVENTARIO", "CLIENTES", 
             "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO"
         ]
+        
+        if st.session_state['rol'] == 'Admin':
+            OPCIONES_MENU = OPCIONES_BASE + ["USUARIOS"] # El admin ve todo + Gestor de usuarios
+        else:
+            OPCIONES_MENU = [opc for opc in OPCIONES_BASE if opc in st.session_state['modulos']]
 
         if "indice_menu" not in st.session_state:
             st.session_state.indice_menu = 0
