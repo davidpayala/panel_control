@@ -154,7 +154,7 @@ def render_facturacion():
                                 conn.execute(text("""
                                     UPDATE Ventas 
                                     SET facturado = TRUE, 
-                                        fecha_facturacion = CURRENT_DATE,
+                                    fecha_facturacion = (NOW() - INTERVAL '5 hours'),
                                         numero_boleta = :bol
                                     WHERE id_venta = :vid
                                 """), {

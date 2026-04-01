@@ -138,6 +138,36 @@ def render_chat():
                         conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE leido = FALSE AND tipo = 'ENTRANTE'"))
                     st.rerun()
 
+        with st.expander("➕ Iniciar Nuevo Chat"):
+            with st.form("form_nuevo_chat", clear_on_submit=True):
+                nuevo_numero = st.text_input("Número (con código de país, ej: 51999888777):")
+                nueva_sesion = st.selectbox(
+                    "Línea de envío:", 
+                    options=["principal", "default"], 
+                    format_func=lambda x: "📱 KM (Principal)" if x == "principal" else "👓 LENTES (Default)"
+                )
+                nuevo_mensaje = st.text_area("Mensaje inicial:")
+                btn_enviar_nuevo = st.form_submit_button("Enviar Mensaje", type="primary", use_container_width=True)
+
+                if btn_enviar_nuevo:
+                    if not nuevo_numero.strip() or not nuevo_mensaje.strip():
+                        st.error("Ingresa el número y el mensaje.")
+                    else:
+                        ok, res = mandar_mensaje_api(nuevo_numero, nuevo_mensaje, nueva_sesion)
+                        if ok:
+                            # Normalizar para establecerlo como chat activo
+                            res_norm = normalizar_telefono_maestro(nuevo_numero)
+                            num_final = res_norm.get('db') if isinstance(res_norm, dict) else str(res_norm)
+                            if not num_final:
+                                num_final = "".join(filter(str.isdigit, str(nuevo_numero)))
+                                
+                            st.session_state['chat_actual_telefono'] = num_final
+                            st.success("Enviado. Cargando chat...")
+                            time.sleep(1.5) # Pausa breve para dar tiempo al webhook de registrarlo en la BD
+                            st.rerun()
+                        else:
+                            st.error(f"Error al enviar: {res}")
+
         try:
             with engine.connect() as conn:
                 conn.commit() 
