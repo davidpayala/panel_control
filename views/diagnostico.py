@@ -21,8 +21,7 @@ def get_headers():
 def render_diagnostico():
     st.title("🛠️ Centro de Diagnóstico")
     
-    tab_logs, tab_inspector, tab_simulador = st.tabs(["📡 Logs Webhook", "🕵️ Inspector API", "🧪 Simulador (Test)"])
-
+    tab_logs, tab_inspector, tab_simulador, tab_respuestas = st.tabs(["📡 Logs Webhook", "🕵️ Inspector API", "🧪 Simulador (Test)", "🤖 Auto-Respuestas"])
     # ==========================================================================
     # PESTAÑA 1: LOGS DE BASE DE DATOS
     # ==========================================================================
@@ -181,3 +180,48 @@ def render_diagnostico():
                 st.error(f"❌ No se pudo conectar a `{target_url}`. ¿Está corriendo el servidor Flask?")
             except Exception as e:
                 st.error(f"❌ Error inesperado: {str(e)}")
+
+    # ==========================================================================
+    # PESTAÑA 4: GESTIÓN DE RESPUESTAS AUTOMÁTICAS (ZOMBIES)
+    # ==========================================================================
+    with tab_respuestas:
+        st.markdown("### 🤖 Gestión de Clientes Zombie")
+        st.info("💡 **Tip:** Escribe la Frase Clave en minúsculas (ej: `precio`, `info`, `catalogo`). Si necesitas borrar una fila, selecciónala y presiona la tecla `Suprimir` (Delete).")
+        
+        try:
+            with engine.connect() as conn:
+                df_resp = pd.read_sql(text("SELECT id, frase_clave, respuesta_nivel_1, respuesta_nivel_2 FROM respuestas_automaticas ORDER BY id"), conn)
+            
+            # El data_editor permite modificar como si fuera Excel
+            editado = st.data_editor(
+                df_resp,
+                num_rows="dynamic", # Permite añadir filas nuevas
+                use_container_width=True,
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "frase_clave": st.column_config.TextColumn("Frase Clave (minúsculas)", required=True),
+                    "respuesta_nivel_1": st.column_config.TextColumn("Nivel 1 (5 a 10 min)", required=True),
+                    "respuesta_nivel_2": st.column_config.TextColumn("Nivel 2 (6 a 12 horas)", required=True)
+                },
+                key="editor_respuestas"
+            )
+            
+            if st.button("💾 Guardar Cambios en Respuestas", type="primary"):
+                with engine.begin() as conn:
+                    # Limpiamos la tabla y la volvemos a llenar con lo que está en pantalla
+                    conn.execute(text("DELETE FROM respuestas_automaticas"))
+                    for _, row in editado.iterrows():
+                        if pd.notna(row['frase_clave']) and str(row['frase_clave']).strip():
+                            f_clave = str(row['frase_clave']).strip().lower()
+                            r1 = str(row['respuesta_nivel_1']) if pd.notna(row['respuesta_nivel_1']) else ""
+                            r2 = str(row['respuesta_nivel_2']) if pd.notna(row['respuesta_nivel_2']) else ""
+                            
+                            conn.execute(text("""
+                                INSERT INTO respuestas_automaticas (frase_clave, respuesta_nivel_1, respuesta_nivel_2)
+                                VALUES (:f, :r1, :r2)
+                            """), {"f": f_clave, "r1": r1, "r2": r2})
+                st.success("✅ Respuestas actualizadas correctamente en la Base de Datos.")
+                st.rerun()
+                
+        except Exception as e:
+            st.error(f"❌ Error al cargar/guardar la tabla: {e}")

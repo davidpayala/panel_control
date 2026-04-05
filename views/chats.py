@@ -314,8 +314,11 @@ def render_chat():
 
                 # --- HEADER ---
                 st.subheader(f"👤 {nombre}")
-                c_head_1, c_head_2 = st.columns([40, 60])
+                
+                # Dividimos en 3 columnas: Teléfono, Estado normal y Etiqueta Zombie
+                c_head_1, c_head_2, c_head_3 = st.columns([25, 40, 35])
                 with c_head_1: st.caption(f"📱 {telefono_actual}")
+                
                 with c_head_2:
                     OPCIONES_ESTADO = [
                         "Sin empezar",
@@ -331,6 +334,34 @@ def render_chat():
                     if nuevo_estado != estado_actual_cliente:
                         with engine.begin() as conn:
                             conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE telefono = :t"), {"e": nuevo_estado, "t": telefono_actual})
+                        st.rerun()
+
+                with c_head_3:
+                    # --- LÓGICA DE LA ETIQUETA ZOMBIE ---
+                    nivel_z = info.nivel_zombie if hasattr(info, 'nivel_zombie') and info.nivel_zombie is not None else 0
+                    # Mapeo de niveles para mostrar en pantalla
+                    niveles_map = {
+                        0: "🟢 Cliente Normal", 
+                        1: "🧟 Zombie (Espera N1)", 
+                        2: "🧟 Zombie (Espera N2)", 
+                        3: "🧟 Nivel 2 Enviado"
+                    }
+                    idx_z = nivel_z if nivel_z in niveles_map else 0
+                    
+                    nuevo_nivel = st.selectbox(
+                        "Etiqueta Zombie:", 
+                        options=list(niveles_map.keys()), 
+                        format_func=lambda x: niveles_map[x], 
+                        index=list(niveles_map.keys()).index(idx_z), 
+                        key=f"zmb_{telefono_actual}", 
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Si cambias manualmente la etiqueta a Zombie, se reinicia el reloj
+                    if nuevo_nivel != nivel_z:
+                        with engine.begin() as conn:
+                            tiempo_update = ", ultimo_msg_zombie = NOW()" if nuevo_nivel > 0 else ""
+                            conn.execute(text(f"UPDATE {tabla} SET nivel_zombie = :n {tiempo_update} WHERE telefono = :t"), {"n": nuevo_nivel, "t": telefono_actual})
                         st.rerun()
 
                 # =========================================
