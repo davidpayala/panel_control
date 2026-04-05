@@ -343,7 +343,25 @@ def recibir_mensaje():
                                 "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
                             })
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
-
+                        
+                        # --- LÓGICA DE DETECCIÓN ZOMBIE ---
+                        if tipo_msg == 'ENTRANTE':
+                            texto_limpio = body.strip().lower()
+                            
+                            # 1. Si manda archivo/imagen, se quita la etiqueta
+                            if archivo_bytes or "archivo multimedia" in texto_limpio:
+                                conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": id_cliente_final})
+                            else:
+                                # 2. Buscar si el texto coincide exactamente con alguna frase clave
+                                es_clave = conn.execute(text("SELECT 1 FROM respuestas_automaticas WHERE LOWER(frase_clave) = :t LIMIT 1"), {"t": texto_limpio}).scalar()
+                                
+                                if es_clave:
+                                    # Pasa a Espera Nivel 1 y reinicia el contador de tiempo
+                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = (NOW() - INTERVAL '5 hours') WHERE id_cliente = :id"), {"id": id_cliente_final})
+                                else:
+                                    # Si escribe otra cosa distinta, sale del estado zombie
+                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": id_cliente_final})
+                        # ----------------------------------
             except Exception as e:
                 log_error(f"🔥 Error DB: {e}")
 
