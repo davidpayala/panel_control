@@ -4,6 +4,9 @@ import random
 import time
 from sqlalchemy import text
 from database import engine
+import os
+import threading
+from utils import sync_woo_background
 
 # Asegurar que la columna 'anulado' exista en la base de datos
 try:
@@ -11,6 +14,8 @@ try:
         conn.execute(text("ALTER TABLE Ventas ADD COLUMN IF NOT EXISTS anulado BOOLEAN DEFAULT FALSE"))
 except:
     pass
+
+
 
 def render_ventas():
     tab_nueva, tab_historial = st.tabs(["🛒 Nueva Venta / Salida", "📜 Historial y Anulaciones"])
@@ -289,6 +294,12 @@ def render_nueva_venta():
                                     """), {"sku": item['sku'], "c": int(item['cantidad']), "nue": nuevo_s, "nota": f"Venta #{id_venta}", "idc": id_cliente})
                             
                             trans.commit()
+                        
+                        # --- NUEVO: Disparar sincronización en 2do plano ---
+                        skus_vendidos = [item["sku"] for item in st.session_state.carrito]
+                        threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
+                        # ---------------------------------------------------
+
                         st.balloons()
                         st.success(f"¡Venta #{id_venta} registrada!")
                         st.session_state.carrito = []
@@ -325,7 +336,12 @@ def render_nueva_venta():
                                         """), {"sku": item['sku'], "c": int(item['cantidad']), "ant": nuevo_s + int(item['cantidad']), "nue": nuevo_s, "nota": nota_completa})
                                     items_procesados += 1
                             trans.commit()
-                        
+
+                        # --- NUEVO: Disparar sincronización en 2do plano ---
+                        skus_vendidos = [item["sku"] for item in st.session_state.carrito]
+                        threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
+                        # ---------------------------------------------------
+
                         if items_procesados > 0:
                             st.success(f"✅ ¡Salida registrada! ({items_procesados} productos actualizados)")
                         else:
@@ -400,6 +416,14 @@ def render_gestion_ventas():
                                 "nue": nuevo_stock, "nota": f"Anulación Venta #{id_venta_sel}"
                             })
                     trans.commit()
+
+                    # --- CORRECCIÓN: Disparar sincronización por anulación de venta ---
+                    # Extraemos los SKUs directamente del DataFrame 'detalles' de esa boleta
+                    skus_anulados = [item['sku'] for idx, item in detalles.iterrows() if item['es_inventario']]
+                    if skus_anulados:
+                        threading.Thread(target=sync_woo_background, args=(skus_anulados,)).start()
+                    # ------------------------------------------------------------------
+
                     st.success("✅ Venta anulada y stock restaurado correctamente.")
                     time.sleep(2)
                     st.rerun()

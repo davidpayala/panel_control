@@ -8,6 +8,8 @@ from googleapiclient.discovery import build
 from database import engine
 import json
 import base64
+from woocommerce import API
+
 
 # ==============================================================================
 # CONFIGURACIÓN GENERAL
@@ -261,3 +263,87 @@ def verificar_numero_waha(telefono):
         return False
     except:
         return False
+
+# ==============================================================================
+# 🤖 4. FUNCIONES DE INTELIGENCIA ARTIFICIAL
+# ==============================================================================
+def generar_nombre_ia(nombre_corto, nombre_real):
+    """
+    Genera un nombre amigable (solo el primer nombre) para que el bot de IA 
+    salude al cliente, priorizando el nombre real de Google si existe.
+    """
+    try:
+        # Prioridad 1: El primer nombre real registrado en Google Contacts
+        if nombre_real and isinstance(nombre_real, str) and nombre_real.strip():
+            primer_nombre = nombre_real.strip().split()[0]
+            return primer_nombre.capitalize()
+        
+        # Prioridad 2: El primer nombre del Alias / Nombre Corto
+        if nombre_corto and isinstance(nombre_corto, str) and nombre_corto.strip():
+            # Limpiamos cosas como "VIP", "Nuevo", etc. si estuvieran en el alias
+            primer_nombre = nombre_corto.strip().split()[0]
+            return primer_nombre.capitalize()
+            
+    except Exception as e:
+        print(f"Error al generar nombre IA: {e}")
+        
+    # Default si no hay datos
+    return "Amigo"
+
+# ==============================================================================
+# 🛒 5. FUNCIONES DE WOOCOMMERCE
+# ==============================================================================
+def sync_woo_background(skus_a_sincronizar):
+    """Actualiza en 2do plano solo los productos especificados en WooCommerce."""
+    if not skus_a_sincronizar:
+        return
+
+    try:
+        wcapi = API(
+            url=os.getenv("WOO_URL"),
+            consumer_key=os.getenv("WOO_KEY"),
+            consumer_secret=os.getenv("WOO_SECRET"),
+            version="wc/v3",
+            timeout=15
+        )
+
+        from database import engine
+        from sqlalchemy import text
+        
+        with engine.connect() as conn:
+            # Generar los marcadores seguros para la consulta SQL
+            placeholders = ", ".join([f":sku_{i}" for i in range(len(skus_a_sincronizar))])
+            query = text(f"""
+                SELECT sku, (COALESCE(stock_interno, 0) + COALESCE(stock_externo, 0)) AS stock_total 
+                FROM Variantes 
+                WHERE sku IN ({placeholders})
+            """)
+            params = {f"sku_{i}": sku for i, sku in enumerate(skus_a_sincronizar)}
+            resultados = conn.execute(query, params).fetchall()
+
+        paquete_actualizacion = []
+        
+        # Buscar el ID de WooCommerce de los productos modificados y preparar actualización
+        for row in resultados:
+            sku = row.sku
+            stock = row.stock_total
+            visibilidad = "visible" if stock > 0 else "hidden"
+
+            resp = wcapi.get("products", params={"sku": sku})
+            if resp.status_code == 200:
+                woo_data = resp.json()
+                if woo_data:
+                    paquete_actualizacion.append({
+                        "id": woo_data[0]["id"],
+                        "manage_stock": True,
+                        "stock_quantity": stock,
+                        "catalog_visibility": visibilidad
+                    })
+
+        # Enviar la actualización directa de este pequeño lote
+        if paquete_actualizacion:
+            wcapi.post("products/batch", {"update": paquete_actualizacion})
+            print(f"⚡ Sync en tiempo real completada silenciosamente para: {skus_a_sincronizar}")
+
+    except Exception as e:
+        print(f"🔥 Error en sync de WooCommerce en tiempo real: {e}")

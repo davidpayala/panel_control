@@ -5,6 +5,8 @@ import io
 from datetime import datetime, date
 from sqlalchemy import text
 from database import engine
+import threading
+from utils import sync_woo_background
 
 def render_compras():
     st.subheader("🚢 Gestión de Importaciones y Reposición")
@@ -182,6 +184,7 @@ def render_compras():
                                 """), {"s": sku_pedido, "c": cant_pedido, "ant": curr_transito, "nue": curr_transito + cant_pedido, "nota": nota_pedido, "fec": fecha_pedido})
                                 
                                 trans.commit()
+                                
                                 st.success("✅ Registrado correctamente.")
                                 time.sleep(1)
                                 st.rerun()
@@ -301,6 +304,21 @@ def render_compras():
                                             {"s": row['sku'], "c": row['Cant. Recibida'], "ant": row['stock_actual'], "nue": n_stk, "n": nota_mov})
                             
                             trans.commit()
+
+                            # --- NUEVO: Disparar el francotirador ---
+                            # Buscamos en el dataframe que usaste arriba (probablemente df_editado o similar)
+                            skus_a_sincronizar = []
+                            # Revisa el "for idx, row in ..." que está unas líneas más arriba. 
+                            # Si ahí dice df_editado.iterrows(), cambia la variable en la siguiente línea:
+                            try:
+                                skus_a_sincronizar = [row['sku'] for idx, row in filas_ok.iterrows() if row['Cant. Recibida'] > 0]
+                                if skus_a_sincronizar:
+                                    threading.Thread(target=sync_woo_background, args=(skus_a_sincronizar,)).start()
+                            except Exception as e:
+                                print(f"Error al sincronizar: {e}")
+                            # ----------------------------------------
+
+                            st.rerun()
                             st.success("✅ Items actualizados.")
                             time.sleep(1.2)
                             st.rerun()
