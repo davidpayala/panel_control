@@ -314,7 +314,7 @@ def sync_woo_background(skus_a_sincronizar):
             # Generar los marcadores seguros para la consulta SQL
             placeholders = ", ".join([f":sku_{i}" for i in range(len(skus_a_sincronizar))])
             query = text(f"""
-                SELECT sku, (COALESCE(stock_interno, 0) + COALESCE(stock_externo, 0)) AS stock_total 
+                SELECT sku, (COALESCE(stock_interno, 0) + COALESCE(stock_externo, 0)) AS stock_total, COALESCE(stock_transito, 0) AS stock_transito
                 FROM Variantes 
                 WHERE sku IN ({placeholders})
             """)
@@ -327,7 +327,7 @@ def sync_woo_background(skus_a_sincronizar):
         for row in resultados:
             sku = row.sku
             stock = row.stock_total
-            visibilidad = "visible" if stock > 0 else "hidden"
+            visibilidad = "visible" if (stock > 0 or row.stock_transito > 0) else "hidden"
 
             resp = wcapi.get("products", params={"sku": sku})
             if resp.status_code == 200:
