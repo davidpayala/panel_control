@@ -14,7 +14,7 @@ from database import engine
 import utils 
 
 # Importar las vistas
-from views import ventas, compras, inventario, clientes, seguimiento, catalogo, facturacion, chats, campanas, diagnostico
+from views import ventas, compras, productos, clientes, seguimiento, catalogo, facturacion, chats, campanas, diagnostico
 
 # Cargar variables
 load_dotenv()
@@ -178,7 +178,7 @@ def main():
         st.title("Menú K&M")
         
         OPCIONES_BASE = [
-            "VENTA", "COMPRAS", "INVENTARIO", "CLIENTES", 
+            "VENTA", "COMPRAS", "PRODUCTOS", "CLIENTES", 
             "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO"
         ]
 
@@ -195,7 +195,7 @@ def main():
         def formatear_menu(opcion):
             mapeo = {
                 "VENTA": "🛒 Venta (POS)", "COMPRAS": "📦 Compras", 
-                "INVENTARIO": "🔎 Inventario", "CLIENTES": "👤 Clientes",
+                "PRODUCTOS": "📦 Productos", "CLIENTES": "👤 Clientes",
                 "SEGUIMIENTO": "📆 Seguimiento", "CATALOGO": "🔧 Catálogo",
                 "FACTURACION": "💰 Facturación", "CHAT": texto_dinamico_chat,
                 "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico",
@@ -226,7 +226,7 @@ def main():
 
     if seleccion_interna == "VENTA": ventas.render_ventas()
     elif seleccion_interna == "COMPRAS": compras.render_compras()
-    elif seleccion_interna == "INVENTARIO": inventario.render_inventario()
+    elif seleccion_interna == "PRODUCTOS": productos.vista_productos()
     elif seleccion_interna == "CLIENTES": clientes.render_clientes()
     elif seleccion_interna == "SEGUIMIENTO": seguimiento.render_seguimiento()
     elif seleccion_interna == "CATALOGO": catalogo.render_catalogo()

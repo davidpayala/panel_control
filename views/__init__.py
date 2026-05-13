@@ -2,7 +2,7 @@
 
 from . import ventas
 from . import compras
-from . import inventario
+from . import productos
 from . import clientes
 from . import seguimiento
 from . import catalogo
