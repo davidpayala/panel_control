@@ -43,7 +43,7 @@ def render_campanas():
         # Leer cuántos mensajes se enviaron hoy para las métricas
         enviados_hoy = conn.execute(text("""
             SELECT COUNT(*) FROM mensajes 
-            WHERE tipo = 'SALIENTE' AND fecha::date = CURRENT_DATE
+            WHERE tipo = 'SALIENTE_BOT' AND fecha::date = CURRENT_DATE
         """)).scalar()
 
     st.markdown("---")

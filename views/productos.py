@@ -297,7 +297,8 @@ def vista_productos():
             
             if cambios_mkt:
                 st.info(f"💾 Tienes cambios pendientes en {len(cambios_mkt)} grupos...")
-                if st.button("Confirmar Cambios en Grupos", type="primary"):
+            
+            if st.button("Confirmar Cambios en Grupos", type="primary"):
                     with engine.connect() as conn:
                         trans = conn.begin()
                         try:
@@ -307,15 +308,22 @@ def vista_productos():
                                 # Construimos el UPDATE dinámicamente según lo que cambió
                                 for col, val in updates.items():
                                     if col in ['marca', 'imagenes']:
-                                        # Para los campos JSON usamos CAST
+                                        import json
+                                        # Si Streamlit nos da una lista, la convertimos a texto JSON
+                                        val_json = json.dumps(val) if isinstance(val, (list, dict)) else val
+                                        
+                                        # Ahora sí lo mandamos a PostgreSQL sin que se confunda
                                         conn.execute(text(f"UPDATE Grupos_Productos SET {col} = CAST(:v AS JSONB) WHERE id_grupo = :id"), 
-                                                     {"v": val, "id": id_target})
+                                                     {"v": val_json, "id": id_target})
                                     else:
                                         # Para campos normales (texto, boolean)
                                         conn.execute(text(f"UPDATE Grupos_Productos SET {col} = :v WHERE id_grupo = :id"), 
                                                      {"v": val, "id": id_target})
                             
                             trans.commit()
+                            
+                            if 'df_inventario' in st.session_state: del st.session_state['df_inventario']
+                            
                             st.success("✅ ¡Cambios guardados correctamente!")
                             time.sleep(1)
                             st.rerun()

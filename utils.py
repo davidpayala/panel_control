@@ -9,7 +9,7 @@ from database import engine
 import json
 import base64
 from woocommerce import API
-
+import threading
 
 # ==============================================================================
 # CONFIGURACIÓN GENERAL
@@ -347,3 +347,64 @@ def sync_woo_background(skus_a_sincronizar):
 
     except Exception as e:
         print(f"🔥 Error en sync de WooCommerce en tiempo real: {e}")
+
+def _tarea_sync_woo(skus):
+    """Tarea interna que se ejecuta en segundo plano para no congelar la pantalla de ventas"""
+    try:
+        woo_url = os.getenv("WOO_URL")
+        woo_key = os.getenv("WOO_KEY")
+        woo_secret = os.getenv("WOO_SECRET")
+        
+        if not woo_url or not woo_key or not woo_secret:
+            return
+
+        wcapi = API(
+            url=woo_url,
+            consumer_key=woo_key,
+            consumer_secret=woo_secret,
+            version="wc/v3",
+            timeout=20
+        )
+
+        with engine.connect() as conn:
+            for sku in skus:
+                # Obtenemos stock físico y en tránsito
+                query = text("""
+                    SELECT stock_interno, stock_externo, COALESCE(stock_transito, 0) as stock_transito
+                    FROM Variantes WHERE sku = :sku
+                """)
+                row = conn.execute(query, {"sku": sku}).fetchone()
+                
+                if row:
+                    stock_fisico = row.stock_interno + row.stock_externo
+                    
+                    # Regla de negocio: visible si hay físico o tránsito
+                    visibilidad = "visible" if (stock_fisico > 0 or row.stock_transito > 0) else "hidden"
+                    stock_enviar = stock_fisico if stock_fisico > 0 else 0
+
+                    # Buscar producto/variante en WooCommerce por SKU
+                    res_woo = wcapi.get("products", params={"sku": sku}).json()
+                    
+                    if res_woo and isinstance(res_woo, list) and len(res_woo) > 0:
+                        woo_id = res_woo[0]["id"]
+                        data = {
+                            "manage_stock": True,
+                            "stock_quantity": stock_enviar,
+                            "catalog_visibility": visibilidad
+                        }
+                        # Actualizar producto en WooCommerce
+                        wcapi.put(f"products/{woo_id}", data)
+                        print(f"✅ Woo Sync [Venta]: SKU {sku} -> Stock: {stock_enviar} | Visibilidad: {visibilidad}")
+
+    except Exception as e:
+        print(f"❌ Error en Woo Sync [Fondo]: {e}")
+
+def sync_woo_background(skus):
+    """
+    Función principal que llama ventas.py. 
+    Lanza un hilo para no hacer esperar al vendedor mientras se actualiza WooCommerce.
+    """
+    if isinstance(skus, str):
+        skus = [skus]
+    hilo = threading.Thread(target=_tarea_sync_woo, args=(skus,))
+    hilo.start()
