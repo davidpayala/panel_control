@@ -1,9 +1,10 @@
+import json
 import streamlit as st
 import pandas as pd
 import time
 from sqlalchemy import text
 from database import engine
-import json
+
 
 def vista_productos():
     st.title("📦 Gestión de Productos")
@@ -308,7 +309,6 @@ def vista_productos():
                                 # Construimos el UPDATE dinámicamente según lo que cambió
                                 for col, val in updates.items():
                                     if col in ['marca', 'imagenes']:
-                                        import json
                                         # Si Streamlit nos da una lista, la convertimos a texto JSON
                                         val_json = json.dumps(val) if isinstance(val, (list, dict)) else val
                                         
