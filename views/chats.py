@@ -92,18 +92,18 @@ def poller_cambios_db():
                 st.rerun()
     except Exception: pass
 
-def render_boton_chat(row, cat, telefono_actual, cambiar_chat_func):
-    t_row = row['telefono']
+def render_boton_chat(row, cat, chat_actual, cambiar_chat_func):
+    c_id = row['chat_id']
     c_leidos = row['no_leidos']
     icono = "🔴" if c_leidos > 0 else "👤"
     texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
     
     # Mostrar el estado real si está en la bandeja de "Nuevos" o "Otros"
-    extra = f" [{row['estado']}]" if cat in ["📁 Otros Estados", "🔴 Mensajes Nuevos"] else ""
+    extra = f" [{row['estado']}]" if cat in ["📁 Otros Estados", "🔴 Mensajes Nuevos"] and pd.notna(row['estado']) else ""
     
     label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
-    tipo = "primary" if telefono_actual == t_row else "secondary"
-    st.button(label, key=f"c_{t_row}", use_container_width=True, type=tipo, on_click=cambiar_chat_func, args=(t_row,))
+    tipo = "primary" if str(chat_actual) == str(c_id) else "secondary"
+    st.button(label, key=f"c_{c_id}", use_container_width=True, type=tipo, on_click=cambiar_chat_func, args=(c_id,))
 
 # ==========================================
 # VISTA PRINCIPAL
@@ -117,13 +117,13 @@ def render_chat():
 
     poller_cambios_db()
 
-    def cambiar_chat(telefono):
-        st.session_state['chat_actual_telefono'] = telefono
+    def cambiar_chat(chat_id):
+        st.session_state['chat_actual_id'] = str(chat_id)
 
-    if 'chat_actual_telefono' not in st.session_state:
-        st.session_state['chat_actual_telefono'] = None
+    if 'chat_actual_id' not in st.session_state:
+        st.session_state['chat_actual_id'] = None
 
-    telefono_actual = st.session_state['chat_actual_telefono']
+    chat_actual = st.session_state['chat_actual_id']
     col_lista, col_chat = st.columns([35, 65])
 
     # --- BANDEJA DE ENTRADA ---
@@ -155,15 +155,14 @@ def render_chat():
                     else:
                         ok, res = mandar_mensaje_api(nuevo_numero, nuevo_mensaje, nueva_sesion)
                         if ok:
-                            # Normalizar para establecerlo como chat activo
                             res_norm = normalizar_telefono_maestro(nuevo_numero)
                             num_final = res_norm.get('db') if isinstance(res_norm, dict) else str(res_norm)
                             if not num_final:
                                 num_final = "".join(filter(str.isdigit, str(nuevo_numero)))
                                 
-                            st.session_state['chat_actual_telefono'] = num_final
+                            st.session_state['chat_actual_id'] = num_final
                             st.success("Enviado. Cargando chat...")
-                            time.sleep(1.5) # Pausa breve para dar tiempo al webhook de registrarlo en la BD
+                            time.sleep(1.5) 
                             st.rerun()
                         else:
                             st.error(f"Error al enviar: {res}")
@@ -174,23 +173,38 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
+                # --- QUERY UNIFICADO DE CHATS CORREGIDO ---
                 query = f"""
-                    SELECT c.telefono, COALESCE(c.nombre_corto, c.telefono) as nombre, c.whatsapp_internal_id, c.estado,
-                           COALESCE(SUM(CASE WHEN m.leido = FALSE AND m.tipo = 'ENTRANTE' THEN 1 ELSE 0 END), 0) as no_leidos,
-                           MAX(m.fecha) as ultima_interaccion
-                    FROM {tabla} c
-                    LEFT JOIN mensajes m ON c.telefono = m.telefono
-                    WHERE c.activo = TRUE
+                    WITH msg_vinculados AS (
+                        SELECT m.id_mensaje, m.telefono, m.fecha, m.leido, m.tipo, t.id_cliente
+                        FROM mensajes m
+                        LEFT JOIN telefonoscliente t ON m.telefono = t.telefono AND t.activo = TRUE
+                    ),
+                    chat_list AS (
+                        SELECT 
+                            COALESCE(CAST(id_cliente AS VARCHAR), telefono) as chat_id,
+                            MAX(id_cliente) as id_cliente,
+                            MAX(telefono) FILTER (WHERE id_cliente IS NULL) as tel_anonimo,
+                            MAX(fecha) as ultima_interaccion,
+                            COALESCE(SUM(CASE WHEN leido = FALSE AND tipo = 'ENTRANTE' THEN 1 ELSE 0 END), 0) as no_leidos
+                        FROM msg_vinculados
+                        GROUP BY COALESCE(CAST(id_cliente AS VARCHAR), telefono)
+                    )
+                    SELECT cl.*, c.nombre_corto, c.whatsapp_internal_id, c.estado, c.nivel_zombie, c.ultimo_msg_zombie,
+                           COALESCE(c.nombre_corto, cl.tel_anonimo, cl.chat_id) as nombre
+                    FROM chat_list cl
+                    LEFT JOIN {tabla} c ON cl.id_cliente = c.id_cliente AND c.activo = TRUE
+                    WHERE 1=1
                 """
                 
                 if busqueda:
                     busqueda_limpia = "".join(filter(str.isdigit, busqueda))
                     filtro = f" AND (COALESCE(c.nombre_corto,'') ILIKE '%{busqueda}%'"
-                    if busqueda_limpia: filtro += f" OR c.telefono ILIKE '%{busqueda_limpia}%')"
-                    else: filtro += f" OR c.telefono ILIKE '%{busqueda}%')"
+                    if busqueda_limpia: filtro += f" OR cl.tel_anonimo ILIKE '%{busqueda_limpia}%' OR EXISTS (SELECT 1 FROM telefonoscliente tc WHERE tc.id_cliente = cl.id_cliente AND tc.telefono ILIKE '%{busqueda_limpia}%'))"
+                    else: filtro += ")"
                     query += filtro
                 
-                query += " GROUP BY c.telefono, c.nombre_corto, c.whatsapp_internal_id, c.estado ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST"
+                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST LIMIT 100"
                 df_clientes = pd.read_sql(text(query), conn)
 
             with st.container(height=600):
@@ -205,7 +219,6 @@ def render_chat():
                         "🆕 Sin empezar": ["Sin empezar"]
                     }
                     
-                    # 🚀 LÓGICA DE PRIORIDAD: Si no está leído, va al grupo de Nuevos
                     def asignar_categoria(row):
                         if row['no_leidos'] > 0: return "🔴 Mensajes Nuevos"
                         estado = row['estado']
@@ -216,7 +229,6 @@ def render_chat():
                         
                     df_clientes['categoria'] = df_clientes.apply(asignar_categoria, axis=1)
                     
-                    # ORDEN MODIFICADO: Prioridad alta arriba, Sin empezar al fondo
                     orden_categorias = [
                         "🔴 Mensajes Nuevos",
                         "💰 Venta realizada", 
@@ -236,9 +248,8 @@ def render_chat():
                                 
                             no_leidos_cat = int(df_cat['no_leidos'].sum())
                             badge = f" :red-background[**{no_leidos_cat}**]" if no_leidos_cat > 0 else ""
-                            chat_activo_aqui = telefono_actual in df_cat['telefono'].values
+                            chat_activo_aqui = str(chat_actual) in df_cat['chat_id'].astype(str).values
                             
-                            # Expandido automático si son nuevos o si estoy viendo este chat
                             expandido = (cat == "🔴 Mensajes Nuevos") or chat_activo_aqui or (cat == "💰 Venta realizada")
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
@@ -249,25 +260,28 @@ def render_chat():
                                         if not df_sub.empty:
                                             st.markdown(f"<div style='font-size: 11px; color: #777; margin-top: 10px; margin-bottom: 2px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;'>📌 {sub}</div>", unsafe_allow_html=True)
                                             for _, row in df_sub.iterrows():
-                                                render_boton_chat(row, cat, telefono_actual, cambiar_chat)
+                                                render_boton_chat(row, cat, chat_actual, cambiar_chat)
                                 else:
                                     for _, row in df_cat.iterrows():
-                                        render_boton_chat(row, cat, telefono_actual, cambiar_chat)
+                                        render_boton_chat(row, cat, chat_actual, cambiar_chat)
 
         except Exception as e:
             st.error(f"Error cargando lista: {e}")
 
     # --- CHAT ---
     with col_chat:
-        if not telefono_actual:
+        if not chat_actual:
             st.info("👈 Selecciona un chat.")
         else:
             try:
-                # AUTO-RESOLUCIÓN LIDs (Se mantiene)
-                if telefono_actual.startswith("LID_"):
+                # Verificamos si es un cliente (por el ID) o un número anónimo
+                es_cliente = str(chat_actual).isdigit() and len(str(chat_actual)) < 10
+
+                # AUTO-RESOLUCIÓN LIDs
+                if str(chat_actual).startswith("LID_"):
                     with st.spinner("🕵️‍♂️ Consultando número real en WAHA..."):
                         with engine.connect() as conn:
-                            info = conn.execute(text(f"SELECT whatsapp_internal_id FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
+                            info = conn.execute(text(f"SELECT whatsapp_internal_id FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
                             if info and info.whatsapp_internal_id and info.whatsapp_internal_id.endswith("@lid"):
                                 num_real = resolver_telefono_api(info.whatsapp_internal_id, "default")
                                 if not num_real: num_real = resolver_telefono_api(info.whatsapp_internal_id, "principal")
@@ -279,45 +293,57 @@ def render_chat():
                                         with engine.begin() as t_conn:
                                             existente = t_conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono=:t"), {"t": real_db}).fetchone()
                                             if existente:
-                                                t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
-                                                t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE telefono=:o"), {"fake": f"MERGED_{telefono_actual}", "o": telefono_actual})
+                                                t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
+                                                t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE telefono=:o"), {"fake": f"MERGED_{chat_actual}", "o": chat_actual})
                                                 t_conn.execute(text(f"UPDATE {tabla} SET whatsapp_internal_id=:lid WHERE telefono=:n"), {"lid": info.whatsapp_internal_id, "n": real_db})
                                             else:
-                                                t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
-                                                t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": telefono_actual})
-                                        st.session_state['chat_actual_telefono'] = real_db
+                                                t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
+                                                t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
+                                        st.session_state['chat_actual_id'] = real_db
                                         st.rerun()
 
-                # Marcar leido
+                # Marcar leido (Unificado)
                 with engine.connect() as conn:
                     conn.commit() 
-                    unreads_query = conn.execute(text("SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono=:t AND tipo='ENTRANTE' AND leido=FALSE"), {"t": telefono_actual}).fetchone()
+                    tels_condition = "SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE" if es_cliente else "SELECT :id"
+                    param_id = int(chat_actual) if es_cliente else chat_actual
+                    
+                    unreads_query = conn.execute(text(f"SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono IN ({tels_condition}) AND tipo='ENTRANTE' AND leido=FALSE"), {"id": param_id}).fetchone()
                     if unreads_query and unreads_query[0] > 0:
                         sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
-                        conn.execute(text("UPDATE mensajes SET leido=TRUE WHERE telefono=:t AND tipo='ENTRANTE'"), {"t": telefono_actual})
+                        conn.execute(text(f"UPDATE mensajes SET leido=TRUE WHERE telefono IN ({tels_condition}) AND tipo='ENTRANTE'"), {"id": param_id})
                         conn.commit()
-                        try: threading.Thread(target=marcar_leido_api, args=(telefono_actual, sesion_unread)).start()
-                        except: pass
+                        
+                        tels_api = conn.execute(text(f"SELECT telefono FROM mensajes WHERE telefono IN ({tels_condition}) GROUP BY telefono"), {"id": param_id}).fetchall()
+                        for r_t in tels_api:
+                            try: threading.Thread(target=marcar_leido_api, args=(r_t[0], sesion_unread)).start()
+                            except: pass
 
-                # Cargar datos
+                # Cargar datos Unificados
                 with engine.connect() as conn:
-                    conn.commit() 
-                    info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": telefono_actual}).fetchone()
-                    nombre = info.nombre_corto if info and info.nombre_corto else telefono_actual
-                    estado_actual_cliente = info.estado if hasattr(info, 'estado') and info.estado else "Sin empezar"
+                    conn.commit()
+                    if es_cliente:
+                        info = conn.execute(text(f"SELECT * FROM {tabla} WHERE id_cliente=:id"), {"id": int(chat_actual)}).fetchone()
+                    else:
+                        info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
+                        
+                    nombre = info.nombre_corto if info and info.nombre_corto else chat_actual
+                    estado_actual_cliente = info.estado if info and hasattr(info, 'estado') and info.estado else "Sin empezar"
                     
-                    msgs = pd.read_sql(text("""
+                    msgs = pd.read_sql(text(f"""
                         SELECT * FROM (
-                            SELECT * FROM mensajes WHERE telefono=:t ORDER BY fecha DESC LIMIT 100
+                            SELECT m.* FROM mensajes m
+                            LEFT JOIN telefonoscliente t ON m.telefono = t.telefono AND t.activo = TRUE
+                            WHERE COALESCE(CAST(t.id_cliente AS VARCHAR), m.telefono) = :chat_id
+                            ORDER BY m.fecha DESC LIMIT 100
                         ) sub ORDER BY fecha ASC
-                    """), conn, params={"t": telefono_actual})
+                    """), conn, params={"chat_id": str(chat_actual)})
 
                 # --- HEADER ---
                 st.subheader(f"👤 {nombre}")
                 
-                # Dividimos en 3 columnas: Teléfono, Estado normal y Etiqueta Zombie
                 c_head_1, c_head_2, c_head_3 = st.columns([25, 40, 35])
-                with c_head_1: st.caption(f"📱 {telefono_actual}")
+                with c_head_1: st.caption("🗂️ Chat Unificado" if es_cliente else f"📱 {chat_actual}")
                 
                 with c_head_2:
                     OPCIONES_ESTADO = [
@@ -330,16 +356,17 @@ def render_chat():
                     try: idx_estado = OPCIONES_ESTADO.index(estado_actual_cliente)
                     except: idx_estado = 0
                     
-                    nuevo_estado = st.selectbox("Estado del Cliente:", OPCIONES_ESTADO, index=idx_estado, key=f"st_{telefono_actual}", label_visibility="collapsed")
+                    nuevo_estado = st.selectbox("Estado del Cliente:", OPCIONES_ESTADO, index=idx_estado, key=f"st_{chat_actual}", label_visibility="collapsed")
                     if nuevo_estado != estado_actual_cliente:
                         with engine.begin() as conn:
-                            conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE telefono = :t"), {"e": nuevo_estado, "t": telefono_actual})
+                            if es_cliente:
+                                conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE id_cliente = :id"), {"e": nuevo_estado, "id": int(chat_actual)})
+                            else:
+                                conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE telefono = :t"), {"e": nuevo_estado, "t": str(chat_actual)})
                         st.rerun()
 
                 with c_head_3:
-                    # --- LÓGICA DE LA ETIQUETA ZOMBIE ---
-                    nivel_z = info.nivel_zombie if hasattr(info, 'nivel_zombie') and info.nivel_zombie is not None else 0
-                    # Mapeo de niveles para mostrar en pantalla
+                    nivel_z = info.nivel_zombie if info and hasattr(info, 'nivel_zombie') and info.nivel_zombie is not None else 0
                     niveles_map = {
                         0: "🟢 Cliente Normal", 
                         1: "🧟 Zombie (Espera N1)", 
@@ -353,19 +380,21 @@ def render_chat():
                         options=list(niveles_map.keys()), 
                         format_func=lambda x: niveles_map[x], 
                         index=list(niveles_map.keys()).index(idx_z), 
-                        key=f"zmb_{telefono_actual}", 
+                        key=f"zmb_{chat_actual}", 
                         label_visibility="collapsed"
                     )
                     
-                    # Si cambias manualmente la etiqueta a Zombie, se reinicia el reloj
                     if nuevo_nivel != nivel_z:
                         with engine.begin() as conn:
                             tiempo_update = ", ultimo_msg_zombie = NOW()" if nuevo_nivel > 0 else ""
-                            conn.execute(text(f"UPDATE {tabla} SET nivel_zombie = :n {tiempo_update} WHERE telefono = :t"), {"n": nuevo_nivel, "t": telefono_actual})
+                            if es_cliente:
+                                conn.execute(text(f"UPDATE {tabla} SET nivel_zombie = :n {tiempo_update} WHERE id_cliente = :id"), {"n": nuevo_nivel, "id": int(chat_actual)})
+                            else:
+                                conn.execute(text(f"UPDATE {tabla} SET nivel_zombie = :n {tiempo_update} WHERE telefono = :t"), {"n": nuevo_nivel, "t": str(chat_actual)})
                         st.rerun()
 
                 # =========================================
-                # 🚀 MOTOR DE RENDERIZADO UNIFICADO Y OPTIMIZADO
+                # 🚀 MOTOR DE RENDERIZADO
                 # =========================================
                 html_blocks = []
                 imagenes_galeria = []
@@ -376,7 +405,6 @@ def render_chat():
                     hoy = ahora_lima.date()
                     ayer = hoy - timedelta(days=1)
 
-                    # Bucle Único (Procesa HTML y Galería a la vez)
                     for _, m in msgs.iterrows():
                         # --- FECHAS ---
                         try: fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
@@ -413,7 +441,7 @@ def render_chat():
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        # --- PROCESAMIENTO MULTIMEDIA OPTIMIZADO ---
+                        # --- PROCESAMIENTO MULTIMEDIA ---
                         media_html = ""
                         raw_data = m.get('archivo_data')
                         if raw_data is not None and not pd.isna(raw_data):
@@ -430,12 +458,10 @@ def render_chat():
                                     elif b'ftyp' in b[:20]: mime, ext = 'video/mp4', 'mp4'
                                     elif b.startswith(b'%PDF'): mime, ext = 'application/pdf', 'pdf'
 
-                                    # Si es imagen -> Va a la galería Y al chat
                                     if mime.startswith('image/'):
                                         media_html = f"<img src='data:{mime};base64,{b64}' style='max-width: 200px; max-height: 200px; border-radius: 8px; margin-bottom: 5px; object-fit: contain; background: transparent; cursor: default;' />"
                                         fecha_corta = m['fecha'].strftime("%d/%m %H:%M") if pd.notna(m['fecha']) else ""
                                         imagenes_galeria.append({"bytes": b, "caption": fecha_corta})
-                                    # Otros formatos
                                     elif mime.startswith('audio/'): media_html = f"<audio controls style='max-width: 250px; height: 40px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></audio>"
                                     elif mime.startswith('video/'): media_html = f"<video controls style='max-width: 250px; border-radius: 8px; margin-bottom: 5px;'><source src='data:{mime};base64,{b64}' type='{mime}'></video>"
                                     else:
@@ -448,12 +474,14 @@ def render_chat():
                             contenido_str = ""
                         texto_html = f"<div style='white-space: pre-wrap;'>{contenido_str}</div>" if contenido_str.strip() else ""
                         
-                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
+                        # ETIQUETA DEL NÚMERO (Para saber de qué teléfono vino o salió)
+                        tel_label = f"<div style='font-size: 11px; color: {'#6b8e23' if es_mio else '#888'}; margin-bottom: 2px; font-weight: 600; text-align: {'right' if es_mio else 'left'};'>📱 {m['telefono']}</div>"
+
+                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{tel_label}{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
                         html_blocks.append(html_msg)
 
-                    html_blocks.reverse() # Invertir para CSS flex-reverse
+                    html_blocks.reverse()
 
-                # --- RENDERIZAR GALERÍA ---
                 if imagenes_galeria:
                     with st.expander(f"🖼️ Galería de Imágenes ({len(imagenes_galeria)})"):
                         st.caption("Haz click en las flechas de la imagen para ver en pantalla completa.")
@@ -464,7 +492,6 @@ def render_chat():
                 
                 st.divider()
 
-                # --- RENDERIZAR CHAT ---
                 if not msgs.empty:
                     css_y_html = f"""<style>
 .chat-container {{ display: flex; flex-direction: column-reverse; height: 500px; overflow-y: auto; padding: 10px; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 10px; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-color: transparent; }}
@@ -488,7 +515,7 @@ def render_chat():
                 else:
                     st.caption("Inicio de la conversación.")
 
-                # --- INPUT DE ESCRITURA ---
+                # --- INPUT DE ESCRITURA Y SELECTORES ---
                 ultima_sesion = None
                 if not msgs.empty and 'session_name' in msgs.columns:
                     sesiones_validas = msgs['session_name'].dropna().astype(str).str.strip().str.lower()
@@ -496,29 +523,48 @@ def render_chat():
                     if not sesiones_validas.empty:
                         ultima_sesion = sesiones_validas.iloc[-1]
 
-                idx_sesion = 0
-                if ultima_sesion == 'default': idx_sesion = 1
+                idx_sesion = 1 if ultima_sesion == 'default' else 0
+
+                tel_defecto = None
+                msg_recibidos = msgs[msgs['tipo'] == 'ENTRANTE']
+                if not msg_recibidos.empty: tel_defecto = msg_recibidos.iloc[-1]['telefono']
+                elif not msgs.empty: tel_defecto = msgs.iloc[-1]['telefono']
 
                 st.write("") 
-                c_sel, c_warn = st.columns([30, 70])
+                c_num, c_sel, c_warn = st.columns([30, 25, 45])
+                
+                with c_num:
+                    if es_cliente:
+                        with engine.connect() as conn:
+                            lista_tels = pd.read_sql(text("SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE ORDER BY es_principal DESC"), conn, params={"id": int(chat_actual)})['telefono'].tolist()
+                        
+                        if tel_defecto and tel_defecto not in lista_tels: lista_tels.append(tel_defecto)
+                        if not lista_tels: lista_tels = [tel_defecto] if tel_defecto else [chat_actual]
+                        
+                        idx_tel = lista_tels.index(tel_defecto) if tel_defecto in lista_tels else 0
+                        telefono_destino = st.selectbox("Enviar a:", options=lista_tels, index=idx_tel, key=f"dest_{chat_actual}", label_visibility="collapsed")
+                    else:
+                        telefono_destino = tel_defecto or chat_actual
+                        st.text_input("Enviar a:", value=telefono_destino, disabled=True, label_visibility="collapsed")
+
                 with c_sel:
                     sesion_elegida = st.selectbox(
                         "Línea de envío:", 
                         options=["principal", "default"], 
                         index=idx_sesion,
                         format_func=lambda x: "📱 KM (Principal)" if x == "principal" else "👓 LENTES (Default)",
-                        key=f"sess_{telefono_actual}",
+                        key=f"sess_{chat_actual}",
                         label_visibility="collapsed"
                     )
                 with c_warn:
                     if ultima_sesion and ultima_sesion != sesion_elegida:
                         nombre_ult = "KM" if ultima_sesion == 'principal' else "LENTES"
-                        st.markdown(f"<div style='color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; padding: 6px 10px; border-radius: 5px; font-size: 13px; font-weight: bold;'>⚠️ OJO: El último mensaje fue en {nombre_ult}.</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div style='color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; padding: 6px 10px; border-radius: 5px; font-size: 13px; font-weight: bold; margin-top: 1px;'>⚠️ Último msg. por {nombre_ult}.</div>", unsafe_allow_html=True)
 
                 txt = st.chat_input("Escribe un mensaje...")
                 
                 if txt:
-                    ok, res = mandar_mensaje_api(telefono_actual, txt, sesion_elegida)
+                    ok, res = mandar_mensaje_api(telefono_destino, txt, sesion_elegida)
                     if ok:
                         st.rerun()
                     else:

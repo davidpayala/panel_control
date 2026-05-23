@@ -15,7 +15,7 @@ import random
 import time
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import create_engine, text
-from utils import normalizar_telefono_maestro
+from utils import normalizar_telefono_maestro, verificar_numero_waha, enviar_mensaje_whatsapp
 
 def ejecutar_francotirador():
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Despertando Bot de Marketing...")
@@ -78,15 +78,19 @@ def ejecutar_francotirador():
             enviado_exitoso = False
             
             for intento in range(3):
+                # E. BUSCAR CLIENTE IDEAL (Apuntando a la nueva tabla de teléfonos)
                 query_clientes = text("""
-                    SELECT id_cliente, nombre_corto, nombre_ia, telefono 
-                    FROM Clientes 
-                    WHERE activo = TRUE 
-                      AND estado NOT IN ('Sin empezar', 'Proveedor internacional', 'Proveedor nacional')
-                      AND length(telefono) > 6
-                      AND telefono NOT IN (
+                    SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, t.telefono 
+                    FROM clientes c
+                    JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
+                    WHERE c.activo = TRUE 
+                      AND c.estado IN ('Sin empezar')
+                      AND t.activo = TRUE
+                      AND t.es_principal = TRUE
+                      AND length(t.telefono) > 6
+                      AND t.telefono NOT IN (
                           SELECT telefono FROM mensajes 
-                          WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '15 days'
+                          WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days'
                       )
                 """)
                 clientes_validos = conn.execute(query_clientes).fetchall()
@@ -105,29 +109,49 @@ def ejecutar_francotirador():
 
                 telefono_final = norm['db']
                 
-                # F. VERIFICACIÓN JUST-IN-TIME CON WAHA
-                waha_url = os.getenv("WAHA_URL", "").rstrip('/')
-                waha_key = os.getenv("WAHA_KEY", "")
-                headers = {"Content-Type": "application/json"}
-                if waha_key: headers["X-Api-Key"] = waha_key
+                # F. VERIFICACIÓN Y LÓGICA DE RECUPERACIÓN DE CLIENTE (Usando utils.py)
+                print(f"🔎 WAHA: Verificando silenciosamente si {telefono_final} existe...")
+                existe_wsp = verificar_numero_waha(telefono_final)
                 
-                print(f"🔎 WAHA: Verificando silenciosamente si {telefono_final} existe en WhatsApp...")
-                url_check = f"{waha_url}/api/contacts/checkExists"
-                payload_check = {"session": "default", "phone": telefono_final}
-                
-                try:
-                    r_check = requests.post(url_check, json=payload_check, headers=headers, timeout=15)
-                    datos_check = r_check.json()
+                if existe_wsp is False:
+                    print(f"👻 {telefono_final} NO tiene WhatsApp. Buscando alternativa en perfil...")
                     
-                    if not datos_check.get("numberExists", False):
-                        print(f"👻 ¡Fantasma detectado! {telefono_final} NO tiene WhatsApp. Archivando cliente...")
-                        conn.execute(text("UPDATE Clientes SET activo = FALSE, notas = 'Número no existe en WhatsApp' WHERE id_cliente = :idc"), {"idc": cliente.id_cliente})
+                    # Buscamos si existe otro número activo para este cliente
+                    otro_telefono = conn.execute(text("""
+                        SELECT telefono FROM telefonoscliente 
+                        WHERE id_cliente = :idc AND telefono != :t AND activo = TRUE 
+                        LIMIT 1
+                    """), {"idc": cliente.id_cliente, "t": telefono_final}).fetchone()
+                    
+                    if otro_telefono:
+                        nuevo_tel = otro_telefono[0]
+                        print(f"🔄 Alternativa encontrada: {nuevo_tel}. Promoviendo a principal...")
+                        
+                        # 1. Desactivamos el viejo, activamos el nuevo y lo hacemos principal
+                        conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t"), {"t": telefono_final})
+                        conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :idc"), {"idc": cliente.id_cliente})
+                        conn.execute(text("UPDATE telefonoscliente SET es_principal = TRUE WHERE telefono = :nt"), {"nt": nuevo_tel})
+                        
+                        # 2. Actualizamos el teléfono en la tabla clientes (para retrocompatibilidad)
+                        conn.execute(text("UPDATE Clientes SET telefono = :nt WHERE id_cliente = :idc"), {"nt": nuevo_tel, "idc": cliente.id_cliente})
                         conn.commit()
-                        continue  # El número es falso, volvemos arriba a intentar con otro cliente
+                        
+                        # 3. Reintentamos el envío con el nuevo número (el ciclo 'for' actual ya está en el intento, lo ajustamos:)
+                        telefono_final = nuevo_tel
+                        print(f"✅ Número actualizado. Continuando con {telefono_final}...")
                     else:
-                        print("✅ El número existe y es real. Preparando disparo...")
-                except Exception as e:
-                    print(f"⚠️ Error al preguntar a WAHA si el número existe: {e}. Asumiremos que existe por si acaso.")
+                        print(f"💀 No hay más números. Archivando cliente...")
+                        conn.execute(text("UPDATE Clientes SET activo = FALSE, notas = 'Ningún número tiene WhatsApp' WHERE id_cliente = :idc"), {"idc": cliente.id_cliente})
+                        conn.commit()
+                        continue # Saltamos a otro cliente
+                        
+                elif existe_wsp is None:
+                    print("⚠️ Error CRÍTICO de conexión con WAHA al intentar verificar el número.")
+                    print("Abortando intentos para no archivar por error.")
+                    break # Salimos del ciclo para no enviar nada a ciegas
+                    
+                else:
+                    print("✅ El número existe y es real. Preparando disparo...")
 
                 # G. CONSTRUIR EL MENSAJE
                 # Verificamos si existe nombre_ia y que no sea solo espacios
@@ -140,19 +164,13 @@ def ejecutar_francotirador():
                 mensaje_texto = f"{cabecera}\n\n{grupo_elegido.descripcion}\n\n{grupo_elegido.enlace_tienda}"
                 url_img = grupo_elegido.imagenes[0] if (grupo_elegido.imagenes and len(grupo_elegido.imagenes) > 0) else None
 
-                # H. ENVÍO DIRECTO A WAHA
-                if url_img:
-                    payload = {"session": "default", "chatId": f"{telefono_final}@c.us", "file": {"url": url_img}, "caption": mensaje_texto}
-                    endpoint = f"{waha_url}/api/sendImage"
-                else:
-                    payload = {"session": "default", "chatId": f"{telefono_final}@c.us", "text": mensaje_texto}
-                    endpoint = f"{waha_url}/api/sendText"
+                # H. ENVÍO DIRECTO A WAHA (USANDO UTILS)
+                print(f"🚀 Disparando mensaje a {cliente.nombre_corto} ({telefono_final})...")
                 
-                print(f"🚀 Disparando mensaje a {nombre} ({telefono_final})...")
+                # Usamos la navaja suiza de utils.py
+                envio_ok = enviar_mensaje_whatsapp(telefono_final, mensaje_texto, url_img)
                 
-                r = requests.post(endpoint, json=payload, headers=headers, timeout=30)
-                
-                if r.status_code in [200, 201]:
+                if envio_ok:
                     # I. REGISTRAR EN LA BASE DE DATOS
                     conn.execute(text("""
                         INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido) 
@@ -162,10 +180,9 @@ def ejecutar_francotirador():
                     conn.commit()
                     print("✅ ¡Mensaje enviado y registrado en la BD con éxito!")
                     enviado_exitoso = True
-                    break  # Si el envío fue exitoso, rompemos el ciclo 'for' para terminar la tarea de esta hora
+                    break  # Si el envío fue exitoso, rompemos el ciclo 'for'
                 else:
-                    conn.rollback()
-                    print(f"❌ Falló el envío en la API de WhatsApp. Código: {r.status_code}")
+                    print("❌ Falló el envío en la API de WhatsApp.")
                     break
             
             if not enviado_exitoso:

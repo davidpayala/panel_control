@@ -184,21 +184,29 @@ def obtener_perfil_waha(telefono):
     except: pass
     return None
 
-def enviar_mensaje_whatsapp(telefono, mensaje, session="default"):
-    """Envía texto simple (Campañas y Notificaciones)"""
+def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default"):
+    """Envía texto simple o imagen con texto (Campañas y Notificaciones)"""
     if not WAHA_URL: return False
     try:
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return False
         
-        url = f"{WAHA_URL.rstrip('/')}/api/sendText"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
-        payload = {"session": session, "chatId": norm['waha'], "text": mensaje}
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        # Lógica inteligente: ¿Tiene imagen o es solo texto?
+        if url_imagen:
+            url = f"{WAHA_URL.rstrip('/')}/api/sendImage"
+            payload = {"session": session, "chatId": norm['waha'], "file": {"url": url_imagen}, "caption": mensaje}
+        else:
+            url = f"{WAHA_URL.rstrip('/')}/api/sendText"
+            payload = {"session": session, "chatId": norm['waha'], "text": mensaje}
+            
+        r = requests.post(url, json=payload, headers=headers, timeout=15)
         return r.status_code in [200, 201]
-    except: return False
+    except Exception as e:
+        print(f"⚠️ Error al enviar WSP (utils): {e}")
+        return False
 
 def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_type, session="default"):
     """Envía archivos adjuntos (Campañas)"""
@@ -231,39 +239,43 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
         print(f"Error media: {e}")
         return False
 
-# 🚀 LA FUNCIÓN QUE FALTABA
+# 🚀 FUNCION PARA VERIFICAR EL NUMERO WSP SI EXISTE
 def verificar_numero_waha(telefono):
     """
-    Verifica si el número tiene WhatsApp activo.
-    Prueba en la sesión 'default' y 'principal' por seguridad.
+    Verifica si el número tiene WhatsApp activo usando WAHA.
+    Retorna True (existe), False (no existe), o None (error de conexión).
     """
-    if not WAHA_URL: return False
+    if not WAHA_URL: return None
+    
     try:
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return False
         
+        url = f"{WAHA_URL.rstrip('/')}/api/contacts/check-exists"
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+        
         # Probamos en ambas sesiones por si acaso
         for sesion in ['default', 'principal']:
             try:
-                url = f"{WAHA_URL.rstrip('/')}/api/{sesion}/contacts/check-exists"
-                headers = {"Content-Type": "application/json"}
-                if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-                
-                payload = {"chatId": norm['waha']}
-                r = requests.post(url, json=payload, headers=headers, timeout=5)
+                # Usamos GET y params (como aprendimos del bot de marketing)
+                params = {"session": sesion, "phone": norm['db']}
+                r = requests.get(url, params=params, headers=headers, timeout=15)
                 
                 if r.status_code == 200:
                     data = r.json()
-                    # Si existe en alguna sesión, retornamos True
-                    if data.get('exists', False):
-                        return True
-            except:
-                continue
+                    # Retornamos directamente lo que diga WAHA (True o False)
+                    return data.get('numberExists', False)
+            except Exception as e:
+                print(f"⚠️ WAHA Error en sesión '{sesion}': {e}")
+                continue # Si esta sesión falla, intenta con la siguiente
                 
-        return False
-    except:
-        return False
-
+        # Si el bucle termina y fallaron todas las sesiones, hay error de conexión
+        return None
+        
+    except Exception as e:
+        print(f"🔥 Error general en verificar_numero_waha: {e}")
+        return None
 # ==============================================================================
 # 🤖 4. FUNCIONES DE INTELIGENCIA ARTIFICIAL
 # ==============================================================================
