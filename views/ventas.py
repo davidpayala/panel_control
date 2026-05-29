@@ -8,14 +8,13 @@ import os
 import threading
 from utils import sync_woo_background
 
-# Asegurar que la columna 'anulado' exista en la base de datos
+# Asegurar que existan las columnas necesarias en la base de datos
 try:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE Ventas ADD COLUMN IF NOT EXISTS anulado BOOLEAN DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS id_etapa INTEGER"))
 except:
     pass
-
-
 
 def render_ventas():
     tab_nueva, tab_historial = st.tabs(["🛒 Nueva Venta / Salida", "📜 Historial y Anulaciones"])
@@ -29,7 +28,6 @@ def render_ventas():
 def render_nueva_venta():
     # --- FUNCIÓN AUXILIAR LOCAL ---
     def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
-        # Buscar si ya existe para sumar cantidad
         for item in st.session_state.carrito:
             if item['sku'] == sku and sku is not None:
                 if es_inventario and (item['cantidad'] + cantidad) > stock_max:
@@ -124,7 +122,6 @@ def render_nueva_venta():
         if len(st.session_state.carrito) > 0:
             df_cart = pd.DataFrame(st.session_state.carrito)
             
-            # Editor interactivo
             edited_cart = st.data_editor(
                 df_cart,
                 column_config={
@@ -141,7 +138,6 @@ def render_nueva_venta():
                 key="editor_carrito"
             )
 
-            # Sincronización automática de cambios al session_state
             edited_cart['subtotal'] = edited_cart['cantidad'] * edited_cart['precio']
             st.session_state.carrito = edited_cart.to_dict('records')
             
@@ -159,16 +155,39 @@ def render_nueva_venta():
             if modo_operacion == "💰 Venta":
                 st.markdown(f"**Subtotal Items:** S/ {suma_subtotal:.2f}")
 
+                # --- FILTRO POR GRUPO DE ETAPA ---
                 with engine.connect() as conn:
-                    cli_df = pd.read_sql(text("SELECT id_cliente, nombre_corto FROM Clientes WHERE activo = TRUE ORDER BY nombre_corto"), conn)
+                    grupos_df = pd.read_sql(text("SELECT DISTINCT grupo FROM EtapasCliente WHERE activo = TRUE ORDER BY grupo"), conn)
+                
+                lista_grupos = ["Todos"] + grupos_df['grupo'].tolist()
+                idx_default = lista_grupos.index("Etapa 2") if "Etapa 2" in lista_grupos else 0
+                
+                col_g, col_c = st.columns(2)
+                grupo_sel = col_g.selectbox("Filtrar por Grupo:", options=lista_grupos, index=idx_default)
+
+                with engine.connect() as conn:
+                    if grupo_sel == "Todos":
+                        query_clientes = text("SELECT id_cliente, nombre_corto FROM Clientes WHERE activo = TRUE ORDER BY nombre_corto")
+                        cli_df = pd.read_sql(query_clientes, conn)
+                    else:
+                        query_clientes = text("""
+                            SELECT c.id_cliente, c.nombre_corto 
+                            FROM Clientes c
+                            JOIN EtapasCliente e ON c.id_etapa = e.id_etapa
+                            WHERE c.activo = TRUE AND e.grupo = :grupo
+                            ORDER BY c.nombre_corto
+                        """)
+                        cli_df = pd.read_sql(query_clientes, conn, params={"grupo": grupo_sel})
+
                 lista_cli = {row['nombre_corto']: row['id_cliente'] for i, row in cli_df.iterrows()}
                 
                 if not lista_cli:
-                    st.error("No hay clientes. Crea uno en la pestaña Clientes.")
+                    col_c.warning(f"No hay clientes en {grupo_sel}.")
                     st.stop()
 
-                nombre_cli = st.selectbox("Cliente:", options=list(lista_cli.keys()))
+                nombre_cli = col_c.selectbox("Cliente:", options=list(lista_cli.keys()))
                 id_cliente = lista_cli[nombre_cli]
+                # ---------------------------------
 
                 col_e1, col_e2 = st.columns(2)
                 tipo_envio = col_e1.selectbox("Método Envío", ["Gratis", "🚚 Envío Lima", "Express (Moto)", "Agencia (Pago Destino)", "Agencia (Pagado)"])
@@ -295,10 +314,8 @@ def render_nueva_venta():
                             
                             trans.commit()
                         
-                        # --- NUEVO: Disparar sincronización en 2do plano ---
                         skus_vendidos = [item["sku"] for item in st.session_state.carrito]
                         threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
-                        # ---------------------------------------------------
 
                         st.balloons()
                         st.success(f"¡Venta #{id_venta} registrada!")
@@ -337,10 +354,8 @@ def render_nueva_venta():
                                     items_procesados += 1
                             trans.commit()
 
-                        # --- NUEVO: Disparar sincronización en 2do plano ---
                         skus_vendidos = [item["sku"] for item in st.session_state.carrito]
                         threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
-                        # ---------------------------------------------------
 
                         if items_procesados > 0:
                             st.success(f"✅ ¡Salida registrada! ({items_procesados} productos actualizados)")
@@ -371,7 +386,6 @@ def render_gestion_ventas():
         st.info("No hay ventas registradas.")
         return
 
-    # Formatear opciones para el selector
     opciones = df_ventas.apply(
         lambda row: f"#{row['id_venta']} | {row['fecha_venta'].strftime('%d/%m/%Y %H:%M') if pd.notnull(row['fecha_venta']) else ''} | {row['cliente']} | S/ {row['total_venta']} {'(❌ ANULADA)' if row['anulado'] else ''}", 
         axis=1
@@ -417,12 +431,9 @@ def render_gestion_ventas():
                             })
                     trans.commit()
 
-                    # --- CORRECCIÓN: Disparar sincronización por anulación de venta ---
-                    # Extraemos los SKUs directamente del DataFrame 'detalles' de esa boleta
                     skus_anulados = [item['sku'] for idx, item in detalles.iterrows() if item['es_inventario']]
                     if skus_anulados:
                         threading.Thread(target=sync_woo_background, args=(skus_anulados,)).start()
-                    # ------------------------------------------------------------------
 
                     st.success("✅ Venta anulada y stock restaurado correctamente.")
                     time.sleep(2)

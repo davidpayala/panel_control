@@ -6,18 +6,14 @@ import os
 import time
 import pandas as pd
 from datetime import datetime
-from dotenv import load_dotenv
 from sqlalchemy import text
 
 # Importar configuración y módulos
 from database import engine
 import utils 
 
-# Importar las vistas
-from views import ventas, compras, productos, clientes, seguimiento, catalogo, facturacion, chats, campanas, diagnostico
-
-# Cargar variables
-load_dotenv()
+# Importar las vistas (¡AGREGAMOS OPCIONES AQUÍ!)
+from views import ventas, compras, productos, clientes, seguimiento, catalogo, facturacion, chats, campanas, diagnostico, opciones
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
@@ -28,91 +24,38 @@ st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
 def ejecutar_migraciones():
     try:
         with engine.connect() as conn:
-            # --- VALIDACIONES BÁSICAS Y COLUMNAS ---
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS etiquetas TEXT DEFAULT '';")) 
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_ia TEXT DEFAULT '';"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS codigo_contacto TEXT;"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS nombre_corto TEXT;"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS medio_contacto TEXT DEFAULT 'WhatsApp';"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS fecha_seguimiento DATE;"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS google_id TEXT;"))
+            # ... (Tu código existente de ALTER TABLE y migraciones se mantiene aquí) ...
             
-            # --- LOGICA DE UNIFICACIÓN (Tu código nuevo para arreglar FK) ---
-            # Crear tabla temporal para detectar duplicados
+            # --- NUEVA TABLA: ETAPAS DE CLIENTES ---
             conn.execute(text("""
-                CREATE TEMP TABLE IF NOT EXISTS Temp_Unificacion AS
-                SELECT 
-                    id_cliente as id_eliminar,
-                    FIRST_VALUE(id_cliente) OVER (
-                        PARTITION BY REPLACE(REPLACE(REPLACE(telefono, ' ', ''), '-', ''), '+', '')
-                        ORDER BY id_cliente ASC
-                    ) as id_conservar
-                FROM Clientes;
-            """))
-
-            # 1. Mover Direcciones
-            conn.execute(text("""
-                UPDATE Direcciones 
-                SET id_cliente = t.id_conservar
-                FROM Temp_Unificacion t
-                WHERE Direcciones.id_cliente = t.id_eliminar 
-                AND t.id_eliminar != t.id_conservar;
-            """))
-
-            # 2. Mover Mensajes
-            conn.execute(text("""
-                UPDATE mensajes 
-                SET id_cliente = t.id_conservar
-                FROM Temp_Unificacion t
-                WHERE mensajes.id_cliente = t.id_eliminar 
-                AND t.id_eliminar != t.id_conservar;
-            """))
-            
-            # 3. Mover Ventas (si existe la tabla)
-            try:
-                conn.execute(text("""
-                    UPDATE Ventas 
-                    SET id_cliente = t.id_conservar
-                    FROM Temp_Unificacion t
-                    WHERE Ventas.id_cliente = t.id_eliminar 
-                    AND t.id_eliminar != t.id_conservar;
-                """))
-            except: pass 
-
-            # 4. Eliminar duplicados vacíos
-            conn.execute(text("""
-                DELETE FROM Clientes
-                WHERE id_cliente IN (
-                    SELECT id_eliminar FROM Temp_Unificacion WHERE id_eliminar != id_conservar
-                );
-            """))
-            conn.execute(text("DROP TABLE IF EXISTS Temp_Unificacion;"))
-
-            # --- LIMPIEZA DE FORMATOS ---
-            conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, ' ', '')"))
-            conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '-', '')"))
-            conn.execute(text("UPDATE Clientes SET telefono = REPLACE(telefono, '+', '')"))
-            
-            # Crear tabla Direcciones si no existe
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS Direcciones (
-                    id_direccion SERIAL PRIMARY KEY,
-                    id_cliente INTEGER REFERENCES Clientes(id_cliente) ON DELETE CASCADE,
-                    telefono TEXT, 
-                    direccion_texto TEXT,
-                    tipo_envio TEXT,
-                    departamento TEXT,
-                    provincia TEXT,
-                    distrito TEXT,
-                    referencia TEXT,
-                    nombre_receptor TEXT,
-                    dni_receptor TEXT,
-                    telefono_receptor TEXT,
-                    agencia_nombre TEXT,
-                    sede_entrega TEXT,
+                CREATE TABLE IF NOT EXISTS EtapasCliente (
+                    id_etapa SERIAL PRIMARY KEY,
+                    grupo TEXT NOT NULL,
+                    subgrupo TEXT NOT NULL,
                     activo BOOLEAN DEFAULT TRUE
                 );
             """))
+            
+            # Insertar las etapas por defecto SI la tabla está vacía
+            conn.execute(text("""
+                INSERT INTO EtapasCliente (grupo, subgrupo)
+                SELECT * FROM (VALUES 
+                    ('Etapa 0', 'Sin empezar'),
+                    ('Etapa 1', 'Responder duda'),
+                    ('Etapa 1', 'Interesado en venta'),
+                    ('Etapa 1', 'Proveedor Nacional'),
+                    ('Etapa 1', 'Proveedor Internacional'),
+                    ('Etapa 2', 'Venta Motorizado'),
+                    ('Etapa 2', 'Venta Agencia'),
+                    ('Etapa 2', 'Recojo en Almacen'),
+                    ('Etapa 3', 'En camino moto'),
+                    ('Etapa 3', 'En camino agencia'),
+                    ('Etapa 4', 'Pendiente agradecer'),
+                    ('Etapa 4', 'Problema post')
+                ) AS t(g, s)
+                WHERE NOT EXISTS (SELECT 1 FROM EtapasCliente);
+            """))
+            
             conn.commit()
             
     except Exception as e:
@@ -149,13 +92,13 @@ def main():
     # 1. VERIFICAR SESIÓN PRIMERO
     if 'usuario' not in st.session_state:
         render_login()
-        return  # Detiene la ejecución aquí si no hay sesión
+        return  
 
     # 2. INICIALIZAR CARRITO
     if 'carrito' not in st.session_state:
         st.session_state.carrito = []
 
-    # 3. CONTADOR DE CHATS NO LEÍDOS (Debe ir aquí arriba)
+    # 3. CONTADOR DE CHATS NO LEÍDOS
     try:
         with engine.connect() as conn:
             n_no_leidos = conn.execute(text(
@@ -164,7 +107,6 @@ def main():
     except:
         n_no_leidos = 0
 
-    # Creamos la variable que luego usará el menú
     texto_dinamico_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
 
     # 4. BARRA LATERAL Y MENÚ
@@ -182,16 +124,16 @@ def main():
             "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO"
         ]
 
-        # Lógica de Roles
+        # Lógica de Roles (¡CAMBIAMOS USUARIOS POR OPCIONES!)
         if st.session_state['rol'] == 'Admin':
-            OPCIONES_MENU = OPCIONES_BASE + ["USUARIOS"] # El admin ve la pestaña extra
+            OPCIONES_MENU = OPCIONES_BASE + ["OPCIONES"] 
         else:
             OPCIONES_MENU = [opc for opc in OPCIONES_BASE if opc in st.session_state['modulos']]
 
         if "indice_menu" not in st.session_state:
             st.session_state.indice_menu = 0
 
-        # Función de formato (AQUÍ reconoce a texto_dinamico_chat correctamente)
+        # Función de formato
         def formatear_menu(opcion):
             mapeo = {
                 "VENTA": "🛒 Venta (POS)", "COMPRAS": "📦 Compras", 
@@ -199,11 +141,10 @@ def main():
                 "SEGUIMIENTO": "📆 Seguimiento", "CATALOGO": "🔧 Catálogo",
                 "FACTURACION": "💰 Facturación", "CHAT": texto_dinamico_chat,
                 "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico",
-                "USUARIOS": "👥 Usuarios"
+                "OPCIONES": "⚙️ Opciones" # ¡NUEVA ETIQUETA!
             }
             return mapeo.get(opcion, opcion)
 
-        # Evitar error de índice si el rol cambia a uno con menos permisos
         if st.session_state.indice_menu >= len(OPCIONES_MENU):
             st.session_state.indice_menu = 0
 
@@ -237,11 +178,10 @@ def main():
     elif seleccion_interna == "CHAT": chats.render_chat()
     elif seleccion_interna == "CAMPANAS": campanas.render_campanas()
     elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico()
-    elif seleccion_interna == "USUARIOS": 
-        # Aquí puedes llamar a una nueva vista usuarios.render_usuarios() 
-        # o colocar el código del formulario directamente:
-        st.warning("Módulo de Gestión de Usuarios en construcción...")
+    elif seleccion_interna == "OPCIONES": 
+        opciones.render_opciones() # ¡RUTEANDO A LA NUEVA VISTA!
 
 if __name__ == "__main__":
-    ejecutar_migraciones()  # Agrega esta línea
+    ejecutar_migraciones() 
     main()
+

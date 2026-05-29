@@ -33,6 +33,7 @@ def aplicar_parche_db():
     try:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS whatsapp_internal_id VARCHAR(150)"))
+            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS id_etapa INTEGER"))
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
             conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS session_name VARCHAR(50)"))
             conn.execute(text("""
@@ -78,19 +79,15 @@ def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
         return image_bytes
 
     try:
-        # Abrir la imagen desde los bytes en memoria
         img = Image.open(io.BytesIO(image_bytes))
         formato = img.format
         
-        # Solo comprimir si es un formato de imagen soportado
         if formato not in ['JPEG', 'PNG', 'WEBP']:
             return image_bytes
 
-        # Reducir dimensiones al 50%
         nuevo_ancho = int(img.width * 0.5)
         nuevo_alto = int(img.height * 0.5)
         
-        # Usar LANCZOS para mantener la calidad al redimensionar (en versiones nuevas de Pillow)
         try:
             resample_filter = Image.Resampling.LANCZOS
         except AttributeError:
@@ -98,19 +95,15 @@ def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
             
         img = img.resize((nuevo_ancho, nuevo_alto), resample_filter)
 
-        # Guardar la imagen comprimida en memoria
         output = io.BytesIO()
         if formato == 'PNG':
-            # Convertir a RGB si es PNG con paleta para evitar errores de guardado, o simplemente guardar optimizado
             img.save(output, format='PNG', optimize=True)
         else:
-            # Para JPEG y WEBP, bajar calidad al 70%
             img.save(output, format=formato, quality=70, optimize=True)
 
         return output.getvalue()
     except Exception as e:
         log_error(f"Error al comprimir imagen: {e}")
-        # Si falla la compresión, devolvemos None para que no intente guardar un archivo > 2MB y rompa la BD
         return None
     
 # ==============================================================================
@@ -135,23 +128,19 @@ def obtener_telefono_local(payload):
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
         
-        # 1. NOVEDAD: CAMPOS EXCLUSIVOS DE LLAMADAS DESCONOCIDAS
         call_creator = payload.get('callCreator') or _data.get('callCreator') or payload.get('peerJid')
         if call_creator and isinstance(call_creator, str) and ('@s.whatsapp.net' in call_creator or '@c.us' in call_creator):
             return call_creator.split('@')[0]
 
-        # 2. Prioridad: remoteJidAlt
         alt = key.get('remoteJidAlt')
         if alt and isinstance(alt, str) and ('@s.whatsapp.net' in alt or '@c.us' in alt):
             return alt.split('@')[0]
 
-        # 3. Candidatos estándar
         candidatos = [payload.get('from'), payload.get('to'), key.get('remoteJid'), payload.get('participant')]
         for c in candidatos:
             if c and isinstance(c, str) and ('@s.whatsapp.net' in c or '@c.us' in c):
                 return c.split('@')[0]
         
-        # 4. User ID puro
         user_id = _data.get('id', {}).get('user')
         if user_id and str(user_id).isdigit(): return str(user_id)
         
@@ -177,12 +166,12 @@ def resolver_telefono_api(lid, session):
     return None
 
 # ==============================================================================
-# 🚀 WEBHOOK PRINCIPAL V51
+# 🚀 WEBHOOK PRINCIPAL V52 (Sincronización Total)
 # ==============================================================================
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V51 (Call Finder) ✅", 200
+    return "Webhook V52 (Phone Sinker) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -237,7 +226,6 @@ def recibir_mensaje():
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
             
-            # --- NUEVA LÍNEA PARA COMPRIMIR ---
             if archivo_bytes:
                 archivo_bytes = comprimir_imagen_waha(archivo_bytes)
                 
@@ -269,7 +257,11 @@ def recibir_mensaje():
                                 id_cliente_final = cliente_lid.id_cliente
                             else:
                                 try:
-                                    res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
+                                    res = conn.execute(text("""
+                                        INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, id_etapa, activo, fecha_registro) 
+                                        VALUES (:lid, :t, :n, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                        RETURNING id_cliente
+                                    """), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
                                     id_cliente_final = res.id_cliente
                                 except Exception as e:
                                     if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
@@ -303,17 +295,25 @@ def recibir_mensaje():
                                     id_cliente_final = cliente_tel_api.id_cliente
                                 else:
                                     try:
-                                        res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "t": final_tel, "n": push_name}).fetchone()
+                                        res = conn.execute(text("""
+                                            INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, id_etapa, activo, fecha_registro) 
+                                            VALUES (:lid, :t, :n, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                            RETURNING id_cliente
+                                        """), {"lid": wspid_lid, "t": final_tel, "n": push_name}).fetchone()
                                         id_cliente_final = res.id_cliente
                                     except Exception as e:
                                         if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": final_tel}).scalar()
                                         else: raise e
                             else:
-                                fake = f"LID_{wspid_lid.split('@')[0]}"
-                                try:
-                                    res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:lid, :f, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"lid": wspid_lid, "f": fake, "n": push_name}).fetchone()
-                                    id_cliente_final = res.id_cliente
-                                except: id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id=:lid"), {"lid": wspid_lid}).scalar()
+                                    fake = f"LID_{wspid_lid.split('@')[0]}"
+                                    try:
+                                        res = conn.execute(text("""
+                                            INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, id_etapa, activo, fecha_registro) 
+                                            VALUES (:lid, :f, :n, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                            RETURNING id_cliente
+                                        """), {"lid": wspid_lid, "f": fake, "n": push_name}).fetchone()
+                                        id_cliente_final = res.id_cliente
+                                    except: id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id=:lid"), {"lid": wspid_lid}).scalar()
 
                     # CASO C
                     elif telefono_num and not wspid_lid:
@@ -324,16 +324,28 @@ def recibir_mensaje():
                         else:
                             fallback_id = payload.get('from')
                             try:
-                                res = conn.execute(text("INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, activo, fecha_registro) VALUES (:wid, :t, :n, 'Sin empezar', TRUE, NOW()) RETURNING id_cliente"), {"wid": fallback_id, "t": telefono_num, "n": push_name}).fetchone()
+                                res = conn.execute(text("""
+                                    INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, id_etapa, activo, fecha_registro) 
+                                    VALUES (:wid, :t, :n, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                    RETURNING id_cliente
+                                """), {"wid": fallback_id, "t": telefono_num, "n": push_name}).fetchone()
                                 id_cliente_final = res.id_cliente
                             except Exception as e:
                                 if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
                                 else: raise e
 
-                    # GUARDADO
+                    # GUARDADO Y SINCRONIZACIÓN CON TABLA SECUNDARIA
                     if id_cliente_final:
-                        t_msg = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente = :id"), {"id": id_cliente_final}).scalar()
+                        t_msg = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente = :id"), {"id": int(id_cliente_final)}).scalar()
                         if not t_msg: t_msg = "DESCONOCIDO"
+
+                        # --- GARANTIZAR QUE EL TELÉFONO EXISTA EN LA TABLA SECUNDARIA ---
+                        if t_msg and not str(t_msg).startswith("LID_") and t_msg != "DESCONOCIDO":
+                            tel_existe = conn.execute(text("SELECT 1 FROM telefonoscliente WHERE id_cliente = :id AND telefono = :t AND activo = TRUE"), {"id": int(id_cliente_final), "t": t_msg}).scalar()
+                            if not tel_existe:
+                                conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                                conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :t, TRUE)"), {"id": int(id_cliente_final), "t": t_msg})
+                        # ----------------------------------------------------------------
 
                         existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                         if not existe:
@@ -350,20 +362,15 @@ def recibir_mensaje():
                         if tipo_msg == 'ENTRANTE':
                             texto_limpio = body.strip().lower()
                             
-                            # 1. Si manda archivo/imagen, se quita la etiqueta
                             if archivo_bytes or "archivo multimedia" in texto_limpio:
-                                conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": id_cliente_final})
+                                conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                             else:
-                                # 2. Buscar si el texto coincide exactamente con alguna frase clave
                                 es_clave = conn.execute(text("SELECT 1 FROM respuestas_automaticas WHERE LOWER(frase_clave) = :t LIMIT 1"), {"t": texto_limpio}).scalar()
                                 
                                 if es_clave:
-                                    # Pasa a Espera Nivel 1 y reinicia el contador de tiempo
-                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = (NOW() - INTERVAL '5 hours') WHERE id_cliente = :id"), {"id": id_cliente_final})
+                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = (NOW() - INTERVAL '5 hours') WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                 else:
-                                    # Si escribe otra cosa distinta, sale del estado zombie
-                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": id_cliente_final})
-                        # ----------------------------------
+                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
             except Exception as e:
                 log_error(f"🔥 Error DB: {e}")
 

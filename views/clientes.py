@@ -5,7 +5,8 @@ from database import engine
 from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_maestro, generar_nombre_ia
 import time
 
-ESTADOS_CLIENTE = [
+# Lista de respaldo en caso de que la tabla esté vacía o falle la conexión
+ESTADOS_CLIENTE_FALLBACK = [
     "Sin empezar", "Responder duda", "Interesado en venta", 
     "Proveedor nacional", "Proveedor internacional", 
     "Venta motorizado", "Venta agencia", "Venta express moto", 
@@ -33,8 +34,8 @@ def render_herramienta_fusion():
                     mapa_wids = dict(zip(opciones, df['whatsapp_internal_id']))
 
                     c1, c2 = st.columns(2)
-                    with c1: sel_keep = st.selectbox("✅ Cliente a CONSERVAR (Destino)", opciones, key="fusion_keep")
-                    with c2: sel_del = st.selectbox("❌ Cliente a ELIMINAR (Origen con teléfono secundario)", opciones, key="fusion_del")
+                    sel_keep = st.selectbox("✅ Cliente a CONSERVAR (Destino)", opciones, key="fusion_keep")
+                    sel_del = st.selectbox("❌ Cliente a ELIMINAR (Origen con teléfono secundario)", opciones, key="fusion_del")
 
                     if sel_keep and sel_del:
                         id_keep = mapa_ids[sel_keep]
@@ -50,7 +51,6 @@ def render_herramienta_fusion():
                                 with st.spinner("Fusionando..."):
                                     try:
                                         with engine.begin() as tx:
-                                            # Migrar todos los teléfonos al nuevo dueño (pasan a ser secundarios)
                                             tx.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
                                             tx.execute(text("UPDATE ventas SET id_cliente = :new WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
                                             tx.execute(text("UPDATE direcciones SET id_cliente = :new WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
@@ -69,6 +69,20 @@ def render_herramienta_fusion():
 # RENDERIZADO PRINCIPAL
 # ==============================================================================
 def render_clientes():
+    # --- CARGA DINÁMICA DE ESTADOS DESDE LA BASE DE DATOS ---
+    try:
+        with engine.connect() as conn:
+            df_etapas = pd.read_sql(text("SELECT id_etapa, subgrupo FROM EtapasCliente WHERE activo = TRUE ORDER BY grupo, id_etapa"), conn)
+        if not df_etapas.empty:
+            estados_opciones = df_etapas['subgrupo'].tolist()
+            mapa_subgrupo_id = dict(zip(df_etapas['subgrupo'], df_etapas['id_etapa']))
+        else:
+            estados_opciones = ESTADOS_CLIENTE_FALLBACK
+            mapa_subgrupo_id = {}
+    except Exception as e:
+        estados_opciones = ESTADOS_CLIENTE_FALLBACK
+        mapa_subgrupo_id = {}
+
     st.title("👤 Gestión de Clientes")
     render_herramienta_fusion()
 
@@ -78,7 +92,7 @@ def render_clientes():
             c1, c2, c3 = st.columns([2, 2, 2])
             nuevo_tel = c1.text_input("Teléfono Principal (Obligatorio)")
             nuevo_alias = c2.text_input("Alias / Nombre Corto")
-            nuevo_estado = c3.selectbox("Estado Inicial", options=ESTADOS_CLIENTE, index=0)
+            nuevo_estado = c3.selectbox("Estado Inicial", options=estados_opciones, index=0)
 
             nuevas_etiquetas = st.text_input("Etiquetas (Separadas por coma)")
             vincular_google = st.checkbox("🔍 Intentar vincular con Google Contactos", value=True)
@@ -107,13 +121,15 @@ def render_clientes():
                         if not nuevo_alias: nuevo_alias = "Cliente Nuevo"
                         nombre_ia = generar_nombre_ia(nuevo_alias, g_nom or "")
 
+                        id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
+
                         try:
                             with engine.begin() as conn:
                                 res = conn.execute(text("""
-                                    INSERT INTO clientes (nombre_corto, estado, etiquetas, google_id, nombre, apellido, nombre_ia, telefono, activo, fecha_registro)
-                                    VALUES (:nc, :e, :et, :gid, :n, :a, :nia, :t, TRUE, NOW())
+                                    INSERT INTO clientes (nombre_corto, estado, id_etapa, etiquetas, google_id, nombre, apellido, nombre_ia, telefono, activo, fecha_registro)
+                                    VALUES (:nc, :e, :id_etapa, :et, :gid, :n, :a, :nia, :t, TRUE, NOW())
                                     RETURNING id_cliente
-                                """), {"nc": nuevo_alias, "e": nuevo_estado, "et": nuevas_etiquetas, "gid": g_id, "n": g_nom, "a": g_ape, "nia": nombre_ia, "t": tel_db})
+                                """), {"nc": nuevo_alias, "e": nuevo_estado, "id_etapa": id_etapa_val, "et": nuevas_etiquetas, "gid": g_id, "n": g_nom, "a": g_ape, "nia": nombre_ia, "t": tel_db})
                                 nuevo_id = res.fetchone()[0]
 
                                 conn.execute(text("""
@@ -167,7 +183,7 @@ def render_clientes():
                 "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
                 "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                 "nombre_corto": st.column_config.TextColumn("Alias", width="medium"),
-                "estado": st.column_config.SelectboxColumn("Estado", options=ESTADOS_CLIENTE, width="medium"),
+                "estado": st.column_config.SelectboxColumn("Estado", options=estados_opciones, width="medium"),
                 "tel_principal": st.column_config.TextColumn("Telf. Principal", disabled=True),
                 "todos_telefonos": st.column_config.TextColumn("Todos los Teléfonos", disabled=True, width="large"),
                 "nombre": None, "apellido": None, "google_id": None, "whatsapp_internal_id": None, "etiquetas": None
@@ -178,8 +194,9 @@ def render_clientes():
         if st.button("💾 Guardar Cambios Rápidos"):
             with engine.begin() as conn:
                 for idx, row in edited_df.iterrows():
-                    conn.execute(text("UPDATE clientes SET nombre_corto=:nc, estado=:est WHERE id_cliente=:id"),
-                                 {"nc": row['nombre_corto'], "est": row['estado'], "id": row['id_cliente']})
+                    id_etapa_val = mapa_subgrupo_id.get(row['estado'])
+                    conn.execute(text("UPDATE clientes SET nombre_corto=:nc, estado=:est, id_etapa=:id_etapa WHERE id_cliente=:id"),
+                                 {"nc": row['nombre_corto'], "est": row['estado'], "id_etapa": id_etapa_val, "id": row['id_cliente']})
             st.success("Cambios guardados.")
             time.sleep(1)
             st.rerun()
@@ -200,7 +217,7 @@ def render_clientes():
                     c1, c2 = st.columns(2)
                     new_nombre = c1.text_input("Alias Original", value=row_full['nombre_corto'] or "")
                     curr_est = row_full['estado']
-                    new_estado = c2.selectbox("Estado", options=ESTADOS_CLIENTE, index=ESTADOS_CLIENTE.index(curr_est) if curr_est in ESTADOS_CLIENTE else 0)
+                    new_estado = c2.selectbox("Estado", options=estados_opciones, index=estados_opciones.index(curr_est) if curr_est in estados_opciones else 0)
 
                     st.caption("Google Contacts (Bloqueado, usa sincronización)")
                     c3, c4 = st.columns(2)
@@ -209,10 +226,11 @@ def render_clientes():
                     new_etiquetas = st.text_area("Etiquetas / Notas", value=row_full['etiquetas'] or "")
 
                     if st.form_submit_button("💾 Guardar Datos"):
+                        id_etapa_val = mapa_subgrupo_id.get(new_estado)
                         with engine.begin() as conn:
                             conn.execute(text("""
-                                UPDATE clientes SET nombre_corto=:nc, etiquetas=:e, estado=:est WHERE id_cliente=:id
-                            """), {"nc": new_nombre, "e": new_etiquetas, "est": new_estado, "id": id_cli_sel})
+                                UPDATE clientes SET nombre_corto=:nc, etiquetas=:e, estado=:est, id_etapa=:id_etapa WHERE id_cliente=:id
+                            """), {"nc": new_nombre, "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "id": id_cli_sel})
                         st.success("Guardado.")
                         time.sleep(1)
                         st.rerun()
@@ -261,7 +279,6 @@ def render_clientes():
                         norm_t = normalizar_telefono_maestro(new_tel)
                         if norm_t:
                             with engine.connect() as conn:
-                                # CORRECCIÓN INTELIGENTE: Busca quién es el dueño del número actual en lugar de tirar un error genérico
                                 ex = conn.execute(text("""
                                     SELECT c.id_cliente, c.nombre_corto 
                                     FROM telefonoscliente t

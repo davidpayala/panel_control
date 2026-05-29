@@ -5,6 +5,13 @@ from sqlalchemy import text
 from database import engine
 from datetime import datetime, timedelta
 
+# Lista de respaldo por seguridad si la base de datos está vacía
+ESTADOS_FALLBACK = [
+    "Sin empezar", "Responder duda", "Interesado en venta", "Proveedor nacional", 
+    "Proveedor internacional", "Venta motorizado", "Venta agencia", "Venta express moto", 
+    "En camino moto", "En camino agencia", "Contraentrega agencia", "Pendiente agradecer", "Problema post"
+]
+
 def render_seguimiento():
     # CSS para ajustar altura de filas
     st.markdown("""
@@ -19,24 +26,36 @@ def render_seguimiento():
     c_titulo, c_refresh = st.columns([4, 1])
     c_titulo.subheader("🎯 Tablero de Seguimiento Logístico")
     
-    # BOTÓN MANUAL DE RECARGA (Para evitar auto-refresco molesto)
+    # BOTÓN MANUAL DE RECARGA
     if c_refresh.button("🔄 Recargar Datos"):
         if 'df_seguimiento_cache' in st.session_state:
             del st.session_state['df_seguimiento_cache']
         st.rerun()
 
-    # --- 1. CONFIGURACIÓN ---
-    ETAPAS = {
-        "ETAPA_0": ["Sin empezar"],
-        "ETAPA_1": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
-        "ETAPA_2": ["Venta motorizado", "Venta agencia", "Venta express moto"],
-        "ETAPA_3": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
-        "ETAPA_4": ["Pendiente agradecer", "Problema post"]
-    }
-    TODOS_LOS_ESTADOS = [e for lista in ETAPAS.values() for e in lista]
+    # --- 1. CARGA DINÁMICA DE ETAPAS ---
+    try:
+        with engine.connect() as conn:
+            df_etapas = pd.read_sql(text("SELECT id_etapa, grupo, subgrupo FROM EtapasCliente WHERE activo = TRUE"), conn)
+        
+        if not df_etapas.empty:
+            todos_los_estados = df_etapas['subgrupo'].tolist()
+            mapa_subgrupo_id = dict(zip(df_etapas['subgrupo'], df_etapas['id_etapa']))
+            
+            # Agrupar por bloques dinámicos mapeando las hileras de la DB
+            etapa_1_etapas = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 1']['subgrupo'].tolist()
+            etapa_2_etapas = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 2']['subgrupo'].tolist()
+            etapa_3_etapas = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 3']['subgrupo'].tolist()
+            etapa_4_etapas = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 4']['subgrupo'].tolist()
+        else:
+            todos_los_estados = ESTADOS_FALLBACK
+            mapa_subgrupo_id = {}
+            etapa_1_etapas, etapa_2_etapas, etapa_3_etapas, etapa_4_etapas = [], [], [], []
+    except Exception as e:
+        todos_los_estados = ESTADOS_FALLBACK
+        mapa_subgrupo_id = {}
+        etapa_1_etapas, etapa_2_etapas, etapa_3_etapas, etapa_4_etapas = [], [], [], []
 
-    # --- 2. CARGA DE DATOS CONTROLADA (FIX DEL PARPADEO) ---
-    # Solo consultamos la DB si no existe en memoria o si forzamos recarga
+    # --- 2. CARGA DE DATOS CONTROLADA ---
     if 'df_seguimiento_cache' not in st.session_state:
         with engine.connect() as conn:
             query_seg = text("""
@@ -67,29 +86,40 @@ def render_seguimiento():
                 ORDER BY c.fecha_seguimiento ASC
             """)
             df_loaded = pd.read_sql(query_seg, conn)
-            # Guardamos en cache
             st.session_state['df_seguimiento_cache'] = df_loaded
     
-    # Usamos la data de la memoria
     df_seg = st.session_state['df_seguimiento_cache']
 
-    # --- 3. FUNCIÓN DE GUARDADO ---
+    # --- 3. FUNCIÓN DE GUARDADO (ACTUALIZA TEXTO E ID_ETAPA) ---
     def guardar_edicion_rapida(df_editado, tipo_tabla):
         try:
-            with engine.connect() as conn:
+            with engine.begin() as conn:
                 for index, row in df_editado.iterrows():
-                    # A) Actualizar Estado y FECHA
-                    conn.execute(text("UPDATE Clientes SET estado = :est, fecha_seguimiento = :fec WHERE id_cliente = :id"), 
-                                    {"est": row['estado'], "fec": row['fecha_seguimiento'], "id": row['id_cliente']})
+                    id_etapa_val = mapa_subgrupo_id.get(row['estado'])
                     
-                    # B) Actualizar Pendiente de Pago
+                    # Conversión explícita a tipos de Python nativos
+                    id_cliente_nativo = int(row['id_cliente'])
+                    id_etapa_nativo = int(id_etapa_val) if pd.notnull(id_etapa_val) else None
+                    
+                    # Actualizar Estado e id_etapa
+                    conn.execute(text("""
+                        UPDATE Clientes 
+                        SET estado = :est, id_etapa = :id_etapa, fecha_seguimiento = :fec 
+                        WHERE id_cliente = :id
+                    """), {
+                        "est": row['estado'], 
+                        "id_etapa": id_etapa_nativo,
+                        "fec": row['fecha_seguimiento'], 
+                        "id": id_cliente_nativo
+                    })
+                    
+                    # Actualizar Pendiente de Pago
                     if pd.notnull(row['id_venta']):
+                        id_venta_nativo = int(row['id_venta'])
+                        pendiente_nativo = float(row['pendiente_pago']) if pd.notnull(row['pendiente_pago']) else 0.0
                         conn.execute(text("UPDATE Ventas SET pendiente_pago = :pen WHERE id_venta = :idv"),
-                                        {"pen": row['pendiente_pago'], "idv": row['id_venta']})
-                        
-                conn.commit()
+                                        {"pen": pendiente_nativo, "idv": id_venta_nativo})
             
-            # IMPORTANTE: Borrar cache para ver los cambios reflejados
             if 'df_seguimiento_cache' in st.session_state:
                 del st.session_state['df_seguimiento_cache']
                 
@@ -98,12 +128,10 @@ def render_seguimiento():
             st.rerun()
         except Exception as e:
             st.error(f"Error: {e}")
-    # --- 3. FUNCIÓN DE GUARDADO - direcciones   ---
+
     def guardar_datos_envio_completo(id_direccion, id_cliente, datos):
-        """Actualiza la dirección completa (incluyendo GPS/Obs) y el estado desde el formulario"""
         try:
             with engine.begin() as conn:
-                # 1. Actualizar Dirección (Si existe ID válido)
                 if id_direccion and id_direccion > 0:
                     conn.execute(text("""
                         UPDATE Direcciones SET 
@@ -121,46 +149,49 @@ def render_seguimiento():
                         "dist": datos['distrito'],
                         "dir": datos['direccion_texto'],
                         "ref": datos['referencia'],
-                        "gps": datos['gps_link'],      # <--- SE GUARDA
-                        "obs": datos['observacion'],   # <--- SE GUARDA
-                        "id_dir": int(row_full['id_direccion'])
+                        "gps": datos['gps_link'],
+                        "obs": datos['observacion'],
+                        "id_dir": int(id_direccion)
                     })
                 
-                # 2. Actualizar estado del cliente
                 if datos.get('nuevo_estado'):
-                    conn.execute(text("UPDATE Clientes SET estado = :e, fecha_seguimiento = NOW() WHERE id_cliente = :id"),
-                                {"e": datos['nuevo_estado'], "id": id_cliente})
+                    id_etapa_val = mapa_subgrupo_id.get(datos['nuevo_estado'])
+                    id_etapa_nativo = int(id_etapa_val) if pd.notnull(id_etapa_val) else None
+                    conn.execute(text("""
+                        UPDATE Clientes 
+                        SET estado = :e, id_etapa = :id_etapa, fecha_seguimiento = NOW() 
+                        WHERE id_cliente = :id
+                    """), {"e": datos['nuevo_estado'], "id_etapa": id_etapa_nativo, "id": int(id_cliente)})
                                 
             st.toast("✅ Datos de envío actualizados correctamente.", icon="💾")
-            
-            # Limpiar caché para ver los cambios reflejados
             if 'df_seguimiento_cache' in st.session_state:
                 del st.session_state['df_seguimiento_cache']
             time.sleep(1)
             st.rerun()
-            
         except Exception as e:
             st.error(f"Error guardando formulario: {e}")
 
-    # --- 4. RENDERIZADO ---
+    # --- 4. RENDERIZADO Y FILTRADO INTELIGENTE ---
     if not df_seg.empty:
-        # Filtros sobre el DF en memoria
-        df_moto = df_seg[df_seg['estado'].isin(["Venta motorizado", "Venta express moto"])].copy()
-        df_agencia = df_seg[df_seg['estado'] == "Venta agencia"].copy()
-        df_ruta = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_3"])].copy()
-        df_e1 = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_1"])].copy()
-        df_e4 = df_seg[df_seg['estado'].isin(ETAPAS["ETAPA_4"])].copy()
+        # Segmentación de la Etapa 2 basado en el texto del subgrupo
+        df_etapa2 = df_seg[df_seg['estado'].isin(etapa_2_etapas)]
+        df_moto = df_etapa2[~df_etapa2['estado'].str.lower().str.contains('agencia', na=False)].copy()
+        df_agencia = df_etapa2[df_etapa2['estado'].str.lower().str.contains('agencia', na=False)].copy()
+        
+        df_ruta = df_seg[df_seg['estado'].isin(etapa_3_etapas)].copy()
+        df_e1 = df_seg[df_seg['estado'].isin(etapa_1_etapas)].copy()
+        df_e4 = df_seg[df_seg['estado'].isin(etapa_4_etapas)].copy()
 
         # Métricas
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("🛵 Moto / Express", len(df_moto))
+        c1.metric("🛵 Moto / Interno", len(df_moto))
         c2.metric("🏢 Agencia", len(df_agencia))
         c3.metric("🚚 En Ruta", len(df_ruta))
         c4.metric("💬 Conversación", len(df_e1))
         
         st.divider()
         
-        tab_moto, tab_agencia = st.tabs(["🛵 MOTORIZADO", "🏢 AGENCIA"])
+        tab_moto, tab_agencia = st.tabs(["🛵 MOTORIZADO / INTERNO", "🏢 AGENCIA"])
 
         # --- FORMATOS VISUALES ---
         def formatear_entrega_moto(row):
@@ -168,7 +199,7 @@ def render_seguimiento():
                     f"📞 {row['telefono_receptor']}\n"
                     f"📍 {row['direccion_texto']} ({row['distrito']})\n"
                     f"🏠 Ref: {row['referencia']}\n"
-                    f"🗺️ GPS: {row['gps_link']}\n"  # Changed from 'gps' to 'gps_link'
+                    f"🗺️ GPS: {row['gps_link']}\n"
                     f"📝 Obs: {row['observacion']}")
 
         def formatear_entrega_agencia(row):
@@ -203,7 +234,7 @@ def render_seguimiento():
                     key="ed_moto", 
                     column_config={
                         "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
-                        "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS, width="medium"),
+                        "estado": st.column_config.SelectboxColumn("Estado", options=todos_los_estados, width="medium"),
                         "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"),
                         "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
                         "telefono": st.column_config.TextColumn("📞 Telf.", disabled=True),
@@ -225,29 +256,17 @@ def render_seguimiento():
                     guardar_edicion_rapida(df_save, "MOTO")
 
                 if c_btn2.button("📋 Generar Lista Ruta"):
-                    # 1. CALCULAR FECHA DE MAÑANA
                     fecha_manana = (datetime.now() - timedelta(hours=5) + timedelta(days=1)).strftime("%d/%m/%Y")
-            
-                    # 2. CREAR ENCABEZADO
-                    texto_lista = f"*Fecha {fecha_manana}*\n"
-                    texto_lista += "----------------\n\n"
-            
-                    # 3. ITERAR PEDIDOS
-                    texto_ruta = texto_lista
+                    texto_ruta = f"*Fecha {fecha_manana}*\n----------------\n\n"
                     count = 1
-                    df_rut = df_moto.loc[event_moto.index] # Usamos el orden actual
+                    df_rut = df_moto.loc[event_moto.index]
                     for idx, row in df_rut.iterrows():
-                        # Lógica para convertir el monto a número seguro
                         try:
                             monto = float(row['pendiente_pago']) if row['pendiente_pago'] else 0.0
                         except:
                             monto = 0.0
-                        # LÓGICA DE COBRO: Si es 0, dice "Pagó todo"
-                        if monto <= 0:
-                            str_cobro = "Pagó todo"
-                        else:
-                            str_cobro = f"S/ {monto:.2f}"
-                        monto = float(row['pendiente_pago']) if pd.notnull(row['pendiente_pago']) else 0.0
+                        str_cobro = "Pagó todo" if monto <= 0 else f"S/ {monto:.2f}"
+                        
                         texto_ruta += f"*Pedido {count}*\n"
                         texto_ruta += f"*Recibe:* {row['nombre_receptor'] or ''}\n"
                         texto_ruta += f"*Dirección:* {row['direccion_texto'] or ''}\n"
@@ -268,9 +287,6 @@ def render_seguimiento():
                     st.divider()
                     st.info(f"📍 Editando dirección de: **{row_full['nombre_corto']}**")
                     
-# ... (código anterior donde seleccionas el cliente) ...
-            
-            # REEMPLAZA DESDE AQUÍ HACIA ABAJO (SOLO EL FORMULARIO)
                     with st.form("form_moto_dir"):
                         c1, c2, c3 = st.columns(3)
                         n_nom = c1.text_input("Recibe", row_full['nombre_receptor'])
@@ -282,54 +298,27 @@ def render_seguimiento():
                         
                         c4, c5, c6 = st.columns(3)
                         n_ref = c4.text_input("Referencia", row_full['referencia'])
-                        # --- ADDED GPS AND OBS FIELDS ---
                         n_gps = c5.text_input("Link GPS", row_full['gps_link'])
                         n_obs = c6.text_input("Observaciones", row_full['observacion']) 
                         
-                        if st.form_submit_button("Actualizar Dirección"):
-                            with engine.connect() as conn:
-                                # Update query including new fields
-                                conn.execute(text("""
-                                    UPDATE Direcciones SET 
-                                    nombre_receptor=:n, telefono_receptor=:t, direccion_texto=:d, 
-                                    distrito=:di, referencia=:r, gps_link=:g, observacion=:o
-                                    WHERE id_direccion = :id_dir
-                                """), {
-                                    "n": n_nom, "t": n_tel, "d": n_dir, "di": n_dist, "r": n_ref, 
-                                    "g": n_gps , "o": n_obs , # Pass the new variables
-                                    "id_dir": int(row_full['id_direccion'])
-                                })
-                                conn.commit()
-                            # Clear cache to see changes
-                            if 'df_seguimiento_cache' in st.session_state:
-                                del st.session_state['df_seguimiento_cache']
-                            st.success("Dirección actualizada.")
-                            time.sleep(0.5)
-                            st.rerun()
-                    # ---------------------------------------------------
-
-                    st.markdown("---")
-                    col_st, col_btn = st.columns([2, 1])
-                    
-                    # Mantiene el estado actual seleccionado por defecto
-                    idx_estado = 0
-                    if row_full['estado'] in TODOS_LOS_ESTADOS:
-                        idx_estado = TODOS_LOS_ESTADOS.index(row_full['estado'])
-                    
-                    nuevo_estado = col_st.selectbox("Mover a Estado:", TODOS_LOS_ESTADOS, index=idx_estado)
-                    
-                    if col_btn.form_submit_button("💾 Guardar Guía Completa", type="primary"):
-                        datos_form = {
-                            "nombre_receptor": n_nom, 
-                            "telefono_receptor": n_tel,
-                            "distrito": n_dist, 
-                            "direccion_texto": n_dir,
-                            "referencia": n_ref, 
-                            "gps_link": n_gps,     # <--- SE AGREGA AL GUARDAR
-                            "observacion": n_obs,  # <--- SE AGREGA AL GUARDAR
-                            "nuevo_estado": nuevo_estado
-                        }
-                        guardar_datos_envio_completo(row_full['id_direccion'], row_full['id_cliente'], datos_form)
+                        st.markdown("---")
+                        col_st, col_btn = st.columns([2, 1])
+                        
+                        idx_estado = todos_los_estados.index(row_full['estado']) if row_full['estado'] in todos_los_estados else 0
+                        nuevo_estado = col_st.selectbox("Mover a Estado:", todos_los_estados, index=idx_estado)
+                        
+                        if col_btn.form_submit_button("💾 Guardar Guía Completa", type="primary"):
+                            datos_form = {
+                                "nombre_receptor": n_nom, 
+                                "telefono_receptor": n_tel,
+                                "distrito": n_dist, 
+                                "direccion_texto": n_dir,
+                                "referencia": n_ref, 
+                                "gps_link": n_gps,
+                                "observacion": n_obs,
+                                "nuevo_estado": nuevo_estado
+                            }
+                            guardar_datos_envio_completo(int(row_full['id_direccion']), row_full['id_cliente'], datos_form)
             else:
                 st.caption("No hay pedidos para motorizado.")
 
@@ -349,7 +338,7 @@ def render_seguimiento():
                     df_view_a[cols_show_a], key="ed_age", 
                     column_config={
                         "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
-                        "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS, width="medium"),
+                        "estado": st.column_config.SelectboxColumn("Estado", options=todos_los_estados, width="medium"),
                         "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"),
                         "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
                         "telefono": st.column_config.TextColumn("Telf.", disabled=True),
@@ -368,7 +357,7 @@ def render_seguimiento():
                     df_save_a['pendiente_pago'] = event_agencia['pendiente_pago']
                     guardar_edicion_rapida(df_save_a, "AGENCIA")
 
-                # GESTIÓN AGENCIA
+                # GESTIÓN AGENCIA INDIVIDUAL
                 filas_sel_a = event_agencia[event_agencia["Seleccionar"] == True]
                 if not filas_sel_a.empty:
                     row_full_a = df_agencia.loc[filas_sel_a.index[0]]
@@ -385,25 +374,25 @@ def render_seguimiento():
                         n_sede = c5.text_input("Sede", row_full_a['sede_entrega'])
                         
                         if st.form_submit_button("Actualizar Agencia"):
-                                with engine.connect() as conn:
-                                    conn.execute(text("""
-                                        UPDATE Direcciones SET 
+                            with engine.begin() as conn:
+                                conn.execute(text("""
+                                    UPDATE Direcciones SET 
                                         nombre_receptor=:n, dni_receptor=:d, telefono_receptor=:t, 
                                         agencia_nombre=:a, sede_entrega=:s 
-                                        WHERE id_direccion = :id_dir
-                                    """), {
-                                        "n": n_nom, "d": n_dni, "t": n_tel, "a": n_age, "s": n_sede,
-                                        "id_dir": row_full_a['id_direccion']
-                                    })
-                                    conn.commit()
-                                if 'df_seguimiento_cache' in st.session_state:
-                                    del st.session_state['df_seguimiento_cache']
-                                st.success("Datos actualizados.")
-                                time.sleep(0.5)
-                                st.rerun()
+                                    WHERE id_direccion = :id_dir
+                                """), {
+                                    "n": n_nom, "d": n_dni, "t": n_tel, "a": n_age, "s": n_sede,
+                                    "id_dir": int(row_full_a['id_direccion'])
+                                })
+                            if 'df_seguimiento_cache' in st.session_state:
+                                del st.session_state['df_seguimiento_cache']
+                            st.success("Datos actualizados.")
+                            time.sleep(0.5)
+                            st.rerun()
             else:
                 st.caption("No hay envíos por agencia.")
 
+        # >>>>>>>>>>>>>>>>>>>>>>>>> SECCIÓN EN RUTA <<<<<<<<<<<<<<<<<<<<<<<<<
         st.divider()
         st.markdown("### 🚚 En Ruta")
         
@@ -413,7 +402,7 @@ def render_seguimiento():
                 df_ruta[cols_ruta], 
                 key="ed_ruta", 
                 column_config={
-                    "estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS),
+                    "estado": st.column_config.SelectboxColumn("Estado", options=todos_los_estados),
                     "fecha_seguimiento": st.column_config.DateColumn("Fecha Seg.", format="DD/MM/YYYY"),
                     "id_cliente": None
                 }, 
@@ -428,32 +417,34 @@ def render_seguimiento():
         else:
             st.caption("Nada en ruta.")
 
-        # --- OTRAS BANDEJAS ---
+        # --- OTRAS BANDEJAS EXPANDIBLES ---
         st.divider()
         with st.expander(f"💬 Conversación / Cotizando ({len(df_e1)})"):
             if not df_e1.empty:
                 cols_e1 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
                 event_e1 = st.data_editor(df_e1[cols_e1], key="ed_e1", 
-                                          column_config={"estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS), "id_cliente": None}, 
+                                          column_config={"estado": st.column_config.SelectboxColumn("Estado", options=todos_los_estados), "id_cliente": None}, 
                                           hide_index=True, use_container_width=True)
                 if st.button("💾 Guardar Conversación"):
-                        df_save_e1 = df_e1.loc[event_e1.index].copy()
-                        df_save_e1['estado'] = event_e1['estado']
-                        df_save_e1['fecha_seguimiento'] = event_e1['fecha_seguimiento']
-                        guardar_edicion_rapida(df_save_e1, "E1")
+                    df_save_e1 = df_e1.loc[event_e1.index].copy()
+                    df_save_e1['estado'] = event_e1['estado']
+                    df_save_e1['fecha_seguimiento'] = event_e1['fecha_seguimiento']
+                    guardar_edicion_rapida(df_save_e1, "E1")
             else:
                 st.caption("Vacío.")
 
         with st.expander(f"✨ Post-Venta ({len(df_e4)})"):
-                if not df_e4.empty:
-                    cols_e4 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
-                    event_e4 = st.data_editor(df_e4[cols_e4], key="ed_e4", 
-                                              column_config={"estado": st.column_config.SelectboxColumn("Estado", options=TODOS_LOS_ESTADOS), "id_cliente": None},
-                                              hide_index=True, use_container_width=True)
-                    if st.button("💾 Guardar Post-Venta"):
-                            df_save_e4 = df_e4.loc[event_e4.index].copy()
-                            df_save_e4['estado'] = event_e4['estado']
-                            df_save_e4['fecha_seguimiento'] = event_e4['fecha_seguimiento']
-                            guardar_edicion_rapida(df_save_e4, "E4")
-                else:
-                    st.caption("Vacío.")
+            if not df_e4.empty:
+                cols_e4 = ["id_cliente", "estado", "nombre_corto", "telefono", "resumen_items", "fecha_seguimiento"]
+                event_e4 = st.data_editor(df_e4[cols_e4], key="ed_e4", 
+                                          column_config={"estado": st.column_config.SelectboxColumn("Estado", options=todos_los_estados), "id_cliente": None},
+                                          hide_index=True, use_container_width=True)
+                if st.button("💾 Guardar Post-Venta"):
+                    df_save_e4 = df_e4.loc[event_e4.index].copy()
+                    df_save_e4['estado'] = event_e4['estado']
+                    df_save_e4['fecha_seguimiento'] = event_e4['fecha_seguimiento']
+                    guardar_edicion_rapida(df_save_e4, "E4")
+            else:
+                st.caption("Vacío.")
+    else:
+        st.info("No se encontraron clientes.")

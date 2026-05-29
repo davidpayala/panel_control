@@ -98,7 +98,6 @@ def render_boton_chat(row, cat, chat_actual, cambiar_chat_func):
     icono = "🔴" if c_leidos > 0 else "👤"
     texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
     
-    # Mostrar el estado real si está en la bandeja de "Nuevos" o "Otros"
     extra = f" [{row['estado']}]" if cat in ["📁 Otros Estados", "🔴 Mensajes Nuevos"] and pd.notna(row['estado']) else ""
     
     label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
@@ -116,6 +115,31 @@ def render_chat():
     c_time.caption(f"🔄 {lima_time.strftime('%H:%M:%S')}")
 
     poller_cambios_db()
+
+    # --- CARGA DINÁMICA DE ETAPAS ---
+    try:
+        with engine.connect() as conn:
+            df_etapas = pd.read_sql(text("SELECT id_etapa, grupo, subgrupo FROM EtapasCliente WHERE activo = TRUE"), conn)
+            
+        if not df_etapas.empty:
+            todos_los_estados = df_etapas['subgrupo'].tolist()
+            mapa_subgrupo_id = dict(zip(df_etapas['subgrupo'], df_etapas['id_etapa']))
+            
+            estados_e0 = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 0']['subgrupo'].tolist()
+            estados_e1 = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 1']['subgrupo'].tolist()
+            estados_e2 = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 2']['subgrupo'].tolist()
+            estados_e3 = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 3']['subgrupo'].tolist()
+            estados_e4 = df_etapas[df_etapas['grupo'].str.lower() == 'etapa 4']['subgrupo'].tolist()
+        else:
+            raise Exception("Tabla vacía")
+    except Exception:
+        todos_los_estados = ["Sin empezar", "Responder duda", "Interesado en venta", "Venta motorizado", "En camino moto", "Pendiente agradecer"]
+        mapa_subgrupo_id = {}
+        estados_e0 = ["Sin empezar"]
+        estados_e1 = ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"]
+        estados_e2 = ["Venta motorizado", "Venta agencia", "Venta express moto", "Recojo en Almacen"]
+        estados_e3 = ["En camino moto", "En camino agencia", "Contraentrega agencia"]
+        estados_e4 = ["Pendiente agradecer", "Problema post"]
 
     def cambiar_chat(chat_id):
         st.session_state['chat_actual_id'] = str(chat_id)
@@ -173,10 +197,10 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # --- QUERY UNIFICADO DE CHATS CORREGIDO ---
                 query = f"""
                     WITH msg_vinculados AS (
-                        SELECT m.id_mensaje, m.telefono, m.fecha, m.leido, m.tipo, t.id_cliente
+                        SELECT m.id_mensaje, m.telefono, m.fecha, m.leido, m.tipo, 
+                               COALESCE(t.id_cliente, (SELECT id_cliente FROM {tabla} WHERE telefono = m.telefono AND activo = TRUE LIMIT 1)) as id_cliente
                         FROM mensajes m
                         LEFT JOIN telefonoscliente t ON m.telefono = t.telefono AND t.activo = TRUE
                     ),
@@ -184,14 +208,17 @@ def render_chat():
                         SELECT 
                             COALESCE(CAST(id_cliente AS VARCHAR), telefono) as chat_id,
                             MAX(id_cliente) as id_cliente,
-                            MAX(telefono) FILTER (WHERE id_cliente IS NULL) as tel_anonimo,
+                            MAX(telefono) as telefono_contacto,
                             MAX(fecha) as ultima_interaccion,
                             COALESCE(SUM(CASE WHEN leido = FALSE AND tipo = 'ENTRANTE' THEN 1 ELSE 0 END), 0) as no_leidos
                         FROM msg_vinculados
                         GROUP BY COALESCE(CAST(id_cliente AS VARCHAR), telefono)
                     )
                     SELECT cl.*, c.nombre_corto, c.whatsapp_internal_id, c.estado, c.nivel_zombie, c.ultimo_msg_zombie,
-                           COALESCE(c.nombre_corto, cl.tel_anonimo, cl.chat_id) as nombre
+                           CASE 
+                               WHEN c.nombre_corto IS NOT NULL AND c.nombre_corto != '' THEN c.nombre_corto
+                               ELSE cl.telefono_contacto
+                           END as nombre
                     FROM chat_list cl
                     LEFT JOIN {tabla} c ON cl.id_cliente = c.id_cliente AND c.activo = TRUE
                     WHERE 1=1
@@ -200,7 +227,7 @@ def render_chat():
                 if busqueda:
                     busqueda_limpia = "".join(filter(str.isdigit, busqueda))
                     filtro = f" AND (COALESCE(c.nombre_corto,'') ILIKE '%{busqueda}%'"
-                    if busqueda_limpia: filtro += f" OR cl.tel_anonimo ILIKE '%{busqueda_limpia}%' OR EXISTS (SELECT 1 FROM telefonoscliente tc WHERE tc.id_cliente = cl.id_cliente AND tc.telefono ILIKE '%{busqueda_limpia}%'))"
+                    if busqueda_limpia: filtro += f" OR cl.telefono_contacto ILIKE '%{busqueda_limpia}%' OR EXISTS (SELECT 1 FROM telefonoscliente tc WHERE tc.id_cliente = cl.id_cliente AND tc.telefono ILIKE '%{busqueda_limpia}%'))"
                     else: filtro += ")"
                     query += filtro
                 
@@ -212,19 +239,22 @@ def render_chat():
                     st.info("No se encontraron chats.")
                 else:
                     cat_map = {
-                        "💰 Venta realizada": ["Venta motorizado", "Venta agencia", "Venta express moto"],
-                        "🗣️ Conversación": ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"],
-                        "🚚 En camino": ["En camino moto", "En camino agencia", "Contraentrega agencia"],
-                        "🛡️ Post-Venta": ["Pendiente agradecer", "Problema post"],
-                        "🆕 Sin empezar": ["Sin empezar"]
+                        "💰 Venta realizada": estados_e2,
+                        "🗣️ Conversación": estados_e1,
+                        "🚚 En camino": estados_e3,
+                        "🛡️ Post-Venta": estados_e4,
+                        "🆕 Sin empezar": estados_e0
                     }
                     
                     def asignar_categoria(row):
                         if row['no_leidos'] > 0: return "🔴 Mensajes Nuevos"
-                        estado = row['estado']
-                        if not estado or str(estado).strip() == "": return "🆕 Sin empezar"
+                        estado_raw = row['estado']
+                        if not estado_raw or str(estado_raw).strip() == "": return "🆕 Sin empezar"
+                        
+                        estado_clean = str(estado_raw).strip().lower()
                         for cat, estados in cat_map.items():
-                            if estado in estados: return cat
+                            estados_clean = [str(e).strip().lower() for e in estados]
+                            if estado_clean in estados_clean: return cat
                         return "📁 Otros Estados"
                         
                     df_clientes['categoria'] = df_clientes.apply(asignar_categoria, axis=1)
@@ -242,7 +272,6 @@ def render_chat():
                     for cat in orden_categorias:
                         df_cat = df_clientes[df_clientes['categoria'] == cat]
                         if not df_cat.empty:
-                            
                             if cat == "🆕 Sin empezar":
                                 df_cat = df_cat.head(30)
                                 
@@ -254,9 +283,8 @@ def render_chat():
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
                                 if cat == "🗣️ Conversación":
-                                    sub_estados_ordenados = ["Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional"]
-                                    for sub in sub_estados_ordenados:
-                                        df_sub = df_cat[df_cat['estado'] == sub]
+                                    for sub in estados_e1:
+                                        df_sub = df_cat[df_cat['estado'].str.lower().str.strip() == str(sub).strip().lower()]
                                         if not df_sub.empty:
                                             st.markdown(f"<div style='font-size: 11px; color: #777; margin-top: 10px; margin-bottom: 2px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;'>📌 {sub}</div>", unsafe_allow_html=True)
                                             for _, row in df_sub.iterrows():
@@ -274,14 +302,13 @@ def render_chat():
             st.info("👈 Selecciona un chat.")
         else:
             try:
-                # Verificamos si es un cliente (por el ID) o un número anónimo
                 es_cliente = str(chat_actual).isdigit() and len(str(chat_actual)) < 10
 
                 # AUTO-RESOLUCIÓN LIDs
                 if str(chat_actual).startswith("LID_"):
                     with st.spinner("🕵️‍♂️ Consultando número real en WAHA..."):
                         with engine.connect() as conn:
-                            info = conn.execute(text(f"SELECT whatsapp_internal_id FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
+                            info = conn.execute(text(f"SELECT id_cliente, whatsapp_internal_id FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
                             if info and info.whatsapp_internal_id and info.whatsapp_internal_id.endswith("@lid"):
                                 num_real = resolver_telefono_api(info.whatsapp_internal_id, "default")
                                 if not num_real: num_real = resolver_telefono_api(info.whatsapp_internal_id, "principal")
@@ -291,18 +318,28 @@ def render_chat():
                                     real_db = norm.get('db') if isinstance(norm, dict) else norm
                                     if real_db:
                                         with engine.begin() as t_conn:
-                                            existente = t_conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono=:t"), {"t": real_db}).fetchone()
+                                            existente = t_conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono=:t AND activo = TRUE"), {"t": real_db}).fetchone()
                                             if existente:
                                                 t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
-                                                t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE telefono=:o"), {"fake": f"MERGED_{chat_actual}", "o": chat_actual})
-                                                t_conn.execute(text(f"UPDATE {tabla} SET whatsapp_internal_id=:lid WHERE telefono=:n"), {"lid": info.whatsapp_internal_id, "n": real_db})
+                                                t_conn.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": existente.id_cliente, "old": info.id_cliente})
+                                                t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE id_cliente=:old"), {"fake": f"MERGED_{chat_actual}", "old": info.id_cliente})
+                                                t_conn.execute(text(f"UPDATE {tabla} SET whatsapp_internal_id=:lid WHERE id_cliente=:new"), {"lid": info.whatsapp_internal_id, "new": existente.id_cliente})
+                                                st.session_state['chat_actual_id'] = str(existente.id_cliente)
                                             else:
                                                 t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
-                                                t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
-                                        st.session_state['chat_actual_id'] = real_db
+                                                t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE id_cliente=:id"), {"n": real_db, "id": info.id_cliente})
+                                                
+                                                # CORRECCIÓN: Sincronizar número real en la estructura telefonoscliente
+                                                lid_ex = t_conn.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente = :id AND telefono = :o"), {"id": info.id_cliente, "o": chat_actual}).fetchone()
+                                                if lid_ex:
+                                                    t_conn.execute(text("UPDATE telefonoscliente SET telefono = :n, es_principal = TRUE WHERE id_telefono = :idt"), {"n": real_db, "idt": lid_ex[0]})
+                                                else:
+                                                    t_conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :id"), {"id": info.id_cliente})
+                                                    t_conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :n, TRUE)"), {"id": info.id_cliente, "n": real_db})
+                                                st.session_state['chat_actual_id'] = str(info.id_cliente)
                                         st.rerun()
 
-                # Marcar leido (Unificado)
+                # Marcar leido
                 with engine.connect() as conn:
                     conn.commit() 
                     tels_condition = "SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE" if es_cliente else "SELECT :id"
@@ -334,7 +371,8 @@ def render_chat():
                         SELECT * FROM (
                             SELECT m.* FROM mensajes m
                             LEFT JOIN telefonoscliente t ON m.telefono = t.telefono AND t.activo = TRUE
-                            WHERE COALESCE(CAST(t.id_cliente AS VARCHAR), m.telefono) = :chat_id
+                            LEFT JOIN {tabla} c ON m.telefono = c.telefono AND c.activo = TRUE
+                            WHERE COALESCE(CAST(t.id_cliente AS VARCHAR), CAST(c.id_cliente AS VARCHAR), m.telefono) = :chat_id
                             ORDER BY m.fecha DESC LIMIT 100
                         ) sub ORDER BY fecha ASC
                     """), conn, params={"chat_id": str(chat_actual)})
@@ -346,24 +384,40 @@ def render_chat():
                 with c_head_1: st.caption("🗂️ Chat Unificado" if es_cliente else f"📱 {chat_actual}")
                 
                 with c_head_2:
-                    OPCIONES_ESTADO = [
-                        "Sin empezar",
-                        "Responder duda", "Interesado en venta", "Proveedor nacional", "Proveedor internacional",
-                        "Venta motorizado", "Venta agencia", "Venta express moto",
-                        "En camino moto", "En camino agencia", "Contraentrega agencia",
-                        "Pendiente agradecer", "Problema post"
-                    ]
-                    try: idx_estado = OPCIONES_ESTADO.index(estado_actual_cliente)
-                    except: idx_estado = 0
+                    opciones_selectbox = todos_los_estados.copy()
+                    estado_actual_clean = str(estado_actual_cliente).strip().lower()
+                    opciones_clean = [str(e).strip().lower() for e in opciones_selectbox]
                     
-                    nuevo_estado = st.selectbox("Estado del Cliente:", OPCIONES_ESTADO, index=idx_estado, key=f"st_{chat_actual}", label_visibility="collapsed")
-                    if nuevo_estado != estado_actual_cliente:
-                        with engine.begin() as conn:
-                            if es_cliente:
-                                conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE id_cliente = :id"), {"e": nuevo_estado, "id": int(chat_actual)})
-                            else:
-                                conn.execute(text(f"UPDATE {tabla} SET estado = :e WHERE telefono = :t"), {"e": nuevo_estado, "t": str(chat_actual)})
-                        st.rerun()
+                    if estado_actual_clean in opciones_clean:
+                        idx_estado = opciones_clean.index(estado_actual_clean)
+                    else:
+                        opciones_selectbox.insert(0, estado_actual_cliente)
+                        idx_estado = 0
+                    
+                    nuevo_estado = st.selectbox("Estado del Cliente:", opciones_selectbox, index=idx_estado, key=f"st_{chat_actual}", label_visibility="collapsed")
+                    
+                    if str(nuevo_estado).strip().lower() != estado_actual_clean:
+                        id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
+                        try:
+                            with engine.begin() as conn:
+                                if es_cliente:
+                                    conn.execute(text(f"UPDATE {tabla} SET estado = :e, id_etapa = :id_etapa WHERE id_cliente = :id"), {"e": nuevo_estado, "id_etapa": id_etapa_val, "id": int(chat_actual)})
+                                else:
+                                    existente = conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono = :t"), {"t": str(chat_actual)}).fetchone()
+                                    if existente:
+                                        conn.execute(text(f"UPDATE {tabla} SET estado = :e, id_etapa = :id_etapa WHERE telefono = :t"), {"e": nuevo_estado, "id_etapa": id_etapa_val, "t": str(chat_actual)})
+                                    else:
+                                        res = conn.execute(text(f"""
+                                            INSERT INTO {tabla} (nombre_corto, telefono, estado, id_etapa, activo, fecha_registro) 
+                                            VALUES (:nc, :t, :e, :id_etapa, TRUE, NOW()) 
+                                            RETURNING id_cliente
+                                        """), {"nc": str(chat_actual), "t": str(chat_actual), "e": nuevo_estado, "id_etapa": id_etapa_val})
+                                        nuevo_id = res.fetchone()[0]
+                                        conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :t, TRUE)"), {"id": nuevo_id, "t": str(chat_actual)})
+                                        st.session_state['chat_actual_id'] = str(nuevo_id)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al actualizar estado: {e}")
 
                 with c_head_3:
                     nivel_z = info.nivel_zombie if info and hasattr(info, 'nivel_zombie') and info.nivel_zombie is not None else 0
@@ -406,7 +460,6 @@ def render_chat():
                     ayer = hoy - timedelta(days=1)
 
                     for _, m in msgs.iterrows():
-                        # --- FECHAS ---
                         try: fecha_msg = m['fecha'].date() if pd.notna(m['fecha']) else None
                         except: fecha_msg = None
 
@@ -417,7 +470,6 @@ def render_chat():
                             html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
                             ultima_fecha = fecha_msg
 
-                        # --- CONFIG BURBUJA ---
                         es_mio = (m['tipo'] == 'SALIENTE')
                         clase_row = "msg-mio" if es_mio else "msg-otro"
                         clase_bub = "b-mio" if es_mio else "b-otro"
@@ -441,7 +493,6 @@ def render_chat():
                         if pd.notna(m.get('reply_content')) and str(m['reply_content']).strip() != "":
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
-                        # --- PROCESAMIENTO MULTIMEDIA ---
                         media_html = ""
                         raw_data = m.get('archivo_data')
                         if raw_data is not None and not pd.isna(raw_data):
@@ -474,7 +525,6 @@ def render_chat():
                             contenido_str = ""
                         texto_html = f"<div style='white-space: pre-wrap;'>{contenido_str}</div>" if contenido_str.strip() else ""
                         
-                        # ETIQUETA DEL NÚMERO (Para saber de qué teléfono vino o salió)
                         tel_label = f"<div style='font-size: 11px; color: {'#6b8e23' if es_mio else '#888'}; margin-bottom: 2px; font-weight: 600; text-align: {'right' if es_mio else 'left'};'>📱 {m['telefono']}</div>"
 
                         html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{tel_label}{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
