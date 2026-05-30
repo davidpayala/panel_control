@@ -4,6 +4,7 @@ import pandas as pd
 import time
 from sqlalchemy import text
 from database import engine
+import utils
 
 
 def vista_productos():
@@ -56,12 +57,7 @@ def vista_productos():
 
             df_calc = st.session_state.df_inventario.copy()
             df_calc['grupo_mkt'] = df_calc['grupo_mkt'].fillna("Sin Grupo")
-            df_calc['nombre_completo'] = (
-                df_calc['marca'].fillna('') + " " + 
-                df_calc['modelo'].fillna('') + " - " + 
-                df_calc['nombre'].fillna('') + " (" +
-                df_calc['sku'].fillna('') + ")"
-            ).str.strip()
+            df_calc['nombre_completo'] = df_calc.apply(utils.generar_nombre_inteligente, axis=1)
 
             def formatear_detalles(row):
                 partes = []

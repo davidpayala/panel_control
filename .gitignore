@@ -1,7 +1,7 @@
 .venv/
 env/
 .env
-token.json
+token_google
 credentials.json
 __pycache__/
 *.pyc

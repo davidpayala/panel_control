@@ -10,6 +10,7 @@ import json
 import base64
 from woocommerce import API
 import threading
+import random
 
 # ==============================================================================
 # CONFIGURACIÓN GENERAL
@@ -79,14 +80,17 @@ def normalizar_telefono_maestro(entrada):
 # 🔍 2. FUNCIONES DE GOOGLE CONTACTS
 # ==============================================================================
 def get_google_service():
-    """Autenticación silenciosa con Google"""
+    """Autenticación silenciosa con Google con impresión de errores"""
     try:
         creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
-        if not creds_json: return None
+        if not creds_json: 
+            print("⚠️ Variable GOOGLE_CREDENTIALS_JSON no encontrada en el .env")
+            return None
         info = json.loads(creds_json)
         creds = Credentials.from_authorized_user_info(info, ['https://www.googleapis.com/auth/contacts'])
         return build('people', 'v1', credentials=creds)
-    except:
+    except Exception as e:
+        print(f"❌ Error real en get_google_service: {e}") # <-- Esto nos dará la pista exacta
         return None
 
 def buscar_contacto_google(telefono):
@@ -420,3 +424,161 @@ def sync_woo_background(skus):
         skus = [skus]
     hilo = threading.Thread(target=_tarea_sync_woo, args=(skus,))
     hilo.start()
+
+def subir_estado_whatsapp(session_name, texto, media_url=None):
+    """
+    Sube un estado a WhatsApp (Texto, Imagen o Video).
+    """
+    try:
+        if media_url:
+            # Detectamos si es un video por la extensión
+            if media_url.lower().endswith('.mp4'):
+                endpoint = f"{WAHA_URL}/api/{session_name}/status/video"
+            else:
+                endpoint = f"{WAHA_URL}/api/{session_name}/status/image"
+                
+            payload = {
+                "file": {
+                    "url": media_url 
+                },
+                "caption": texto if texto else ""
+            }
+        else:
+            endpoint = f"{WAHA_URL}/api/{session_name}/status/text"
+            payload = {
+                "text": texto
+            }
+
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Api-Key": WAHA_KEY  
+        }
+
+        response = requests.post(endpoint, json=payload, headers=headers)
+        
+        if response.status_code in [200, 201]:
+            return True, "Estado subido correctamente a WhatsApp."
+        else:
+            return False, f"Error de WAHA: {response.text} (Código: {response.status_code})"
+
+    except Exception as e:
+        return False, f"Error interno al conectar con WAHA: {str(e)}"
+
+# CREACION DEL NOMBRE COMPLETO DEL PRODUCTO
+def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorios):
+    """
+    Selecciona un producto (variante) aplicando las 3 reglas de negocio,
+    y utiliza la función 'generar_nombre_inteligente' para formatear el título.
+    """
+    import random
+    from sqlalchemy import text
+    from database import engine
+
+    categorias = ["Estilo Natural", "Estilo Fantasía", "Accesorio"] 
+    pesos_categoria = [prob_natural, prob_fantasia, prob_accesorios]
+    
+    if sum(pesos_categoria) == 0:
+        pesos_categoria = [33, 33, 34]
+        
+    categoria_elegida = random.choices(categorias, weights=pesos_categoria, k=1)[0]
+    print(f"🎲 El algoritmo eligió la categoría: '{categoria_elegida}'") 
+    
+    with engine.connect() as conn:
+        sql = text("""
+            SELECT 
+                v.sku, 
+                p.nombre, 
+                p.marca,
+                p.modelo,
+                p.categoria,
+                v.nombre_variante, 
+                v.stock_interno, 
+                p.url_imagen 
+            FROM productos p
+            JOIN variantes v ON p.id_producto = v.id_producto
+            WHERE p.categoria = :cat 
+              AND v.stock_interno > 0 
+              AND v.sku NOT IN (
+                  SELECT sku FROM Historial_Estados 
+                  WHERE fecha_publicacion > NOW() - INTERVAL '14 days'
+              )
+        """)
+        
+        resultados = conn.execute(sql, {"cat": categoria_elegida}).fetchall()
+        
+    if not resultados:
+        return None 
+
+    opciones = []
+    pesos_stock = []
+    
+    for row in resultados:
+        opciones.append(row)
+        pesos_stock.append(row.stock_interno) 
+        
+    producto_elegido = random.choices(opciones, weights=pesos_stock, k=1)[0]
+    
+    # ==========================================
+    # 🧠 USAMOS LA NUEVA FUNCIÓN COMPARTIDA
+    # ==========================================
+    # Convertimos los datos de la base de datos a un diccionario
+    datos_producto = {
+        'categoria': producto_elegido.categoria,
+        'marca': producto_elegido.marca,
+        'modelo': producto_elegido.modelo,
+        'nombre': producto_elegido.nombre,
+        'sku': producto_elegido.sku
+    }
+    
+    # Llamamos a tu función independiente para que haga la magia
+    nombre_final = generar_nombre_inteligente(datos_producto)
+
+    # Devolvemos el diccionario listo para WhatsApp
+    return {
+        "sku": producto_elegido.sku,
+        "nombre": nombre_final,
+        "stock": producto_elegido.stock_interno,
+        "imagen": producto_elegido.url_imagen
+    }
+
+
+
+# ==============================================================================
+# FUNCIÓN INDEPENDIENTE PARA EL NOMBRE INTELIGENTE (USADA EN EL PANEL)
+# ==============================================================================
+def generar_nombre_inteligente(row):
+    """
+    Recibe una fila de base de datos o Pandas y devuelve el nombre formateado.
+    """
+    # Obtenemos los datos limpiando los nulos
+    categoria = str(row.get('categoria', ''))
+    marca = str(row.get('marca', '')) if pd.notna(row.get('marca', None)) else ''
+    modelo = str(row.get('modelo', '')) if pd.notna(row.get('modelo', None)) else ''
+    nombre = str(row.get('nombre', '')) if pd.notna(row.get('nombre', None)) else ''
+    sku = str(row.get('sku', '')) if pd.notna(row.get('sku', None)) else ''
+
+    # Aplicamos la regla del prefijo
+    if categoria == 'Estilo Natural':
+        prefijo = marca
+    elif categoria == 'Estilo Fantasía':
+        prefijo = 'Lente'
+    else: # Accesorio u otros
+        prefijo = ''
+
+    # Armamos la primera parte (Prefijo + Modelo)
+    partes_inicio = []
+    if prefijo: 
+        partes_inicio.append(prefijo)
+    if modelo: 
+        partes_inicio.append(modelo)
+    
+    inicio = " ".join(partes_inicio).strip()
+
+    # Armamos el texto final
+    if inicio:
+        resultado = f"{inicio} - {nombre} ({sku})"
+    else:
+        resultado = f"{nombre} ({sku})"
+        
+    return resultado.strip()
