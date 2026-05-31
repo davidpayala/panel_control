@@ -154,7 +154,7 @@ def render_clientes():
     term_gen = f"%{busqueda}%"
 
     query = """
-        SELECT c.id_cliente, c.nombre_corto, c.estado, c.nombre, c.apellido, c.etiquetas, c.google_id, c.whatsapp_internal_id,
+        SELECT c.id_cliente, c.nombre_corto, c.estado, c.nombre, c.apellido, c.etiquetas, c.google_id, c.whatsapp_internal_id, c.nombre_ia,
                (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE LIMIT 1) as tel_principal,
                (SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE) as todos_telefonos
         FROM clientes c
@@ -163,7 +163,7 @@ def render_clientes():
     params = {}
     if busqueda:
         query += """ AND (
-            c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.etiquetas ILIKE :g
+            c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.etiquetas ILIKE :g OR c.nombre_ia ILIKE :g
             OR EXISTS (SELECT 1 FROM telefonoscliente t WHERE t.id_cliente = c.id_cliente AND t.telefono ILIKE :t AND t.activo = TRUE)
         )"""
         params = {"g": term_gen, "t": term_tel}
@@ -182,7 +182,8 @@ def render_clientes():
             column_config={
                 "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
                 "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "nombre_corto": st.column_config.TextColumn("Alias", width="medium"),
+                "nombre_corto": st.column_config.TextColumn("Alias Original", width="medium"),
+                "nombre_ia": st.column_config.TextColumn("Nombre IA", width="medium"),
                 "estado": st.column_config.SelectboxColumn("Estado", options=estados_opciones, width="medium"),
                 "tel_principal": st.column_config.TextColumn("Telf. Principal", disabled=True),
                 "todos_telefonos": st.column_config.TextColumn("Todos los Teléfonos", disabled=True, width="large"),
@@ -195,8 +196,11 @@ def render_clientes():
             with engine.begin() as conn:
                 for idx, row in edited_df.iterrows():
                     id_etapa_val = mapa_subgrupo_id.get(row['estado'])
-                    conn.execute(text("UPDATE clientes SET nombre_corto=:nc, estado=:est, id_etapa=:id_etapa WHERE id_cliente=:id"),
-                                 {"nc": row['nombre_corto'], "est": row['estado'], "id_etapa": id_etapa_val, "id": row['id_cliente']})
+                    # Manejo seguro por si nombre_ia es None
+                    nia_val = row['nombre_ia'] if pd.notna(row['nombre_ia']) else ""
+                    
+                    conn.execute(text("UPDATE clientes SET nombre_corto=:nc, nombre_ia=:nia, estado=:est, id_etapa=:id_etapa WHERE id_cliente=:id"),
+                                 {"nc": row['nombre_corto'], "nia": nia_val, "est": row['estado'], "id_etapa": id_etapa_val, "id": row['id_cliente']})
             st.success("Cambios guardados.")
             time.sleep(1)
             st.rerun()

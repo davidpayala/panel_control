@@ -175,61 +175,68 @@ def ejecutar_francotirador():
             else:
                 print("\n⏸️ TAREA 1 OMITIDA: Los mensajes directos están apagados en el Panel.")
 # ==        ================================================================
-            # 📱 TAREA 2: PUBLICACIÓN DE ESTADOS (LOGICA DINÁMICA DE CUENTAS)
+            # 📱 TAREA 2: PUBLICACIÓN DE ESTADOS (LÓGICA DINÁMICA DE CUENTAS)
             # ==================================================================
             if getattr(config, 'estados_activo', False):
                 print("\n▶️ INICIANDO TAREA 2: Publicación de Estado de WhatsApp")
                 
-                # Importamos la nueva herramienta de evaluación
-                from utils import determinar_sesiones_para_estado
-
-                prob_len = getattr(config, 'prob_sesion_lentes', 100)
-                prob_pri = getattr(config, 'prob_sesion_principal', 50)
-
-                # 1. El algoritmo decide qué cuentas de WhatsApp publicarán en esta oportunidad
-                sesiones_a_publicar = determinar_sesiones_para_estado(prob_len, prob_pri)
-
-                if not sesiones_a_publicar:
-                    print(f"🎲 Sorteo finalizado: Ninguna cuenta superó la probabilidad esta hora (Lentes: {prob_len}%, Principal: {prob_pri}%).")
+                # --- NUEVA VALIDACIÓN DE HORARIO PARA ESTADOS ---
+                hora_peru = datetime.now(timezone.utc) - timedelta(hours=5)
+                ahora = hora_peru.time()
+                
+                if not (config.hora_inicio <= ahora <= config.hora_fin):
+                    print(f"⏰ Fuera de horario para publicar estados. Permitido: {config.hora_inicio} a {config.hora_fin}.")
                 else:
-                    # 2. El Cerebro elige el producto según las probabilidades de categoría
-                    producto = seleccionar_producto_para_estado(
-                        getattr(config, 'prob_natural', 34), 
-                        getattr(config, 'prob_fantasia', 33), 
-                        getattr(config, 'prob_accesorios', 33)
-                    )
+                    # Importamos la nueva herramienta de evaluación
+                    from utils import determinar_sesiones_para_estado
 
-                    if not producto:
-                        print("⚠️ No hay productos elegibles (sin stock o ya publicados en los últimos 14 días).")
+                    prob_len = getattr(config, 'prob_sesion_lentes', 100)
+                    prob_pri = getattr(config, 'prob_sesion_principal', 50)
+
+                    # 1. El algoritmo decide qué cuentas de WhatsApp publicarán en esta oportunidad
+                    sesiones_a_publicar = determinar_sesiones_para_estado(prob_len, prob_pri)
+
+                    if not sesiones_a_publicar:
+                        print(f"🎲 Sorteo finalizado: Ninguna cuenta superó la probabilidad esta hora (Lentes: {prob_len}%, Principal: {prob_pri}%).")
                     else:
-                        texto_estado = f"✨ ¡Mira lo que tenemos en stock!\n{producto['nombre']}\n\nEnvíanos un mensaje para más información. 📲"
-                        
-                        # Variable para registrar en historial solo una vez si al menos una cuenta tuvo éxito
-                        registro_historial_ok = False
+                        # 2. El Cerebro elige el producto según las probabilidades de categoría
+                        producto = seleccionar_producto_para_estado(
+                            getattr(config, 'prob_natural', 34), 
+                            getattr(config, 'prob_fantasia', 33), 
+                            getattr(config, 'prob_accesorios', 33)
+                        )
 
-                        # 3. Iteramos sobre las sesiones que ganaron el sorteo de probabilidad
-                        for sesion in sesiones_a_publicar:
-                            print(f"🚀 [Cuenta: {sesion}] Subiendo estado: {producto['sku']} - {producto['nombre']}")
+                        if not producto:
+                            print("⚠️ No hay productos elegibles (sin stock o ya publicados en los últimos 14 días).")
+                        else:
+                            texto_estado = f"✨ ¡Mira lo que tenemos en stock!\n{producto['nombre']}\n\nEnvíanos un mensaje para más información. 📲"
                             
-                            exito, mensaje_estado = subir_estado_whatsapp(
-                                session_name=sesion, 
-                                texto=texto_estado, 
-                                media_url=producto['imagen']
-                            )
+                            # Variable para registrar en historial solo una vez si al menos una cuenta tuvo éxito
+                            registro_historial_ok = False
 
-                            if exito:
-                                print(f"✅ ¡Estado subido con éxito en la cuenta: '{sesion}'!")
-                                registro_historial_ok = True
-                            else:
-                                print(f"❌ Falló la publicación en la cuenta '{sesion}': {mensaje_estado}")
+                            # 3. Iteramos sobre las sesiones que ganaron el sorteo de probabilidad
+                            for sesion in sesiones_a_publicar:
+                                print(f"🚀 [Cuenta: {sesion}] Subiendo estado: {producto['sku']} - {producto['nombre']}")
+                                
+                                exito, mensaje_estado = subir_estado_whatsapp(
+                                    session_name=sesion, 
+                                    texto=texto_estado, 
+                                    media_url=producto['imagen']
+                                )
 
-                        # 4. Guardar en el historial general si se publicó con éxito en al menos una cuenta
-                        if registro_historial_ok:
-                            with motor_seguro.begin() as trans_estados:
-                                trans_estados.execute(text("""
-                                    INSERT INTO Historial_Estados (sku) VALUES (:sku)
-                                """), {"sku": producto['sku']})
-                            print(f"📝 Producto {producto['sku']} anotado en el historial de exclusión.")
+                                if exito:
+                                    print(f"✅ ¡Estado subido con éxito en la cuenta: '{sesion}'!")
+                                    registro_historial_ok = True
+                                else:
+                                    print(f"❌ Falló la publicación en la cuenta '{sesion}': {mensaje_estado}")
+
+                            # 4. Guardar en el historial general si se publicó con éxito en al menos una cuenta
+                            if registro_historial_ok:
+                                with motor_seguro.begin() as trans_estados:
+                                    trans_estados.execute(text("""
+                                        INSERT INTO Historial_Estados (sku) VALUES (:sku)
+                                    """), {"sku": producto['sku']})
+                                print(f"📝 Producto {producto['sku']} anotado en el historial de exclusión.")
             else:
                 print("\n⏸️ TAREA 2 OMITIDA: La publicación de Estados está apagada en el Panel.")
 
