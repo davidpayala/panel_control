@@ -94,7 +94,7 @@ def get_google_service():
         return None
 
 def buscar_contacto_google(telefono):
-    """Busca un contacto en Google por número."""
+    """Busca un contacto en Google por número probando múltiples formatos."""
     datos = normalizar_telefono_maestro(telefono)
     if not datos: return {'encontrado': False}
     
@@ -102,7 +102,9 @@ def buscar_contacto_google(telefono):
     if not service: return {'encontrado': False, 'error': 'No auth'}
 
     try:
-        queries = [datos['corto'], datos['db']]
+        # Se añade datos['google'] (con espacios) y el texto original de la búsqueda
+        queries = [datos['corto'], datos['db'], datos['google'], str(telefono)]
+        
         for q in queries:
             results = service.people().searchContacts(
                 query=q, readMask='names,phoneNumbers,emailAddresses'
@@ -127,6 +129,7 @@ def buscar_contacto_google(telefono):
     except Exception as e:
         print(f"Error Google Search: {e}")
     return {'encontrado': False}
+
 
 def crear_en_google(nombre, apellido, telefono, email=None):
     """Crea un contacto en Google Contacts"""
@@ -582,3 +585,22 @@ def generar_nombre_inteligente(row):
         resultado = f"{nombre} ({sku})"
         
     return resultado.strip()
+
+def determinar_sesiones_para_estado(prob_lentes, prob_principal):
+    """
+    Determina qué sesiones de WhatsApp deben publicar el estado basándose
+    en su porcentaje de probabilidad individual (0 a 100).
+    Devuelve una lista con las sesiones elegidas ('default', 'principal' o ambas).
+    """
+    import random
+    sesiones_elegidas = []
+
+    # Evaluación independiente para la sesión Lentes (default)
+    if random.randint(1, 100) <= prob_lentes:
+        sesiones_elegidas.append("default")
+
+    # Evaluación independiente para la sesión Principal (principal)
+    if random.randint(1, 100) <= prob_principal:
+        sesiones_elegidas.append("principal")
+
+    return sesiones_elegidas

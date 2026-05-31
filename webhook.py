@@ -11,7 +11,7 @@ import random
 from datetime import datetime
 import io
 from PIL import Image
-
+import threading
 
 app = Flask(__name__)
 
@@ -25,9 +25,10 @@ def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
 try:
-    from utils import normalizar_telefono_maestro
+    from utils import normalizar_telefono_maestro, crear_en_google # <-- AÑADIDO crear_en_google
 except ImportError:
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
+    def crear_en_google(n, a, t): return False
 
 def aplicar_parche_db():
     try:
@@ -54,6 +55,19 @@ def aplicar_parche_db():
     except: pass
 
 aplicar_parche_db()
+
+def sync_google_fondo(nombre, telefono):
+    """Guarda el contacto en Google Contacts de forma asíncrona"""
+    if not telefono or "LID_" in str(telefono): 
+        return
+    
+    norm = normalizar_telefono_maestro(telefono)
+    if norm:
+        exito = crear_en_google(nombre, "", norm['google'])
+        if exito:
+            log_info(f"✅ Sincronización Google exitosa para: {nombre} ({norm['google']})")
+        else:
+            log_error(f"❌ Falló sincronización con Google para: {nombre}")
 
 def descargar_media_plus(media_url):
     try:
@@ -263,6 +277,7 @@ def recibir_mensaje():
                                         RETURNING id_cliente
                                     """), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
                                     id_cliente_final = res.id_cliente
+                                    threading.Thread(target=sync_google_fondo, args=(push_name, telefono_num)).start()
                                 except Exception as e:
                                     if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
                                     else: raise e
@@ -301,6 +316,7 @@ def recibir_mensaje():
                                             RETURNING id_cliente
                                         """), {"lid": wspid_lid, "t": final_tel, "n": push_name}).fetchone()
                                         id_cliente_final = res.id_cliente
+                                        threading.Thread(target=sync_google_fondo, args=(push_name, final_tel)).start()
                                     except Exception as e:
                                         if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": final_tel}).scalar()
                                         else: raise e
@@ -330,6 +346,7 @@ def recibir_mensaje():
                                     RETURNING id_cliente
                                 """), {"wid": fallback_id, "t": telefono_num, "n": push_name}).fetchone()
                                 id_cliente_final = res.id_cliente
+                                threading.Thread(target=sync_google_fondo, args=(push_name, telefono_num)).start()
                             except Exception as e:
                                 if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
                                 else: raise e
