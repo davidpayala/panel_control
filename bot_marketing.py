@@ -22,7 +22,8 @@ from utils import (
     verificar_numero_waha, 
     enviar_mensaje_whatsapp, 
     seleccionar_producto_para_estado, 
-    subir_estado_whatsapp
+    subir_estado_whatsapp,
+    generar_texto_estado_ia
 )
 
 def ejecutar_francotirador():
@@ -209,11 +210,13 @@ def ejecutar_francotirador():
                         if not producto:
                             print("⚠️ No hay productos elegibles (sin stock o ya publicados en los últimos 14 días).")
                         else:
-                            texto_estado = f"✨ ¡Mira lo que tenemos en stock!\n{producto['nombre']}\n\nEnvíanos un mensaje para más información. 📲"
+                            # -------- LA IA ENTRA EN ACCIÓN AQUÍ --------
+                            print(f"🧠 Pidiendo a la RTX 3060 que redacte el texto para: {producto['nombre']}...")
+                            texto_estado = generar_texto_estado_ia(producto['nombre'])
+                            print(f"✍️ Texto generado: {texto_estado}")
+                            # --------------------------------------------
                             
-                            # Variable para registrar en historial solo una vez si al menos una cuenta tuvo éxito
                             registro_historial_ok = False
-
                             # 3. Iteramos sobre las sesiones que ganaron el sorteo de probabilidad
                             for sesion in sesiones_a_publicar:
                                 print(f"🚀 [Cuenta: {sesion}] Subiendo estado: {producto['sku']} - {producto['nombre']}")

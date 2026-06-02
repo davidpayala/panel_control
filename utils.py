@@ -471,8 +471,8 @@ def subir_estado_whatsapp(session_name, texto, media_url=None):
 # CREACION DEL NOMBRE COMPLETO DEL PRODUCTO
 def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorios):
     """
-    Selecciona un producto (variante) aplicando las 3 reglas de negocio,
-    y utiliza la función 'generar_nombre_inteligente' para formatear el título.
+    Selecciona un producto aplicando las reglas de negocio, incluyendo
+    color principal y detalles de su grupo promocional.
     """
     import random
     from sqlalchemy import text
@@ -485,7 +485,6 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
         pesos_categoria = [33, 33, 34]
         
     categoria_elegida = random.choices(categorias, weights=pesos_categoria, k=1)[0]
-    print(f"🎲 El algoritmo eligió la categoría: '{categoria_elegida}'") 
     
     with engine.connect() as conn:
         sql = text("""
@@ -495,11 +494,14 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
                 p.marca,
                 p.modelo,
                 p.categoria,
-                v.nombre_variante, 
+                p.color_principal,
+                g.nombre_grupo,
+                g.descripcion AS descripcion_grupo,
                 v.stock_interno, 
                 p.url_imagen 
             FROM productos p
             JOIN variantes v ON p.id_producto = v.id_producto
+            LEFT JOIN grupos_productos g ON v.id_grupo = g.id_grupo
             WHERE p.categoria = :cat 
               AND v.stock_interno > 0 
               AND v.sku NOT IN (
@@ -515,36 +517,34 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
 
     opciones = []
     pesos_stock = []
-    
     for row in resultados:
         opciones.append(row)
         pesos_stock.append(row.stock_interno) 
         
     producto_elegido = random.choices(opciones, weights=pesos_stock, k=1)[0]
     
-    # ==========================================
-    # 🧠 USAMOS LA NUEVA FUNCIÓN COMPARTIDA
-    # ==========================================
-    # Convertimos los datos de la base de datos a un diccionario
     datos_producto = {
         'categoria': producto_elegido.categoria,
         'marca': producto_elegido.marca,
         'modelo': producto_elegido.modelo,
         'nombre': producto_elegido.nombre,
-        'sku': producto_elegido.sku
+        'sku': producto_elegido.sku,
+        'color_principal': producto_elegido.color_principal,
+        'grupo': producto_elegido.nombre_grupo,
+        'descripcion_grupo': producto_elegido.descripcion_grupo
     }
     
-    # Llamamos a tu función independiente para que haga la magia
     nombre_final = generar_nombre_inteligente(datos_producto)
 
-    # Devolvemos el diccionario listo para WhatsApp
     return {
         "sku": producto_elegido.sku,
         "nombre": nombre_final,
+        "color_principal": producto_elegido.color_principal,
+        "grupo": producto_elegido.nombre_grupo,
+        "descripcion_grupo": producto_elegido.descripcion_grupo,
         "stock": producto_elegido.stock_interno,
         "imagen": producto_elegido.url_imagen
     }
-
 
 
 # ==============================================================================
@@ -604,3 +604,45 @@ def determinar_sesiones_para_estado(prob_lentes, prob_principal):
         sesiones_elegidas.append("principal")
 
     return sesiones_elegidas
+
+def generar_texto_estado_ia(producto):
+    """
+    Conecta con Ollama local para redactar el estado usando color_principal y grupo.
+    """
+    url_ia = "http://localhost:11434/api/generate"
+    
+    nombre = producto.get('nombre', 'Producto')
+    color = producto.get('color_principal', 'No especificado')
+    grupo = producto.get('grupo', 'General')
+    desc_grupo = producto.get('descripcion_grupo', '')
+    
+    prompt = f"""Eres un experto en marketing digital para KMLentes.pe, una tienda de lentes de contacto y accesorios de lentes de contacto en Perú. 
+    Escribe un mensaje corto y persuasivo para un estado de WhatsApp ofreciendo este producto.
+    
+    DATOS REALES DEL PRODUCTO:
+    - Lente: {nombre}
+    - Color destacado: {color}
+    - Colección/Grupo: {grupo}
+    - Detalles de la colección: {desc_grupo}
+    
+    REGLAS:
+    1. Usa emojis adecuados. 
+    2. Resalta de forma atractiva el color destacado o el nombre de la colección.
+    3. Invita a escribir al WhatsApp. 
+    4. Máximo 35 palabras. 
+    5. IMPORTANTE: Devuelve únicamente el texto del estado, sin introducciones, saludos ni comillas."""
+
+    payload = {
+        "model": "llama3.1",
+        "prompt": prompt,
+        "stream": False
+    }
+
+    try:
+        response = requests.post(url_ia, json=payload, timeout=30)
+        if response.status_code == 200:
+            return response.json().get("response", "").strip()
+    except Exception as e:
+        print(f"⚠️ Error en IA local: {e}")
+
+    return f"✨ ¡{nombre} disponible en stock! Color destacado: {color}. Escríbenos para asegurar los tuyos. 📲 KM" 
