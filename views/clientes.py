@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 from database import engine
-from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_maestro, generar_nombre_ia
+from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_maestro, generar_nombre_ia, actualizar_en_google
 import time
 
 # Lista de respaldo en caso de que la tabla esté vacía o falle la conexión
@@ -66,10 +66,78 @@ def render_herramienta_fusion():
         except Exception as e: st.error(f"Error cargando herramienta: {e}")
 
 # ==============================================================================
+# HERRAMIENTA DE SINCRONIZACIÓN MASIVA GOOGLE (PASO 2 OPTIMIZADO)
+# ==============================================================================
+def render_sincronizacion_masiva():
+    with st.expander("🔄 Sincronización Masiva con Google Contacts", expanded=False):
+        st.info("💡 **Sincronización de Historial:** Esta herramienta busca todos los clientes activos que no están vinculados para registrarlos en Google Contacts y asociar su ID permanentemente.")
+        if st.button("🚀 Vincular Clientes Antiguos"):
+            with st.spinner("Sincronizando historial..."):
+                try:
+                    with engine.connect() as conn:
+                        df_sin_sync = pd.read_sql(text("""
+                            SELECT c.id_cliente, c.nombre_corto, 
+                                   COALESCE(
+                                       (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                                       c.telefono
+                                   ) as tel_prin
+                            FROM clientes c 
+                            WHERE c.activo=TRUE AND (c.google_id IS NULL OR TRIM(c.google_id) = '')
+                        """), conn)
+                    
+                    if df_sin_sync.empty:
+                        st.success("¡Todos los clientes ya se encuentran vinculados!")
+                    else:
+                        cont = 0
+                        detalles_omisiones = []
+                        with engine.begin() as conn_tx:
+                            for idx, row in df_sin_sync.iterrows():
+                                id_cli = row['id_cliente']
+                                nombre = row['nombre_corto']
+                                tel = row['tel_prin']
+                                
+                                if pd.isna(tel) or str(tel).strip().lower() in ['nan', '']:
+                                    detalles_omisiones.append(f"⚠️ ID {id_cli} ({nombre}): Sin ningún teléfono en base de datos.")
+                                    continue
+                                    
+                                norm = normalizar_telefono_maestro(tel)
+                                if not norm:
+                                    detalles_omisiones.append(f"⚠️ ID {id_cli} ({nombre}): Formato inválido para '{tel}'.")
+                                    continue
+                                    
+                                tel_db = norm['db']
+                                tel_google = norm.get('google', tel_db)
+                                
+                                res_g = buscar_contacto_google(tel_db)
+                                g_id = None
+                                if res_g and res_g.get('encontrado'):
+                                    g_id = res_g['google_id']
+                                else:
+                                    if crear_en_google(nombre, "", tel_google):
+                                        res_g2 = buscar_contacto_google(tel_db)
+                                        if res_g2 and res_g2.get('encontrado'):
+                                            g_id = res_g2['google_id']
+                                
+                                if g_id:
+                                    conn_tx.execute(text("UPDATE clientes SET google_id = :gid WHERE id_cliente = :id"), {"gid": g_id, "id": id_cli})
+                                    cont += 1
+                        
+                        if detalles_omisiones:
+                            st.markdown("##### 🔍 Detalles de registros omitidos:")
+                            for msg in detalles_omisiones:
+                                st.warning(msg)
+                                
+                        st.success(f"¡Sincronización completada! Se vincularon {cont} clientes con éxito.")
+                        if cont > 0:
+                            time.sleep(1)
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"Error en la sincronización masiva: {e}")
+
+# ==============================================================================
 # RENDERIZADO PRINCIPAL
 # ==============================================================================
 def render_clientes():
-    # --- CARGA DINÁMICA DE ESTADOS DESDE LA BASE DE DATOS ---
     try:
         with engine.connect() as conn:
             df_etapas = pd.read_sql(text("SELECT id_etapa, subgrupo FROM EtapasCliente WHERE activo = TRUE ORDER BY grupo, id_etapa"), conn)
@@ -79,12 +147,13 @@ def render_clientes():
         else:
             estados_opciones = ESTADOS_CLIENTE_FALLBACK
             mapa_subgrupo_id = {}
-    except Exception as e:
+    except:
         estados_opciones = ESTADOS_CLIENTE_FALLBACK
         mapa_subgrupo_id = {}
 
     st.title("👤 Gestión de Clientes")
     render_herramienta_fusion()
+    render_sincronizacion_masiva()
 
     # --- CREAR NUEVO CLIENTE ---
     with st.expander("➕ Registrar Nuevo Cliente", expanded=False):
@@ -110,17 +179,23 @@ def render_clientes():
                         st.warning(f"El teléfono {tel_db} ya pertenece al cliente ID {existe[0]}.")
                     else:
                         g_id, g_nom, g_ape = None, None, None
+                        if not nuevo_alias: nuevo_alias = "Cliente Nuevo"
+                        
                         if vincular_google:
                             res_g = buscar_contacto_google(tel_db)
                             if res_g and res_g.get('encontrado'):
                                 g_id = res_g['google_id']
                                 g_nom = res_g['nombre']
                                 g_ape = res_g['apellido']
-                                if not nuevo_alias: nuevo_alias = f"{g_nom} {g_ape}".strip()
+                                nuevo_alias = f"{g_nom} {g_ape}".strip()
+                            else:
+                                tel_google = norm.get('google', tel_db)
+                                if crear_en_google(nuevo_alias, "", tel_google):
+                                    res_g2 = buscar_contacto_google(tel_db)
+                                    if res_g2 and res_g2.get('encontrado'):
+                                        g_id = res_g2['google_id']
 
-                        if not nuevo_alias: nuevo_alias = "Cliente Nuevo"
                         nombre_ia = generar_nombre_ia(nuevo_alias, g_nom or "")
-
                         id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
 
                         try:
@@ -155,7 +230,7 @@ def render_clientes():
 
     query = """
         SELECT c.id_cliente, c.nombre_corto, c.estado, c.nombre, c.apellido, c.etiquetas, c.google_id, c.whatsapp_internal_id, c.nombre_ia,
-               (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE LIMIT 1) as tel_principal,
+               COALESCE((SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1), c.telefono) as tel_principal,
                (SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE) as todos_telefonos
         FROM clientes c
         WHERE c.activo = TRUE
@@ -163,7 +238,7 @@ def render_clientes():
     params = {}
     if busqueda:
         query += """ AND (
-            c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.etiquetas ILIKE :g OR c.nombre_ia ILIKE :g
+            c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.apellido ILIKE :g OR c.etiquetas ILIKE :g OR c.nombre_ia ILIKE :g
             OR EXISTS (SELECT 1 FROM telefonoscliente t WHERE t.id_cliente = c.id_cliente AND t.telefono ILIKE :t AND t.activo = TRUE)
         )"""
         params = {"g": term_gen, "t": term_tel}
@@ -196,16 +271,14 @@ def render_clientes():
             with engine.begin() as conn:
                 for idx, row in edited_df.iterrows():
                     id_etapa_val = mapa_subgrupo_id.get(row['estado'])
-                    # Manejo seguro por si nombre_ia es None
                     nia_val = row['nombre_ia'] if pd.notna(row['nombre_ia']) else ""
-                    
                     conn.execute(text("UPDATE clientes SET nombre_corto=:nc, nombre_ia=:nia, estado=:est, id_etapa=:id_etapa WHERE id_cliente=:id"),
                                  {"nc": row['nombre_corto'], "nia": nia_val, "est": row['estado'], "id_etapa": id_etapa_val, "id": row['id_cliente']})
             st.success("Cambios guardados.")
             time.sleep(1)
             st.rerun()
 
-        # --- GESTIÓN INDIVIDUAL ---
+        # --- GESTIÓN INDIVIDUAL (PASO 3: DESBLOQUEADO Y VINCULADO) ---
         filas_sel = edited_df[edited_df["Seleccionar"] == True]
         if not filas_sel.empty:
             row_full = df.loc[filas_sel.index[0]]
@@ -218,28 +291,71 @@ def render_clientes():
 
             with tab_datos:
                 with st.form(f"form_cli_{id_cli_sel}"):
-                    c1, c2 = st.columns(2)
+                    c1, c2, c3 = st.columns(3)
                     new_nombre = c1.text_input("Alias Original", value=row_full['nombre_corto'] or "")
+                    val_nombre_ia = row_full['nombre_ia'] if pd.notna(row_full['nombre_ia']) else ""
+                    new_nombre_ia = c2.text_input("Nombre IA", value=val_nombre_ia)
                     curr_est = row_full['estado']
-                    new_estado = c2.selectbox("Estado", options=estados_opciones, index=estados_opciones.index(curr_est) if curr_est in estados_opciones else 0)
+                    new_estado = c3.selectbox("Estado", options=estados_opciones, index=estados_opciones.index(curr_est) if curr_est in estados_opciones else 0)
 
-                    st.caption("Google Contacts (Bloqueado, usa sincronización)")
-                    c3, c4 = st.columns(2)
-                    c3.text_input("Nombre Real", value=row_full['nombre'] or "", disabled=True)
-                    c4.text_input("Apellido", value=row_full['apellido'] or "", disabled=True)
+                    st.markdown("##### 👥 Sincronización Directa a Google Contacts")
+                    c4, c5, c6 = st.columns(3)
+                    new_real_nombre = c4.text_input("Nombre Real", value=row_full['nombre'] or "")
+                    new_apellido = c5.text_input("Apellido", value=row_full['apellido'] or "")
+                    new_tel_principal = c6.text_input("Teléfono Principal", value=row_full['tel_principal'] or "")
+                    
                     new_etiquetas = st.text_area("Etiquetas / Notas", value=row_full['etiquetas'] or "")
 
                     if st.form_submit_button("💾 Guardar Datos"):
                         id_etapa_val = mapa_subgrupo_id.get(new_estado)
+                        google_id_crudo = row_full['google_id']
+                        
+                        # Validación estricta para asegurar que el ID de Google es real y no un NaN/Vacío
+                        tiene_google_id = pd.notna(google_id_crudo) and str(google_id_crudo).strip().lower() not in ['', 'nan', 'none']
+                        
+                        if tiene_google_id:
+                            norm_t = normalizar_telefono_maestro(new_tel_principal)
+                            tel_g = norm_t['google'] if norm_t else new_tel_principal
+                            
+                            with st.spinner("Sincronizando con Google Contacts..."):
+                                exito_google = actualizar_en_google(str(google_id_crudo), new_real_nombre, new_apellido, tel_g)
+                                
+                            if exito_google:
+                                st.toast("✅ Contacto actualizado en Google", icon="👥")
+                            else:
+                                st.error("❌ Falló la actualización en Google Contacts. Revisa la función 'actualizar_en_google' en utils.py o las credenciales.")
+                        else:
+                            st.warning("⚠️ Este cliente no tiene un ID de Google Contacts vinculado. Usa la sincronización masiva o manual primero.")
+                        
+                        # Guardado en Base de Datos Local
                         with engine.begin() as conn:
                             conn.execute(text("""
-                                UPDATE clientes SET nombre_corto=:nc, etiquetas=:e, estado=:est, id_etapa=:id_etapa WHERE id_cliente=:id
-                            """), {"nc": new_nombre, "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "id": id_cli_sel})
-                        st.success("Guardado.")
+                                UPDATE clientes 
+                                SET nombre_corto=:nc, nombre_ia=:nia, nombre=:n, apellido=:a, etiquetas=:e, estado=:est, id_etapa=:id_etapa 
+                                WHERE id_cliente=:id
+                            """), {
+                                "nc": new_nombre, "nia": new_nombre_ia, "n": new_real_nombre, "a": new_apellido,
+                                "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "id": id_cli_sel
+                            })
+                            
+                            if str(new_tel_principal).strip() != str(row_full['tel_principal']).strip():
+                                norm_t = normalizar_telefono_maestro(new_tel_principal)
+                                if norm_t:
+                                    conn.execute(text("UPDATE telefonoscliente SET es_principal=FALSE WHERE id_cliente=:id"), {"id": id_cli_sel})
+                                    existe_tel = conn.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente=:id AND telefono=:t"), {"id": id_cli_sel, "t": norm_t['db']}).fetchone()
+                                    
+                                    if existe_tel:
+                                        conn.execute(text("UPDATE telefonoscliente SET es_principal=TRUE, activo=TRUE WHERE id_telefono=:idt"), {"idt": existe_tel[0]})
+                                    else:
+                                        conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :t, TRUE)"), {"id": id_cli_sel, "t": norm_t['db']})
+                                    
+                                    conn.execute(text("UPDATE clientes SET telefono=:t WHERE id_cliente=:id"), {"t": norm_t['db'], "id": id_cli_sel})
+
+                        st.success("Guardado en Base de Datos.")
                         time.sleep(1)
                         st.rerun()
 
-                if st.button("🔍 Sincronizar Google (Usa Tel. Principal)"):
+                if st.button("🔍 Forzar Sincronización Manual (Obtener ID de Google)"):
                     if row_full['tel_principal']:
                         res = buscar_contacto_google(row_full['tel_principal'])
                         if res and res.get('encontrado'):
@@ -252,6 +368,7 @@ def render_clientes():
                         else: st.error("No encontrado en Google.")
                     else: st.warning("No tiene un teléfono asignado para buscar.")
 
+            # --- PESTAÑA TELÉFONOS ---
             with tab_tel:
                 st.markdown("##### Números Asociados")
                 with engine.connect() as conn:
@@ -291,7 +408,7 @@ def render_clientes():
                                 """), {"t": norm_t['db']}).fetchone()
                                 
                                 if ex: 
-                                    st.error(f"⚠️ Este número ya está asignado al cliente: **{ex.nombre_corto}** (ID: {ex.id_cliente}). Para unirlo a este perfil como teléfono adicional, cierra este panel y usa la sección 'Fusionar Clientes Duplicados' arriba.")
+                                    st.error(f"⚠️ Este número ya está asignado al cliente: **{ex.nombre_corto}** (ID: {ex.id_cliente}).")
                                 else:
                                     with engine.begin() as tx:
                                         tx.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono) VALUES (:id, :t)"), {"id": id_cli_sel, "t": norm_t['db']})
@@ -302,55 +419,166 @@ def render_clientes():
                             st.error("Formato de número inválido.")
 
             with tab_dir:
-                st.markdown("#### Lista de Direcciones")
+                # --- PARCHE AUTOMÁTICO PARA DIRECCIÓN PRINCIPAL ---
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text("ALTER TABLE direcciones ADD COLUMN IF NOT EXISTS es_principal BOOLEAN DEFAULT FALSE"))
+                except: pass
+
+                st.markdown("#### 🏠 Lista de Direcciones")
                 with engine.connect() as conn:
-                    dirs = pd.read_sql(text("SELECT * FROM direcciones WHERE id_cliente=:id AND activo=TRUE ORDER BY id_direccion DESC"), conn, params={"id": id_cli_sel})
+                    dirs = pd.read_sql(text("""
+                        SELECT id_direccion, tipo_envio, nombre_receptor, telefono_receptor, distrito, 
+                               direccion_texto, referencia, gps_link, dni_receptor, agencia_nombre, 
+                               sede_entrega, observacion, es_principal 
+                        FROM direcciones 
+                        WHERE id_cliente=:id AND activo=TRUE 
+                        ORDER BY es_principal DESC, id_direccion DESC
+                    """), conn, params={"id": id_cli_sel})
+
+                # Mapeos entre Interfaz (UI) y Base de Datos (DB)
+                mapa_ui_to_db = {"Motorizado": "MOTO", "Agencia": "AGENCIA", "Otros": "OTROS"}
+                mapa_db_to_ui = {"MOTO": "Motorizado", "AGENCIA": "Agencia", "OTROS": "Otros"}
 
                 if not dirs.empty:
+                    for _, d_row in dirs.iterrows():
+                        col_d1, col_d2, col_d3 = st.columns([4, 2, 0.5])
+                        es_prin_dir = "⭐ Principal" if d_row['es_principal'] else "Secundaria"
+                        
+                        tipo_db = d_row['tipo_envio']
+                        tipo_ui = mapa_db_to_ui.get(tipo_db, "Otros")
+                        tipo_label = f"[{tipo_ui}]"
+                        
+                        if tipo_db == 'MOTO':
+                            resumen_dir = f"{d_row['direccion_texto']}, {d_row['distrito']}"
+                        elif tipo_db == 'AGENCIA':
+                            resumen_dir = f"Agencia: {d_row['agencia_nombre']} ({d_row['sede_entrega'] or 'Sede no especificada'})"
+                        else:
+                            resumen_dir = d_row['observacion'][:40] + "..." if d_row['observacion'] else "Sin detalles"
+
+                        col_d1.markdown(f"**{tipo_label} {d_row['nombre_receptor'] or 'Receptor'}** — {resumen_dir} ({es_prin_dir})")
+
+                        if not d_row['es_principal']:
+                            if col_d2.button("Hacer Principal", key=f"p_dir_{d_row['id_direccion']}"):
+                                with engine.begin() as tx:
+                                    tx.execute(text("UPDATE direcciones SET es_principal=FALSE WHERE id_cliente=:id"), {"id": id_cli_sel})
+                                    tx.execute(text("UPDATE direcciones SET es_principal=TRUE WHERE id_direccion=:idd"), {"idd": int(d_row['id_direccion'])})
+                                st.rerun()
+
+                        if col_d3.button("🗑️", key=f"d_dir_{d_row['id_direccion']}"):
+                            with engine.begin() as tx:
+                                tx.execute(text("UPDATE direcciones SET activo=FALSE WHERE id_direccion=:idd"), {"idd": int(d_row['id_direccion'])})
+                            st.rerun()
+
+                    st.divider()
+
+                    # --- FORMULARIO DE EDICIÓN ---
                     dirs_view = dirs.copy()
                     dirs_view.insert(0, "Editar", False)
                     ed_dirs = st.data_editor(
-                        dirs_view[["Editar", "id_direccion", "distrito", "direccion_texto", "referencia"]],
-                        key="ed_dirs",
+                        dirs_view[["Editar", "id_direccion", "tipo_envio", "nombre_receptor", "distrito"]],
+                        key="ed_dirs_panel",
                         column_config={"Editar": st.column_config.CheckboxColumn("✏️", width="small"), "id_direccion": None},
                         hide_index=True, use_container_width=True
                     )
+                    
                     dir_sel = ed_dirs[ed_dirs["Editar"] == True]
                     if not dir_sel.empty:
                         r_dir = dirs.loc[dir_sel.index[0]]
+                        
                         with st.form("form_edit_dir"):
-                            d1, d2, d3 = st.columns(3)
-                            e_nom = d1.text_input("Recibe", r_dir.get('nombre_receptor', ''))
-                            e_tel = d2.text_input("Telf. Receptor", r_dir.get('telefono_receptor', ''))
-                            e_dist = d3.text_input("Distrito", r_dir['distrito'])
-                            e_dir = st.text_input("Dirección", r_dir['direccion_texto'])
-                            e_ref = st.text_input("Referencia", r_dir.get('referencia', ''))
+                            st.markdown("##### 📝 Modificar Dirección Seleccionada")
+                            
+                            tipo_db_act = r_dir['tipo_envio']
+                            tipo_ui_act = mapa_db_to_ui.get(tipo_db_act, "Otros")
+                            opciones_tipo = ["Motorizado", "Agencia", "Otros"]
+                            idx_tipo = opciones_tipo.index(tipo_ui_act) if tipo_ui_act in opciones_tipo else 2
+                            
+                            e_tipo_ui = st.selectbox("Tipo de Envío", opciones_tipo, index=idx_tipo)
+                            e_tipo_db = mapa_ui_to_db[e_tipo_ui]
+                            
+                            c1, c2 = st.columns(2)
+                            e_nom = c1.text_input("Nombre Receptor", value=r_dir['nombre_receptor'] or "")
+                            e_tel = c2.text_input("Telf. Receptor", value=r_dir['telefono_receptor'] or "")
+                            
+                            e_dist, e_dir, e_ref, e_gps_link = None, None, None, None
+                            e_dni, e_agencia, e_sede = None, None, None
+                            
+                            if e_tipo_db == "MOTO":
+                                d1, d2 = st.columns(2)
+                                e_dist = d1.text_input("Distrito", value=r_dir['distrito'] or "")
+                                e_dir = d2.text_input("Dirección Exacta", value=r_dir['direccion_texto'] or "")
+                                e_ref = st.text_input("Referencia", value=r_dir['referencia'] or "")
+                                e_gps_link = st.text_input("Link GPS", value=r_dir['gps_link'] or "")
+                            elif e_tipo_db == "AGENCIA":
+                                d1, d2, d3 = st.columns(3)
+                                e_dni = d1.text_input("DNI Receptor", value=r_dir['dni_receptor'] or "")
+                                e_agencia = d2.text_input("Nombre Agencia", value=r_dir['agencia_nombre'] or "")
+                                e_sede = d3.text_input("Sede de Entrega", value=r_dir['sede_entrega'] or "")
+                                
+                            e_obs = st.text_area("Observación", value=r_dir['observacion'] or "")
+                            
                             if st.form_submit_button("💾 Guardar Dirección"):
                                 with engine.begin() as conn:
                                     conn.execute(text("""
-                                        UPDATE direcciones SET nombre_receptor=:n, telefono_receptor=:t, distrito=:dis, direccion_texto=:dt, referencia=:r
+                                        UPDATE direcciones 
+                                        SET tipo_envio=:tipo, nombre_receptor=:n, telefono_receptor=:t, distrito=:dis, 
+                                            direccion_texto=:dt, referencia=:r, gps_link=:glink, dni_receptor=:dni, 
+                                            agencia_nombre=:anom, sede_entrega=:sede, observacion=:obs
                                         WHERE id_direccion=:id
-                                    """), {"n":e_nom, "t":e_tel, "dis":e_dist, "dt":e_dir, "r":e_ref, "id": int(r_dir['id_direccion'])})
-                                st.success("Dirección actualizada.")
+                                    """), {
+                                        "tipo": e_tipo_db, "n": e_nom, "t": e_tel, "dis": e_dist, "dt": e_dir, "r": e_ref, 
+                                        "glink": e_gps_link, "dni": e_dni, "anom": e_agencia, "sede": e_sede, "obs": e_obs, 
+                                        "id": int(r_dir['id_direccion'])
+                                    })
+                                st.success("Dirección actualizada con éxito.")
                                 time.sleep(1)
                                 st.rerun()
-                with st.expander("➕ Agregar Nueva Dirección"):
+                else:
+                    st.info("El cliente no cuenta con direcciones registradas.")
+
+                # --- FORMULARIO PARA CREAR NUEVA DIRECCIÓN ---
+                with st.expander("➕ Agregar Nueva Dirección", expanded=False):
+                    nn_tipo_ui = st.selectbox("Tipo de Envío para Nueva Dirección", ["Motorizado", "Agencia", "Otros"], key="sb_new_tipo")
+                    nn_tipo_db = mapa_ui_to_db[nn_tipo_ui]
+                    
                     with st.form("form_new_dir"):
-                        n1, n2, n3 = st.columns(3)
-                        nn_nom = n1.text_input("Recibe")
+                        n1, n2 = st.columns(2)
+                        nn_nom = n1.text_input("Nombre Receptor")
                         nn_tel = n2.text_input("Telf. Receptor")
-                        nn_dist = n3.text_input("Distrito")
-                        nn_dir = st.text_input("Dirección Exacta")
-                        nn_ref = st.text_input("Referencia")
+                        
+                        nn_dist, nn_dir, nn_ref, nn_gps_link = None, None, None, None
+                        nn_dni, nn_agencia, nn_sede = None, None, None
+                        
+                        if nn_tipo_db == "MOTO":
+                            d1, d2 = st.columns(2)
+                            nn_dist = d1.text_input("Distrito")
+                            nn_dir = d2.text_input("Dirección Exacta")
+                            nn_ref = st.text_input("Referencia")
+                            nn_gps_link = st.text_input("Link GPS")
+                        elif nn_tipo_db == "AGENCIA":
+                            d1, d2, d3 = st.columns(3)
+                            nn_dni = d1.text_input("DNI Receptor")
+                            nn_agencia = d2.text_input("Nombre Agencia (Ej: Olva, Shalom)")
+                            nn_sede = d3.text_input("Sede de Entrega")
+                            
+                        nn_obs = st.text_area("Observación")
+                        
                         if st.form_submit_button("Crear Dirección"):
-                            if nn_dir:
-                                with engine.begin() as conn:
-                                    conn.execute(text("""
-                                        INSERT INTO direcciones (id_cliente, nombre_receptor, telefono_receptor, distrito, direccion_texto, referencia, activo)
-                                        VALUES (:idc, :n, :t, :dis, :dt, :r, TRUE)
-                                    """), {"idc": id_cli_sel, "n":nn_nom, "t":nn_tel, "dis":nn_dist, "dt":nn_dir, "r":nn_ref})
-                                st.success("Dirección creada.")
-                                time.sleep(1)
-                                st.rerun()
-    else:
-        st.info("No se encontraron clientes.")
+                            # Detectar si es la primera dirección activa del cliente
+                            es_primera_direccion = True if dirs.empty else False
+                            
+                            with engine.begin() as conn:
+                                conn.execute(text("""
+                                    INSERT INTO direcciones (id_cliente, tipo_envio, nombre_receptor, telefono_receptor, distrito, 
+                                                             direccion_texto, referencia, gps_link, dni_receptor, agencia_nombre, 
+                                                             sede_entrega, observacion, activo, es_principal)
+                                    VALUES (:idc, :tipo, :n, :t, :dis, :dt, :r, :glink, :dni, :anom, :sede, :obs, TRUE, :es_prin)
+                                """), {
+                                    "idc": id_cli_sel, "tipo": nn_tipo_db, "n": nn_nom, "t": nn_tel, "dis": nn_dist, "dt": nn_dir, 
+                                    "r": nn_ref, "glink": nn_gps_link, "dni": nn_dni, "anom": nn_agencia, "sede": nn_sede, "obs": nn_obs,
+                                    "es_prin": es_primera_direccion
+                                })
+                            st.success("Nueva dirección creada.")
+                            time.sleep(1)
+                            st.rerun()

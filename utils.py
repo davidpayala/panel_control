@@ -145,26 +145,45 @@ def crear_en_google(nombre, apellido, telefono, email=None):
         return True
     except: return False
 
-def actualizar_en_google(google_id, nombre, apellido, telefono, email=None):
-    """Actualiza un contacto existente (Necesario para Facturación)"""
-    service = get_google_service()
-    if not service: return False
+def actualizar_en_google(google_id, nombre, apellido, telefono):
+    if not google_id:
+        return False
     try:
-        persona = service.people().get(resourceName=google_id, personFields='metadata').execute()
-        etag = persona.get('etag')
+        # Obtener el servicio de autenticación correcto
+        service = get_google_service()
+        if not service:
+            print("⚠️ No se pudo inicializar el servicio de Google.")
+            return False
+
+        # Forzar formato correcto del resourceName
+        resource_name = google_id if google_id.startswith('people/') else f"people/{google_id}"
+        
+        # 1. Obtener el 'etag' actual del contacto
+        contacto = service.people().get(
+            resourceName=resource_name,
+            personFields='metadata'
+        ).execute()
+        etag = contacto.get('etag')
+
+        # 2. Construir el cuerpo con los datos modificados
         body = {
             "etag": etag,
             "names": [{"givenName": nombre, "familyName": apellido}],
-            "phoneNumbers": [{"value": telefono}],
+            "phoneNumbers": [{"value": telefono, "type": "mobile"}]
         }
-        update_fields = 'names,phoneNumbers'
-        if email:
-            body["emailAddresses"] = [{"value": email}]
-            update_fields += ',emailAddresses'
-        service.people().updateContact(resourceName=google_id, updatePersonFields=update_fields, body=body).execute()
-        return True
-    except: return False
 
+        # 3. Enviar la actualización a la API
+        service.people().updateContact(
+            resourceName=resource_name,
+            updatePersonFields="names,phoneNumbers",
+            body=body
+        ).execute()
+        
+        return True
+    except Exception as e:
+        print(f"❌ Error real en actualizar_en_google: {e}")
+        return False
+    
 # ==============================================================================
 # 💬 3. FUNCIONES WAHA (API) - CHATS, CAMPAÑAS Y VERIFICACIÓN
 # ==============================================================================
@@ -605,32 +624,53 @@ def determinar_sesiones_para_estado(prob_lentes, prob_principal):
 
     return sesiones_elegidas
 
+import requests
+
 def generar_texto_estado_ia(producto):
     """
-    Conecta con Ollama local para redactar el estado usando color_principal y grupo.
+    Conecta con Ollama local. Python procesa la categoría primero 
+    y le da una orden estricta e inequívoca a la IA.
     """
     url_ia = "http://localhost:11434/api/generate"
     
-    nombre = producto.get('nombre', 'Producto')
-    color = producto.get('color_principal', 'No especificado')
-    grupo = producto.get('grupo', 'General')
-    desc_grupo = producto.get('descripcion_grupo', '')
+    # Usamos 'or' para asegurarnos de que si viene vacío (None), tenga un valor por defecto
+    nombre = producto.get('nombre') or 'Producto'
+    categoria = producto.get('categoria') or 'Accesorio'
+    color = producto.get('color_principal') or 'No especificado'
+    grupo = producto.get('grupo') or 'No especificado'
+    desc_grupo = producto.get('descripcion_grupo') or ''
     
-    prompt = f"""Eres un experto en marketing digital para KMLentes.pe, una tienda de lentes de contacto y accesorios de lentes de contacto en Perú. 
-    Escribe un mensaje corto y persuasivo para un estado de WhatsApp ofreciendo este producto.
+    # 🧠 LÓGICA EN PYTHON: Evaluamos la categoría sin importar mayúsculas o si le faltan palabras
+    cat_lower = str(categoria).lower()
     
-    DATOS REALES DEL PRODUCTO:
-    - Lente: {nombre}
+    if 'natural' in cat_lower:
+        enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre resaltar la belleza natural, el uso diario, cosmética y una mirada sutil pero impactante. NO hables de cosplay, ni disfraces."
+    elif 'fantas' in cat_lower or 'cosplay' in cat_lower or 'anime' in cat_lower:
+        enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre cosplay, disfraces, anime, eventos de cultura pop y transformaciones extremas. Usa un tono muy llamativo y atrevido."
+    elif 'lentes' in cat_lower:
+        enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre resaltar la belleza natural, el uso diario, cosmética y una mirada sutil pero impactante. NO hables de cosplay, ni disfraces."
+    else:
+        enfoque_estricto = "ENFOQUE OBLIGATORIO: Destaca su utilidad, diseño exclusivo y lo práctico que es como accesorio para complementar el estilo."
+
+    # Armamos el prompt con el enfoque inyectado
+    prompt = f"""Eres un copywriter experto en marketing digital para KMLentes.pe, tienda virtual de lentes de contacto en Perú. 
+    Escribe un mensaje corto para un estado de WhatsApp ofreciendo este producto.
+    
+    DATOS DEL PRODUCTO:
+    - Nombre: {nombre}
     - Color destacado: {color}
-    - Colección/Grupo: {grupo}
-    - Detalles de la colección: {desc_grupo}
+    - Colección: {grupo}
+    - Detalles: {desc_grupo}
     
-    REGLAS:
-    1. Usa emojis adecuados. 
-    2. Resalta de forma atractiva el color destacado o el nombre de la colección.
-    3. Invita a escribir al WhatsApp. 
-    4. Máximo 35 palabras. 
-    5. IMPORTANTE: Devuelve únicamente el texto del estado, sin introducciones, saludos ni comillas."""
+    {enfoque_estricto}
+    
+    REGLAS DE FORMATO:
+    1. Sigue al pie de la letra el ENFOQUE OBLIGATORIO.
+    2. Usa emojis adecuados al tema. 
+    3. Invita a que te envíen un mensaje al final al Whatsapp, no es necesario decir el numero telefonico ya que es un estado.
+    4. Máximo 35 palabras.
+    5. Devuelve ÚNICAMENTE el texto final para copiar y pegar (sin comillas, sin decir 'Aquí tienes', sin saludos iniciales).
+    """
 
     payload = {
         "model": "llama3.1",
@@ -645,4 +685,77 @@ def generar_texto_estado_ia(producto):
     except Exception as e:
         print(f"⚠️ Error en IA local: {e}")
 
-    return f"✨ ¡{nombre} disponible en stock! Color destacado: {color}. Escríbenos para asegurar los tuyos. 📲 KM" 
+    return f"✨ ¡{nombre} disponible! Ideal para tu estilo. Escríbenos para asegurar el tuyo. 📲"
+
+# ==============================================================================
+# HERRAMIENTA DE SINCRONIZACIÓN MASIVA GOOGLE
+# ==============================================================================
+def render_sincronizacion_masiva():
+    import time
+    with st.expander("🔄 Sincronización Masiva con Google Contacts", expanded=False):
+        st.info("💡 **Sincronización de Historial:** Esta herramienta busca todos los clientes activos que no están vinculados con Google Contacts para registrarlos y asociar su ID permanentemente.")
+        if st.button("🚀 Vincular Clientes Antiguos"):
+            with st.spinner("Sincronizando historial..."):
+                try:
+                    with engine.connect() as conn:
+                        df_sin_sync = pd.read_sql(text("""
+                            SELECT c.id_cliente, c.nombre_corto, 
+                                   (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1) as tel_prin
+                            FROM clientes c 
+                            WHERE c.activo=TRUE AND (c.google_id IS NULL OR TRIM(c.google_id) = '')
+                        """), conn)
+                    
+                    if df_sin_sync.empty:
+                        st.success("¡Todos los clientes ya se encuentran vinculados o no hay clientes activos sin ID de Google!")
+                    else:
+                        cont = 0
+                        detalles_omisiones = []
+                        
+                        with engine.begin() as conn_tx:
+                            for idx, row in df_sin_sync.iterrows():
+                                id_cli = row['id_cliente']
+                                nombre = row['nombre_corto']
+                                tel = row['tel_prin']
+                                
+                                # Validación corregida para detectar valores nulos (NaN o vacíos)
+                                if pd.isna(tel) or str(tel).strip().lower() in ['nan', '']:
+                                    detalles_omisiones.append(f"⚠️ ID {id_cli} ({nombre}): No tiene teléfono principal asignado en el sistema.")
+                                    continue
+                                    
+                                norm = normalizar_telefono_maestro(tel)
+                                if not norm:
+                                    detalles_omisiones.append(f"⚠️ ID {id_cli} ({nombre}): Falló la normalización para el número '{tel}'.")
+                                    continue
+                                    
+                                tel_db = norm['db']
+                                tel_google = norm.get('google', tel_db)
+                                
+                                res_g = buscar_contacto_google(tel_db)
+                                g_id = None
+                                if res_g and res_g.get('encontrado'):
+                                    g_id = res_g['google_id']
+                                else:
+                                    if crear_en_google(nombre, "", tel_google):
+                                        res_g2 = buscar_contacto_google(tel_db)
+                                        if res_g2 and res_g2.get('encontrado'):
+                                            g_id = res_g2['google_id']
+                                        else:
+                                            detalles_omisiones.append(f"❌ ID {id_cli} ({nombre}): Se creó en Google pero buscar_contacto_google no recuperó el ID.")
+                                    else:
+                                        detalles_omisiones.append(f"❌ ID {id_cli} ({nombre}): La función crear_en_google devolvió False.")
+                                
+                                if g_id:
+                                    conn_tx.execute(text("UPDATE clientes SET google_id = :gid WHERE id_cliente = :id"), {"gid": g_id, "id": id_cli})
+                                    cont += 1
+                        
+                        if detalles_omisiones:
+                            st.markdown("##### 🔍 Detalles del proceso:")
+                            for msg in detalles_omisiones:
+                                st.warning(msg)
+                                
+                        st.success(f"¡Sincronización completada! Se vincularon {cont} clientes con éxito.")
+                        if cont > 0:
+                            time.sleep(2)
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"Error en la sincronización masiva: {e}")

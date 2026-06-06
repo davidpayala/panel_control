@@ -30,9 +30,9 @@ def ejecutar_francotirador():
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Despertando Bot de Marketing...")
 
     # ==========================================================
-    # 🎲 MODO HUMANO: Retraso aleatorio (1 a 45 min)
+    # 🎲 MODO HUMANO: Retraso aleatorio (1 a 59 min)
     # ==========================================================
-    retraso_minutos = random.randint(1, 45)
+    retraso_minutos = random.randint(1, 59)
     retraso_segundos = retraso_minutos * 60
     print(f"⏳ Modo orgánico: Esperando {retraso_minutos} minutos antes de actuar...")
     time.sleep(retraso_segundos)
@@ -175,7 +175,7 @@ def ejecutar_francotirador():
                                 print("⚠️ Se agotaron los intentos de envío de mensajes directos.")
             else:
                 print("\n⏸️ TAREA 1 OMITIDA: Los mensajes directos están apagados en el Panel.")
-# ==        ================================================================
+            # ==        ================================================================
             # 📱 TAREA 2: PUBLICACIÓN DE ESTADOS (LÓGICA DINÁMICA DE CUENTAS)
             # ==================================================================
             if getattr(config, 'estados_activo', False):
@@ -212,7 +212,7 @@ def ejecutar_francotirador():
                         else:
                             # -------- LA IA ENTRA EN ACCIÓN AQUÍ --------
                             print(f"🧠 Pidiendo a la RTX 3060 que redacte el texto para: {producto['nombre']}...")
-                            texto_estado = generar_texto_estado_ia(producto['nombre'])
+                            texto_estado = generar_texto_estado_ia(producto)
                             print(f"✍️ Texto generado: {texto_estado}")
                             # --------------------------------------------
                             

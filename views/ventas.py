@@ -190,14 +190,14 @@ def render_nueva_venta():
                 # ---------------------------------
 
                 col_e1, col_e2 = st.columns(2)
-                tipo_envio = col_e1.selectbox("Método Envío", ["Gratis", "🚚 Envío Lima", "Express (Moto)", "Agencia (Pago Destino)", "Agencia (Pagado)"])
+                tipo_envio_ui = col_e1.selectbox("Método Envío", ["Motorizado", "Agencia", "Otros"])
                 costo_envio = col_e2.number_input("Costo Envío", value=0.0)
 
-                es_agencia = "Agencia" in tipo_envio
-                es_envio_lima = tipo_envio == "🚚 Envío Lima" or tipo_envio == "Express (Moto)"
+                mapa_ui_to_db = {"Motorizado": "MOTO", "Agencia": "AGENCIA", "Otros": "OTROS"}
+                tipo_envio_db = mapa_ui_to_db[tipo_envio_ui]
 
                 with engine.connect() as conn:
-                    q_dir = text("SELECT * FROM Direcciones WHERE id_cliente = :id AND activo = TRUE ORDER BY id_direccion DESC")
+                    q_dir = text("SELECT * FROM Direcciones WHERE id_cliente = :id AND activo = TRUE ORDER BY es_principal DESC, id_direccion DESC")
                     df_dirs = pd.read_sql(q_dir, conn, params={"id": id_cliente})
 
                 usar_guardada = False
@@ -207,14 +207,19 @@ def render_nueva_venta():
                 opciones_visuales = {}
                 if not df_dirs.empty:
                     for idx, row in df_dirs.iterrows():
-                        es_agencia_bd = bool(row.get('agencia_nombre')) and pd.notna(row['agencia_nombre']) and str(row['agencia_nombre']).strip() != ""
-                        if es_agencia_bd:
-                            lbl = f"🏢 {row['agencia_nombre']} - {row.get('sede_entrega', '')}"
+                        t_db = row.get('tipo_envio', 'OTROS')
+                        
+                        if t_db == 'MOTO':
+                            lbl = f"🏠 [Motorizado] {row.get('direccion_texto', '')} - {row.get('distrito', '')}"
+                            if row.get('referencia') and pd.notna(row['referencia']): lbl += f" (Ref: {row['referencia']})"
+                        elif t_db == 'AGENCIA':
+                            lbl = f"🏢 [Agencia] {row.get('agencia_nombre', '')} - {row.get('sede_entrega', '')}"
                         else:
-                            lbl = f"🏠 {row.get('direccion_texto', '')} - {row.get('distrito', '')}"
-                        if row.get('referencia') and pd.notna(row['referencia']): lbl += f" (Ref: {row['referencia']})"
-                        if row.get('observacion') and pd.notna(row['observacion']): lbl += f" | 👁️ {str(row['observacion'])[:20]}..."
+                            lbl = f"📦 [Otros] {str(row.get('observacion', ''))[:30]}"
+                        
+                        if row.get('es_principal'): lbl = "⭐ " + lbl
                         lbl += f" [ID:{row['id_direccion']}]"
+                        
                         opciones_visuales[lbl] = row
 
                 KEY_NUEVA = "➕ Usar una Nueva Dirección..."
@@ -226,48 +231,63 @@ def render_nueva_venta():
                 if seleccion_dir != KEY_NUEVA:
                     usar_guardada = True
                     dir_data = opciones_visuales[seleccion_dir]
-                    es_agencia_bd = bool(dir_data.get('agencia_nombre')) and pd.notna(dir_data['agencia_nombre']) and str(dir_data['agencia_nombre']).strip() != ""
-                    if es_agencia_bd:
+                    t_db_select = dir_data.get('tipo_envio', 'OTROS')
+                    
+                    if t_db_select == 'AGENCIA':
                         texto_direccion_final = f"{dir_data.get('agencia_nombre', '')} - {dir_data.get('sede_entrega', '')} [DNI: {dir_data.get('dni_receptor', '')}]"
                         st.info(f"📦 Destino: **{texto_direccion_final}**")
-                    else:
+                    elif t_db_select == 'MOTO':
                         texto_direccion_final = f"{dir_data.get('direccion_texto', '')} - {dir_data.get('distrito', '')}"
                         if dir_data.get('referencia') and pd.notna(dir_data['referencia']): texto_direccion_final += f" (Ref: {dir_data['referencia']})"
                         st.info(f"🏠 Destino: **{texto_direccion_final}**")
+                    else:
+                        texto_direccion_final = f"{dir_data.get('observacion', 'Otros')}"
+                        st.info(f"📍 Destino: **{texto_direccion_final}**")
                 else:
-                    st.warning("📝 Registro de Nuevos Datos:")
+                    st.warning(f"📝 Registro de Nuevos Datos ({tipo_envio_ui}):")
                     with st.container(border=True):
                         c_nom, c_tel = st.columns(2)
                         recibe = c_nom.text_input("Nombre Recibe:", value=nombre_cli)
                         telf = c_tel.text_input("Teléfono:", key="telf_new")
-                        if es_envio_lima:
+                        
+                        direcc, dist, ref, gps_link, dni, agencia, sede, obs_extra = "", "", "", "", "", "", "", ""
+                        
+                        if tipo_envio_ui == "Motorizado":
                             direcc = st.text_input("Dirección Exacta:")
                             c_dist, c_ref = st.columns(2)
                             dist = c_dist.text_input("Distrito:")
                             ref = c_ref.text_input("Referencia:")
-                            gps = st.text_input("📍 GPS (Link Google Maps):")
+                            gps_link = st.text_input("📍 Link GPS (Google Maps):")
                             obs_extra = st.text_input("Observación:")
-                            datos_nuevos = {"tipo": "MOTO", "nom": recibe, "tel": telf, "dir": direcc, "dist": dist, "ref": ref, "gps": gps, "obs": obs_extra, "dni": "", "age": "", "sede": ""}
                             texto_direccion_final = f"{direcc} - {dist} (Ref: {ref})"
-                        elif es_agencia:
+                            
+                        elif tipo_envio_ui == "Agencia":
                             c_dni, c_age = st.columns(2)
                             dni = c_dni.text_input("DNI:")
                             agencia = c_age.text_input("Agencia:", value="Shalom")
                             sede = st.text_input("Sede:")
-                            obs_new = st.text_input("Obs:")
-                            datos_nuevos = {"tipo": "AGENCIA", "nom": recibe, "tel": telf, "dni": dni, "age": agencia, "sede": sede, "obs": obs_new, "dir": "", "dist": "", "ref": "", "gps": ""}
+                            obs_extra = st.text_input("Obs:")
                             texto_direccion_final = f"{agencia} - {sede}"
+                            
                         else:
-                            obs_new = st.text_input("Observación / Lugar:")
-                            datos_nuevos = {"tipo": "OTROS", "nom": recibe, "tel": telf, "obs": obs_new, "dir": "", "dist": "", "dni": "", "age": "", "sede": "", "ref": "", "gps": ""}
+                            obs_extra = st.text_input("Observación / Lugar:")
                             texto_direccion_final = "Entrega Directa / Otro"
 
+                        datos_nuevos = {
+                            "tipo": tipo_envio_db, "nom": recibe, "tel": telf, 
+                            "dir": direcc, "dist": dist, "ref": ref, "glink": gps_link, 
+                            "dni": dni, "age": agencia, "sede": sede, "obs": obs_extra
+                        }
+
                 clave_agencia = None
-                if es_agencia:
+                # Se pedirá clave solo si el tipo de envío principal en la interfaz es "Agencia" o si la dirección elegida es de tipo "AGENCIA"
+                es_agencia_clave = (tipo_envio_ui == "Agencia") or (usar_guardada and opciones_visuales.get(seleccion_dir, {}).get('tipo_envio') == 'AGENCIA')
+                
+                if es_agencia_clave:
                     if 'clave_temp' not in st.session_state: st.session_state['clave_temp'] = str(random.randint(1000, 9999))
                     col_k1, col_k2 = st.columns([1,2])
                     clave_agencia = col_k1.text_input("Clave", value=st.session_state['clave_temp'])
-                    col_k2.info("🔐 Clave Entrega")
+                    col_k2.info("🔐 Clave de Entrega")
 
                 total_final = suma_subtotal + costo_envio
                 
@@ -283,15 +303,15 @@ def render_nueva_venta():
                             if not usar_guardada and datos_nuevos:
                                 conn.execute(text("""
                                     INSERT INTO Direcciones (id_cliente, tipo_envio, nombre_receptor, telefono_receptor, 
-                                    direccion_texto, distrito, referencia, gps_link, dni_receptor, agencia_nombre, sede_entrega, observacion, activo)
-                                    VALUES (:id, :tipo, :nom, :tel, :dir, :dist, :ref, :gps, :dni, :age, :sede, :obs, TRUE)
+                                    direccion_texto, distrito, referencia, gps_link, dni_receptor, agencia_nombre, sede_entrega, observacion, activo, es_principal)
+                                    VALUES (:id, :tipo, :nom, :tel, :dir, :dist, :ref, :glink, :dni, :age, :sede, :obs, TRUE, FALSE)
                                 """), {"id": id_cliente, **datos_nuevos})
 
                             nota_full = f"{nota_venta} | Envío: {texto_direccion_final}"
                             res_v = conn.execute(text("""
                                 INSERT INTO Ventas (id_cliente, tipo_envio, costo_envio, total_venta, nota, clave_seguridad)
                                 VALUES (:idc, :tipo, :costo, :total, :nota, :clave) RETURNING id_venta
-                            """), {"idc": id_cliente, "tipo": tipo_envio, "costo": costo_envio, "total": total_final, "nota": nota_full, "clave": clave_agencia})
+                            """), {"idc": id_cliente, "tipo": tipo_envio_ui, "costo": costo_envio, "total": total_final, "nota": nota_full, "clave": clave_agencia})
                             id_venta = res_v.fetchone()[0]
 
                             for item in st.session_state.carrito:
@@ -302,7 +322,7 @@ def render_nueva_venta():
                                 
                                 if item['es_inventario']:
                                     res_s = conn.execute(text("UPDATE Variantes SET stock_interno = stock_interno - :c WHERE sku=:s RETURNING stock_interno"),
-                                                        {"c": int(item['cantidad']), "s": item['sku']})
+                                                         {"c": int(item['cantidad']), "s": item['sku']})
                                     nuevo_s = res_s.scalar()
                                     if nuevo_s <= 0: 
                                         conn.execute(text("UPDATE Variantes SET ubicacion = '' WHERE sku=:s"), {"s": item['sku']})

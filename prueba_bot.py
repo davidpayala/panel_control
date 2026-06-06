@@ -1,95 +1,95 @@
 import os
-import requests
-import random
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# 1. FORZAMOS LA CARGA DEL ARCHIVO .ENV (Sin importar nada más)
-ruta_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-load_dotenv(ruta_env)
+# Cargar configuración
+load_dotenv()
+db_url = os.getenv("DATABASE_URL")
+if db_url and db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-# === PON TUS DATOS AQUÍ ===
-MI_NUMERO = "51986203398" 
-MI_NOMBRE = "David"
-# ==========================
+motor_seguro = create_engine(db_url)
 
-def prueba_disparo():
-    print("\n🔧 Iniciando diagnóstico profundo de WAHA...")
-    
-    # 2. CONEXIÓN A BASE DE DATOS 100% INDEPENDIENTE (No usa database.py)
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        print("❌ FATAL: No se encontró DATABASE_URL en tu archivo .env")
+def probar_prompt_por_sku(sku):
+    print(f"\n🔍 Buscando el SKU: '{sku}' en la base de datos...")
+
+    # 1. Extracción de datos exacta a utils.py
+    with motor_seguro.connect() as conn:
+        sql = text("""
+            SELECT 
+                v.sku, 
+                p.nombre, 
+                p.categoria,
+                p.color_principal,
+                g.nombre_grupo,
+                g.descripcion AS descripcion_grupo
+            FROM productos p
+            JOIN variantes v ON p.id_producto = v.id_producto
+            LEFT JOIN grupos_productos g ON v.id_grupo = g.id_grupo
+            WHERE v.sku = :sku
+        """)
+        resultado = conn.execute(sql, {"sku": sku}).fetchone()
+
+    if not resultado:
+        print("❌ SKU no encontrado. Verifica que esté bien escrito (respeta mayúsculas y minúsculas).")
         return
-        
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-        
-    motor_seguro = create_engine(db_url)
-    
-    try:
-        # Fíjate que aquí usamos motor_seguro, no engine
-        with motor_seguro.connect() as conn:
-            grupos = conn.execute(text("SELECT * FROM Grupos_Productos")).fetchall()
-            if not grupos:
-                print("❌ No hay grupos en la base de datos.")
-                return
-                
-            grupo_elegido = random.choice(grupos)
-            
-            # Construimos el texto
-            mensaje_texto = f"¡Hola {MI_NOMBRE}! 👋\n\n{grupo_elegido.descripcion}\n\n{grupo_elegido.enlace_tienda}"
-            
-            # Extraemos la imagen si existe
-            url_img = grupo_elegido.imagenes[0] if (grupo_elegido.imagenes and len(grupo_elegido.imagenes) > 0) else None
 
-            print(f"📸 URL de imagen a enviar: {url_img}")
+    # 2. Armamos el diccionario de datos
+    producto = {
+        'nombre': resultado.nombre,
+        'categoria': resultado.categoria,
+        'color_principal': resultado.color_principal,
+        'grupo': resultado.nombre_grupo,
+        'descripcion_grupo': resultado.descripcion_grupo
+    }
 
-            # 3. CONEXIÓN DIRECTA A WAHA
-            waha_url = os.getenv("WAHA_URL", "").rstrip('/')
-            waha_key = os.getenv("WAHA_KEY", "")
-            
-            if not waha_url:
-                print("❌ Error: No se encontró WAHA_URL en el archivo .env")
-                return
+    print("\n📦 DATOS CRUDOS EXTRAÍDOS DE SQL:")
+    for clave, valor in producto.items():
+        print(f"   - {clave}: '{valor}'")  # Las comillas simples te ayudarán a ver si hay espacios invisibles
 
-            # Payload dinámico: Le pasamos el link directo a Waha
-            if url_img:
-                payload = {
-                    "session": "default",
-                    "chatId": f"{MI_NUMERO}@c.us",
-                    "file": {"url": url_img},
-                    "caption": mensaje_texto
-                }
-                endpoint = f"{waha_url}/api/sendImage"
-            else:
-                payload = {
-                    "session": "default",
-                    "chatId": f"{MI_NUMERO}@c.us",
-                    "text": mensaje_texto
-                }
-                endpoint = f"{waha_url}/api/sendText"
+    # 3. Lógica idéntica a la que le llega a la IA
+    nombre = producto.get('nombre') or 'Producto'
+    categoria = producto.get('categoria') or 'Accesorio'
+    color = producto.get('color_principal') or 'No especificado'
+    grupo = producto.get('grupo') or 'General'
+    desc_grupo = producto.get('descripcion_grupo') or ''
 
-            headers = {"Content-Type": "application/json"}
-            if waha_key: headers["X-Api-Key"] = waha_key
-            
-            print(f"🚀 Disparando directamente a WAHA...")
-            
-            r = requests.post(endpoint, json=payload, headers=headers, timeout=30)
-            
-            # 4. IMPRIMIR LA RESPUESTA CRUDA DE WAHA
-            print("\n--- RESPUESTA DEL SERVIDOR WAHA ---")
-            print(f"Status Code: {r.status_code}")
-            print(f"Detalle: {r.text}")
-            print("-----------------------------------")
-            
-            if r.status_code in [200, 201]:
-                print("✅ Waha dice que lo aceptó. ¡Revisa tu celular!")
-            else:
-                print("❌ Waha rechazó el envío.")
-                
-    except Exception as e:
-        print(f"🔥 Error en el script: {e}")
+    cat_lower = str(categoria).lower()
+
+    if 'natural' in cat_lower:
+        enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre resaltar la belleza natural, el uso diario, cosmética y una mirada sutil pero impactante. NO hables de cosplay, ni disfraces."
+    elif 'fantas' in cat_lower or 'cosplay' in cat_lower or 'anime' in cat_lower:
+        enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre cosplay, disfraces, anime, eventos de cultura pop y transformaciones extremas. Usa un tono muy llamativo y atrevido."
+    else:
+        enfoque_estricto = "ENFOQUE OBLIGATORIO: Destaca su utilidad, diseño exclusivo y lo práctico que es como accesorio para complementar el estilo."
+
+    prompt = f"""Eres un copywriter experto en marketing digital para Akiba.pe, tienda de lentes de contacto en Perú. 
+Escribe un mensaje corto para un estado de WhatsApp ofreciendo este producto.
+
+DATOS DEL PRODUCTO:
+- Nombre: {nombre}
+- Color destacado: {color}
+- Colección: {grupo}
+- Detalles: {desc_grupo}
+
+{enfoque_estricto}
+
+REGLAS DE FORMATO:
+1. Sigue al pie de la letra el ENFOQUE OBLIGATORIO.
+2. Usa emojis adecuados al tema. 
+3. Invita a que te envíen un mensaje al final.
+4. Máximo 35 palabras.
+5. Devuelve ÚNICAMENTE el texto final para copiar y pegar (sin comillas, sin decir 'Aquí tienes', sin saludos iniciales).
+"""
+
+    print("\n🤖 PROMPT FINAL QUE SE LE ENVÍA A OLLAMA (Llama 3.1):")
+    print("-------------------------------------------------------------")
+    print(prompt)
+    print("-------------------------------------------------------------\n")
 
 if __name__ == "__main__":
-    prueba_disparo()
+    while True:
+        sku_ingresado = input("👉 Ingresa el SKU a evaluar (o escribe 'salir' para terminar): ")
+        if sku_ingresado.lower() == 'salir':
+            break
+        probar_prompt_por_sku(sku_ingresado.strip())

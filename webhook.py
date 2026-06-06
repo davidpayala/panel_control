@@ -24,11 +24,13 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
+# 🛠️ CORRECCIÓN: Agregamos buscar_contacto_google a la importación
 try:
-    from utils import normalizar_telefono_maestro, crear_en_google # <-- AÑADIDO crear_en_google
+    from utils import normalizar_telefono_maestro, crear_en_google, buscar_contacto_google
 except ImportError:
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
     def crear_en_google(n, a, t): return False
+    def buscar_contacto_google(t): return None
 
 def aplicar_parche_db():
     try:
@@ -56,16 +58,30 @@ def aplicar_parche_db():
 
 aplicar_parche_db()
 
-def sync_google_fondo(nombre, telefono):
-    """Guarda el contacto en Google Contacts de forma asíncrona"""
+# 🛠️ CORRECCIÓN: Ahora recibe id_cliente y guarda el vínculo en la BD
+def sync_google_fondo(id_cliente, nombre, telefono):
+    """Guarda el contacto en Google Contacts de forma asíncrona y lo vincula"""
     if not telefono or "LID_" in str(telefono): 
         return
     
     norm = normalizar_telefono_maestro(telefono)
     if norm:
-        exito = crear_en_google(nombre, "", norm['google'])
+        tel_google = norm.get('google', norm['db'])
+        exito = crear_en_google(nombre, "", tel_google)
+        
         if exito:
-            log_info(f"✅ Sincronización Google exitosa para: {nombre} ({norm['google']})")
+            log_info(f"✅ Sincronización Google exitosa para: {nombre} ({tel_google})")
+            
+            # Buscar el contacto recién creado para obtener su ID
+            res_g = buscar_contacto_google(norm['db'])
+            if res_g and res_g.get('encontrado'):
+                g_id = res_g['google_id']
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE Clientes SET google_id = :gid WHERE id_cliente = :id"), {"gid": g_id, "id": id_cliente})
+                    log_info(f"🔗 Cliente {id_cliente} vinculado permanentemente con Google ID: {g_id}")
+                except Exception as e:
+                    log_error(f"❌ Error al guardar el Google ID en la BD: {e}")
         else:
             log_error(f"❌ Falló sincronización con Google para: {nombre}")
 
@@ -119,9 +135,9 @@ def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
     except Exception as e:
         log_error(f"Error al comprimir imagen: {e}")
         return None
-    
+
 # ==============================================================================
-# 🕵️ FUNCIONES LOCALES (MEJORADAS PARA LLAMADAS)
+# 🕵️ FUNCIONES LOCALES (MEJORADAS PARA LLAMADAS Y NOMBRES)
 # ==============================================================================
 def obtener_lid_local(payload):
     try:
@@ -176,16 +192,36 @@ def resolver_telefono_api(lid, session):
                 log_info(f"✨ API Resuelta: {lid} es {pn}")
                 return pn.split('@')[0]
     except Exception as e:
-        log_error(f"Error API WAHA: {e}")
+        log_error(f"Error API WAHA LIDs: {e}")
+    return None
+
+def obtener_nombre_waha(contact_id, session):
+    """Consulta la API de WAHA para obtener el nombre configurado por el usuario en WhatsApp"""
+    if not WAHA_URL or not contact_id: return None
+    try:
+        url = f"{WAHA_URL.rstrip('/')}/api/contacts/contact"
+        params = {"contactId": contact_id, "session": session}
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+        
+        r = requests.get(url, params=params, headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            nombre = data.get('name') or data.get('pushname') or data.get('shortName')
+            if nombre:
+                log_info(f"✨ Nombre obtenido de API WAHA: {nombre}")
+                return nombre
+    except Exception as e:
+        log_error(f"Error API WAHA Contacts: {e}")
     return None
 
 # ==============================================================================
-# 🚀 WEBHOOK PRINCIPAL V52 (Sincronización Total)
+# 🚀 WEBHOOK PRINCIPAL V54 (Fix Vinculación y Extracción Nombres)
 # ==============================================================================
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V52 (Phone Sinker) ✅", 200
+    return "Webhook V54 (Smart Sync & Name Fix) ✅", 200
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
@@ -247,15 +283,29 @@ def recibir_mensaje():
             
             tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
             whatsapp_id = payload.get('id')
-            push_name = (payload.get('_data') or {}).get('notifyName', 'Cliente')
             reply_id = (payload.get('replyTo') or {}).get('id')
             reply_content = (payload.get('replyTo') or {}).get('body')
+
+            # --- LÓGICA INTELIGENTE DE NOMBRES (CORREGIDA) ---
+            wsp_id_contact = payload.get('from') if tipo_msg == 'ENTRANTE' else payload.get('to')
+            
+            # 1. Buscar el nombre en todas las posibles rutas de WAHA
+            _data = payload.get('_data') or {}
+            nombre_wsp = payload.get('pushName') or _data.get('notifyName') or _data.get('pushname') or _data.get('name')
+            
+            # 2. Si no viene en el mensaje, consultar a la API de WAHA
+            if not nombre_wsp and wsp_id_contact:
+                nombre_wsp = obtener_nombre_waha(wsp_id_contact, session_name)
+            
+            # 3. Determinar Nombre Corto y Nombre IA
+            nombre_corto_final = nombre_wsp if nombre_wsp and nombre_wsp.strip() else "Cliente Nuevo"
+            nombre_ia_final = nombre_corto_final.split()[0] if nombre_corto_final != "Cliente Nuevo" else ""
 
             id_cliente_final = None
 
             try:
                 with engine.begin() as conn:
-                    # CASO A
+                    # CASO A: WAHA envía LID + Teléfono Numérico
                     if wspid_lid and telefono_num:
                         cliente_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
                         if cliente_tel:
@@ -272,17 +322,18 @@ def recibir_mensaje():
                             else:
                                 try:
                                     res = conn.execute(text("""
-                                        INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, id_etapa, activo, fecha_registro) 
-                                        VALUES (:lid, :t, :n, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                        INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
+                                        VALUES (:lid, :t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
                                         RETURNING id_cliente
-                                    """), {"lid": wspid_lid, "t": telefono_num, "n": push_name}).fetchone()
+                                    """), {"lid": wspid_lid, "t": telefono_num, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
                                     id_cliente_final = res.id_cliente
-                                    threading.Thread(target=sync_google_fondo, args=(push_name, telefono_num)).start()
+                                    # 🛠️ CORRECCIÓN: Pasamos el ID del cliente al hilo de Google
+                                    threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, telefono_num)).start()
                                 except Exception as e:
                                     if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
                                     else: raise e
 
-                    # CASO B
+                    # CASO B: WAHA solo envía LID
                     elif wspid_lid and not telefono_num:
                         cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
                         if cliente_lid:
@@ -311,12 +362,13 @@ def recibir_mensaje():
                                 else:
                                     try:
                                         res = conn.execute(text("""
-                                            INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, id_etapa, activo, fecha_registro) 
-                                            VALUES (:lid, :t, :n, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                            INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
+                                            VALUES (:lid, :t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
                                             RETURNING id_cliente
-                                        """), {"lid": wspid_lid, "t": final_tel, "n": push_name}).fetchone()
+                                        """), {"lid": wspid_lid, "t": final_tel, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
                                         id_cliente_final = res.id_cliente
-                                        threading.Thread(target=sync_google_fondo, args=(push_name, final_tel)).start()
+                                        # 🛠️ CORRECCIÓN: Pasamos el ID del cliente al hilo de Google
+                                        threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, final_tel)).start()
                                     except Exception as e:
                                         if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": final_tel}).scalar()
                                         else: raise e
@@ -324,14 +376,14 @@ def recibir_mensaje():
                                     fake = f"LID_{wspid_lid.split('@')[0]}"
                                     try:
                                         res = conn.execute(text("""
-                                            INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, id_etapa, activo, fecha_registro) 
-                                            VALUES (:lid, :f, :n, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                            INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
+                                            VALUES (:lid, :f, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
                                             RETURNING id_cliente
-                                        """), {"lid": wspid_lid, "f": fake, "n": push_name}).fetchone()
+                                        """), {"lid": wspid_lid, "f": fake, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
                                         id_cliente_final = res.id_cliente
                                     except: id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id=:lid"), {"lid": wspid_lid}).scalar()
 
-                    # CASO C
+                    # CASO C: WAHA solo envía Teléfono Numérico
                     elif telefono_num and not wspid_lid:
                         cliente_tel = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
                         if cliente_tel:
@@ -341,12 +393,13 @@ def recibir_mensaje():
                             fallback_id = payload.get('from')
                             try:
                                 res = conn.execute(text("""
-                                    INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, estado, id_etapa, activo, fecha_registro) 
-                                    VALUES (:wid, :t, :n, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                    INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
+                                    VALUES (:wid, :t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
                                     RETURNING id_cliente
-                                """), {"wid": fallback_id, "t": telefono_num, "n": push_name}).fetchone()
+                                """), {"wid": fallback_id, "t": telefono_num, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
                                 id_cliente_final = res.id_cliente
-                                threading.Thread(target=sync_google_fondo, args=(push_name, telefono_num)).start()
+                                # 🛠️ CORRECCIÓN: Pasamos el ID del cliente al hilo de Google
+                                threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, telefono_num)).start()
                             except Exception as e:
                                 if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
                                 else: raise e

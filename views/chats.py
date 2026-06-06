@@ -10,6 +10,7 @@ import io
 import requests
 from datetime import datetime, timedelta
 from database import engine 
+import re # Asegurar la importación al inicio del bucle o del archivo
 
 # --- CONFIGURACIÓN ---
 WAHA_URL = os.getenv("WAHA_URL")
@@ -329,7 +330,6 @@ def render_chat():
                                                 t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
                                                 t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE id_cliente=:id"), {"n": real_db, "id": info.id_cliente})
                                                 
-                                                # CORRECCIÓN: Sincronizar número real en la estructura telefonoscliente
                                                 lid_ex = t_conn.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente = :id AND telefono = :o"), {"id": info.id_cliente, "o": chat_actual}).fetchone()
                                                 if lid_ex:
                                                     t_conn.execute(text("UPDATE telefonoscliente SET telefono = :n, es_principal = TRUE WHERE id_telefono = :idt"), {"n": real_db, "idt": lid_ex[0]})
@@ -356,7 +356,7 @@ def render_chat():
                             try: threading.Thread(target=marcar_leido_api, args=(r_t[0], sesion_unread)).start()
                             except: pass
 
-                # Cargar datos Unificados
+                # Cargar datos Unificados e Información de la Dirección Principal y Deuda
                 with engine.connect() as conn:
                     conn.commit()
                     if es_cliente:
@@ -367,6 +367,39 @@ def render_chat():
                     nombre = info.nombre_corto if info and info.nombre_corto else chat_actual
                     estado_actual_cliente = info.estado if info and hasattr(info, 'estado') and info.estado else "Sin empezar"
                     
+                    # --- NUEVA CONSULTA: EXTRAER DIRECCIÓN PRINCIPAL Y PENDIENTE PAGO ---
+                    dir_info = None
+                    venta_info = None
+                    if info:
+                        dir_info = conn.execute(text("""
+                            SELECT tipo_envio, distrito, direccion_texto, referencia, gps_link, observacion, 
+                                   dni_receptor, agencia_nombre, sede_entrega, nombre_receptor, telefono_receptor, id_direccion
+                            FROM direcciones 
+                            WHERE id_cliente = :id AND activo = TRUE 
+                            ORDER BY es_principal DESC, id_direccion DESC LIMIT 1
+                        """), {"id": int(info.id_cliente)}).fetchone()
+                        
+                        venta_info = conn.execute(text("""
+                            SELECT pendiente_pago FROM Ventas 
+                            WHERE id_cliente = :id AND anulado = FALSE 
+                            ORDER BY id_venta DESC LIMIT 1
+                        """), {"id": int(info.id_cliente)}).fetchone()
+
+                    pendiente_pago = float(venta_info.pendiente_pago) if venta_info and venta_info.pendiente_pago else 0.0
+                    
+                    # --- DETALLES DINÁMICOS CORTO PARA EL TITULO ---
+                    sub_detalles = ""
+                    if dir_info:
+                        if dir_info.tipo_envio == "MOTO":
+                            sub_detalles = f"📍 {dir_info.distrito or ''}"
+                        elif dir_info.tipo_envio == "AGENCIA":
+                            sub_detalles = f"🏢 {dir_info.agencia_nombre or ''} - {dir_info.sede_entrega or ''}"
+                        elif dir_info.tipo_envio == "OTROS":
+                            sub_detalles = f"📦 {dir_info.observacion or ''}"
+                        
+                        if len(sub_detalles) > 45:
+                            sub_detalles = sub_detalles[:42] + "..."
+
                     msgs = pd.read_sql(text(f"""
                         SELECT * FROM (
                             SELECT m.* FROM mensajes m
@@ -377,8 +410,24 @@ def render_chat():
                         ) sub ORDER BY fecha ASC
                     """), conn, params={"chat_id": str(chat_actual)})
 
-                # --- HEADER ---
-                st.subheader(f"👤 {nombre}")
+                # --- CONTROL DE ZONA HORARIA LIMA ---
+                if not msgs.empty and 'fecha' in msgs.columns:
+                    msgs['fecha'] = pd.to_datetime(msgs['fecha'])
+                    
+                    # Si el motor de la base de datos asignó una zona horaria, la quitamos
+                    if msgs['fecha'].dt.tz is not None:
+                        msgs['fecha'] = msgs['fecha'].dt.tz_localize(None)
+                        
+                    # Sumamos 5 horas para corregir el desfase del webhook y empatar con la hora de Lima
+                    msgs['fecha'] = msgs['fecha'] + pd.Timedelta(hours=5)
+
+                # --- HEADER MEJORADO CON DETALLES Y DEUDA VISUAL ---
+                badge_deuda = f"<span style='color: #856404; background-color: #ffeeba; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 13px; margin-left: 10px;'>⚠️ Cobrar: S/ {pendiente_pago:.2f}</span>" if pendiente_pago > 0 else ""
+                
+                if sub_detalles or badge_deuda:
+                    st.markdown(f"### 👤 {nombre} <span style='font-size: 15px; font-weight: 400; color: #777; margin-left: 8px;'>{sub_detalles}</span> {badge_deuda}", unsafe_allow_html=True)
+                else:
+                    st.subheader(f"👤 {nombre}")
                 
                 c_head_1, c_head_2, c_head_3 = st.columns([25, 40, 35])
                 with c_head_1: st.caption("🗂️ Chat Unificado" if es_cliente else f"📱 {chat_actual}")
@@ -398,14 +447,20 @@ def render_chat():
                     
                     if str(nuevo_estado).strip().lower() != estado_actual_clean:
                         id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
+                        es_sin_empezar = (str(nuevo_estado).strip().lower() == "sin empezar")
+                        
                         try:
                             with engine.begin() as conn:
                                 if es_cliente:
                                     conn.execute(text(f"UPDATE {tabla} SET estado = :e, id_etapa = :id_etapa WHERE id_cliente = :id"), {"e": nuevo_estado, "id_etapa": id_etapa_val, "id": int(chat_actual)})
+                                    if es_sin_empezar:
+                                        conn.execute(text("UPDATE Ventas SET pendiente_pago = 0 WHERE id_cliente = :id"), {"id": int(chat_actual)})
                                 else:
                                     existente = conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono = :t"), {"t": str(chat_actual)}).fetchone()
                                     if existente:
                                         conn.execute(text(f"UPDATE {tabla} SET estado = :e, id_etapa = :id_etapa WHERE telefono = :t"), {"e": nuevo_estado, "id_etapa": id_etapa_val, "t": str(chat_actual)})
+                                        if es_sin_empezar:
+                                            conn.execute(text("UPDATE Ventas SET pendiente_pago = 0 WHERE id_cliente = :id"), {"id": existente.id_cliente})
                                     else:
                                         res = conn.execute(text(f"""
                                             INSERT INTO {tabla} (nombre_corto, telefono, estado, id_etapa, activo, fecha_registro) 
@@ -450,6 +505,7 @@ def render_chat():
                 # =========================================
                 # 🚀 MOTOR DE RENDERIZADO
                 # =========================================
+
                 html_blocks = []
                 imagenes_galeria = []
                 
@@ -471,7 +527,7 @@ def render_chat():
                             ultima_fecha = fecha_msg
 
                         es_mio = (m['tipo'] == 'SALIENTE')
-                        clase_row = "msg-mio" if es_mio else "msg-otro"
+                        clase_row = "msg-row msg-mio" if es_mio else "msg-row msg-otro"
                         clase_bub = "b-mio" if es_mio else "b-otro"
                         hora = m['fecha'].strftime("%H:%M") if pd.notna(m['fecha']) else ""
                         
@@ -521,30 +577,30 @@ def render_chat():
                                 media_html = "<div style='color: gray; font-size: 10px;'>Archivo corrupto</div>"
 
                         contenido_str = str(m['contenido']) if pd.notna(m['contenido']) else ""
+                        
+                        # Reemplazo de negritas seguro para Markdown (**) y WhatsApp (*)
+                        contenido_str = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', contenido_str)
+                        contenido_str = re.sub(r'\*(.*?)\*', r'<b>\1</b>', contenido_str)
+
                         if contenido_str in ["📷 Archivo Multimedia", "📷 Archivo", "📷 Archivo (Recuperado)"] and media_html:
                             contenido_str = ""
+                        
                         texto_html = f"<div style='white-space: pre-wrap;'>{contenido_str}</div>" if contenido_str.strip() else ""
                         
                         tel_label = f"<div style='font-size: 11px; color: {'#6b8e23' if es_mio else '#888'}; margin-bottom: 2px; font-weight: 600; text-align: {'right' if es_mio else 'left'};'>📱 {m['telefono']}</div>"
 
-                        html_msg = f"<div class='msg-row {clase_row}'><div class='bubble {clase_bub}'>{tel_label}{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
+                        html_msg = f"<div class='{clase_row}'><div class='bubble {clase_bub}'>{tel_label}{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
                         html_blocks.append(html_msg)
 
                     html_blocks.reverse()
 
-                if imagenes_galeria:
-                    with st.expander(f"🖼️ Galería de Imágenes ({len(imagenes_galeria)})"):
-                        st.caption("Haz click en las flechas de la imagen para ver en pantalla completa.")
-                        cols = st.columns(4)
-                        for i, img in enumerate(reversed(imagenes_galeria)):
-                            with cols[i % 4]:
-                                st.image(img['bytes'], caption=img['caption'], use_container_width=True)
-                
-                st.divider()
-
                 if not msgs.empty:
+                    # Cambio visual sutil si hay deuda
+                    bg_color_chat = "rgba(255, 243, 205, 0.4)" if pendiente_pago > 0 else "transparent"
+                    border_color_chat = "#ffeeba" if pendiente_pago > 0 else "rgba(128, 128, 128, 0.2)"
+                    
                     css_y_html = f"""<style>
-.chat-container {{ display: flex; flex-direction: column-reverse; height: 500px; overflow-y: auto; padding: 10px; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 10px; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-color: transparent; }}
+.chat-container {{ display: flex; flex-direction: column-reverse; height: 500px; overflow-y: auto; padding: 10px; border: 2px solid {border_color_chat}; border-radius: 10px; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-color: {bg_color_chat}; background-blend-mode: overlay; }}
 .msg-row {{ display: flex; margin-bottom: 5px; }}
 .msg-mio {{ justify-content: flex-end; }}
 .msg-otro {{ justify-content: flex-start; }}
@@ -619,6 +675,55 @@ def render_chat():
                         st.rerun()
                     else:
                         st.error(f"Error al enviar: {res}")
+
+                # --- 🛠️ NUEVA SECCIÓN EXPANSIBLE: OPCIONES ADICIONALES (AL FINAL DEL CHAT) ---
+                st.write("")
+                with st.expander("🛠️ Opciones Adicionales", expanded=False):
+                    tab_info_dir, tab_galeria_img = st.tabs(["🏠 Dirección Principal", "🖼️ Galería de Imágenes"])
+                    
+                    with tab_info_dir:
+                        texto_cobro = f"\n\n**⚠️ Monto por cobrar:** S/ {pendiente_pago:.2f}" if pendiente_pago > 0 else ""
+                        
+                        if dir_info:
+                            st.markdown("##### 📦 Guía Completa de Entrega")
+                            if dir_info.tipo_envio == 'MOTO':
+                                texto_dir = (f"**Tipo:** 🛵 Motorizado / Interno\n\n"
+                                             f"**Recibe:** {dir_info.nombre_receptor or ''}\n\n"
+                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}\n\n"
+                                             f"**Dirección:** {dir_info.direccion_texto or ''} ({dir_info.distrito or ''})\n\n"
+                                             f"**Referencia:** {dir_info.referencia or ''}\n\n"
+                                             f"**Link GPS:** {dir_info.gps_link or ''}\n\n"
+                                             f"**Observación:** {dir_info.observacion or ''}"
+                                             f"{texto_cobro}")
+                            elif dir_info.tipo_envio == 'AGENCIA':
+                                texto_dir = (f"**Tipo:** 🏢 Agencia\n\n"
+                                             f"**Recibe:** {dir_info.nombre_receptor or ''}\n\n"
+                                             f"**DNI:** {dir_info.dni_receptor or ''}\n\n"
+                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}\n\n"
+                                             f"**Agencia:** {dir_info.agencia_nombre or ''} — {dir_info.sede_entrega or ''}\n\n"
+                                             f"**Observación:** {dir_info.observacion or ''}"
+                                             f"{texto_cobro}")
+                            else:
+                                texto_dir = (f"**Tipo:** 📦 Otros\n\n"
+                                             f"**Recibe:** {dir_info.nombre_receptor or ''}\n\n"
+                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}\n\n"
+                                             f"**Observación / Notas:** {dir_info.observacion or ''}"
+                                             f"{texto_cobro}")
+                            st.markdown(texto_dir)
+                        else:
+                            st.caption("⚠️ Este cliente no tiene ninguna dirección activa registrada.")
+                            if pendiente_pago > 0:
+                                st.markdown(f"**⚠️ Monto por cobrar de última venta:** S/ {pendiente_pago:.2f}")
+                            
+                    with tab_galeria_img:
+                        if imagenes_galeria:
+                            st.caption("Haz click en las flechas de la imagen para ver en pantalla completa.")
+                            cols = st.columns(4)
+                            for i, img in enumerate(reversed(imagenes_galeria)):
+                                with cols[i % 4]:
+                                    st.image(img['bytes'], caption=img['caption'], use_container_width=True)
+                        else:
+                            st.caption("No se han compartido imágenes en este chat todavía.")
 
             except Exception as e:
                 st.error(f"Error detallado en el chat: {str(e)}")
