@@ -72,19 +72,25 @@ def sync_google_fondo(id_cliente, nombre, telefono):
         if exito:
             log_info(f"✅ Sincronización Google exitosa para: {nombre} ({tel_google})")
             
-            # Buscar el contacto recién creado para obtener su ID
+            # Buscar el contacto recién creado para obtener su ID y sus Nombres
             res_g = buscar_contacto_google(norm['db'])
             if res_g and res_g.get('encontrado'):
                 g_id = res_g['google_id']
+                g_nom = res_g.get('nombre', nombre)
+                g_ape = res_g.get('apellido', '')
                 try:
                     with engine.begin() as conn:
-                        conn.execute(text("UPDATE Clientes SET google_id = :gid WHERE id_cliente = :id"), {"gid": g_id, "id": id_cliente})
+                        conn.execute(text("""
+                            UPDATE Clientes 
+                            SET google_id = :gid, nombre = :n, apellido = :a 
+                            WHERE id_cliente = :id
+                        """), {"gid": g_id, "n": g_nom, "a": g_ape, "id": id_cliente})
                     log_info(f"🔗 Cliente {id_cliente} vinculado permanentemente con Google ID: {g_id}")
                 except Exception as e:
                     log_error(f"❌ Error al guardar el Google ID en la BD: {e}")
         else:
             log_error(f"❌ Falló sincronización con Google para: {nombre}")
-
+            
 def descargar_media_plus(media_url):
     try:
         if not media_url: return None

@@ -194,6 +194,9 @@ def render_clientes():
                                     res_g2 = buscar_contacto_google(tel_db)
                                     if res_g2 and res_g2.get('encontrado'):
                                         g_id = res_g2['google_id']
+                                        # Capturamos el nombre asignado para que no quede como nulo
+                                        g_nom = res_g2.get('nombre', nuevo_alias)
+                                        g_ape = res_g2.get('apellido', '')
 
                         nombre_ia = generar_nombre_ia(nuevo_alias, g_nom or "")
                         id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
@@ -300,11 +303,18 @@ def render_clientes():
 
                     st.markdown("##### 👥 Sincronización Directa a Google Contacts")
                     c4, c5, c6 = st.columns(3)
-                    new_real_nombre = c4.text_input("Nombre Real", value=row_full['nombre'] or "")
-                    new_apellido = c5.text_input("Apellido", value=row_full['apellido'] or "")
-                    new_tel_principal = c6.text_input("Teléfono Principal", value=row_full['tel_principal'] or "")
                     
-                    new_etiquetas = st.text_area("Etiquetas / Notas", value=row_full['etiquetas'] or "")
+                    # Manejo seguro para evitar que los nulos (NaN) se impriman como texto "nan"
+                    val_nom = row_full['nombre'] if pd.notna(row_full['nombre']) else ""
+                    val_ape = row_full['apellido'] if pd.notna(row_full['apellido']) else ""
+                    val_tel = row_full['tel_principal'] if pd.notna(row_full['tel_principal']) else ""
+                    val_eti = row_full['etiquetas'] if pd.notna(row_full['etiquetas']) else ""
+
+                    new_real_nombre = c4.text_input("Nombre Real", value=val_nom)
+                    new_apellido = c5.text_input("Apellido", value=val_ape)
+                    new_tel_principal = c6.text_input("Teléfono Principal", value=val_tel)
+                    
+                    new_etiquetas = st.text_area("Etiquetas / Notas", value=val_eti)
 
                     if st.form_submit_button("💾 Guardar Datos"):
                         id_etapa_val = mapa_subgrupo_id.get(new_estado)
