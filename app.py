@@ -13,7 +13,7 @@ from database import engine
 import utils 
 
 # Importar las vistas (¡AGREGAMOS OPCIONES AQUÍ!)
-from views import ventas, compras, productos, clientes, seguimiento, catalogo, facturacion, chats, campanas, diagnostico, opciones
+from views import ventas, compras, productos, clientes, seguimiento, catalogo, facturacion, chats, campanas, diagnostico, opciones, estadisticas 
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
@@ -120,9 +120,9 @@ def main():
         st.title("Menú K&M")
         
         OPCIONES_BASE = [
-            "VENTA", "COMPRAS", "PRODUCTOS", "CLIENTES", 
-            "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO"
-        ]
+            "VENTA", "COMPRAS", "PRODUCTOS", "CLIENTES",
+            "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO", "ESTADISTICAS" # <--- AGREGADO
+            ]
 
         # Lógica de Roles (¡CAMBIAMOS USUARIOS POR OPCIONES!)
         if st.session_state['rol'] == 'Admin':
@@ -141,7 +141,8 @@ def main():
                 "SEGUIMIENTO": "📆 Seguimiento", "CATALOGO": "🔧 Catálogo",
                 "FACTURACION": "💰 Facturación", "CHAT": texto_dinamico_chat,
                 "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico",
-                "OPCIONES": "⚙️ Opciones" # ¡NUEVA ETIQUETA!
+                "ESTADISTICAS": "📊 Estadísticas", # <--- AGREGADO
+                "OPCIONES": "⚙️ Opciones"
             }
             return mapeo.get(opcion, opcion)
 
@@ -178,8 +179,9 @@ def main():
     elif seleccion_interna == "CHAT": chats.render_chat()
     elif seleccion_interna == "CAMPANAS": campanas.render_campanas()
     elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico()
+    elif seleccion_interna == "ESTADISTICAS": estadisticas.render_estadisticas() # <--- AGREGADO
     elif seleccion_interna == "OPCIONES": 
-        opciones.render_opciones() # ¡RUTEANDO A LA NUEVA VISTA!
+        opciones.render_opciones()
 
 if __name__ == "__main__":
     ejecutar_migraciones() 

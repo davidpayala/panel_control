@@ -759,3 +759,39 @@ def render_sincronizacion_masiva():
                             st.rerun()
                 except Exception as e:
                     st.error(f"Error en la sincronización masiva: {e}")
+
+def obtener_historial_compras(telefono):
+    """
+    Busca el historial de compras de un cliente por su número de teléfono.
+    Retorna un DataFrame formateado o None si no hay compras.
+    """
+    query_compras = text("""
+        SELECT 
+            v.fecha_venta AS "Fecha", 
+            COALESCE(prod.categoria, 'Otros') AS "Categoría",
+            d.cantidad AS "Cant.", 
+            COALESCE(
+                (prod.nombre || ' - ' || var.nombre_variante), 
+                d.descripcion, 
+                d.sku, 
+                'Artículo sin registrar'
+            ) AS "Producto"
+        FROM clientes c
+        JOIN ventas v ON c.id_cliente = v.id_cliente
+        JOIN detalleventa d ON v.id_venta = d.id_venta
+        LEFT JOIN variantes var ON d.sku = var.sku
+        LEFT JOIN productos prod ON var.id_producto = prod.id_producto
+        WHERE c.telefono = :telefono 
+        ORDER BY v.fecha_facturacion DESC NULLS LAST;
+    """)
+    
+    with engine.connect() as conn:
+        resultados = conn.execute(query_compras, {"telefono": telefono}).fetchall()
+        
+    if resultados:
+        df_compras = pd.DataFrame(resultados)
+        # Formateamos la fecha directamente aquí
+        df_compras['Fecha'] = pd.to_datetime(df_compras['Fecha']).dt.strftime('%d/%m/%y').fillna('---')
+        return df_compras
+    
+    return None

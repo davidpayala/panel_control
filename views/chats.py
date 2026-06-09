@@ -18,10 +18,22 @@ WAHA_KEY = os.getenv("WAHA_KEY")
 
 try:
     from utils import marcar_chat_como_leido_waha as marcar_leido_waha
-    from utils import normalizar_telefono_maestro 
+    from utils import normalizar_telefono_maestro, obtener_historial_compras
 except ImportError:
     def marcar_leido_waha(*args): pass
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
+
+def mostrar_resumen_compras_chat(telefono_activo):
+    st.markdown("##### 🛍️ Historial de Compras")
+    
+    # Llamamos al motor de utils
+    df_compras = obtener_historial_compras(telefono_activo)
+    
+    # Si nos devolvió datos, mostramos la tabla
+    if df_compras is not None:
+        st.dataframe(df_compras, use_container_width=True, hide_index=True)
+    else:
+        st.info("Sin compras previas.")
 
 # ==========================================
 # 📡 RESOLUTOR API PARA LIDs
@@ -679,7 +691,8 @@ def render_chat():
                 # --- 🛠️ NUEVA SECCIÓN EXPANSIBLE: OPCIONES ADICIONALES (AL FINAL DEL CHAT) ---
                 st.write("")
                 with st.expander("🛠️ Opciones Adicionales", expanded=False):
-                    tab_info_dir, tab_galeria_img = st.tabs(["🏠 Dirección Principal", "🖼️ Galería de Imágenes"])
+                    # 1. Agregamos la tercera pestaña para el Historial de Compras
+                    tab_info_dir, tab_galeria_img, tab_compras = st.tabs(["🏠 Dirección Principal", "🖼️ Galería de Imágenes", "🛍️ Historial de Compras"])
                     
                     with tab_info_dir:
                         texto_cobro = f"\n\n**⚠️ Monto por cobrar:** S/ {pendiente_pago:.2f}" if pendiente_pago > 0 else ""
@@ -724,6 +737,13 @@ def render_chat():
                                     st.image(img['bytes'], caption=img['caption'], use_container_width=True)
                         else:
                             st.caption("No se han compartido imágenes en este chat todavía.")
+
+                    # 2. Inyectamos la función del historial de compras en la nueva pestaña
+                    with tab_compras:
+                        # Usamos info.telefono porque chat_actual a veces guarda el ID del cliente
+                        # y nuestra función de utils necesita el número de teléfono para buscar en base de datos.
+                        tel_para_compras = info.telefono if info else chat_actual
+                        mostrar_resumen_compras_chat(str(tel_para_compras))
 
             except Exception as e:
                 st.error(f"Error detallado en el chat: {str(e)}")
