@@ -15,126 +15,6 @@ ESTADOS_CLIENTE_FALLBACK = [
 ]
 
 # ==============================================================================
-# HERRAMIENTA DE FUSIÓN DE CLIENTES
-# ==============================================================================
-def render_herramienta_fusion():
-    with st.expander("🔄 Fusionar Clientes Duplicados", expanded=False):
-        st.info("💡 **¿Cómo funciona?** Esta herramienta une dos registros independientes. El número de teléfono del cliente que elimines se guardará **automáticamente como un teléfono adicional / secundario** del cliente que decidas conservar.")
-        try:
-            with engine.connect() as conn:
-                df = pd.read_sql(text("""
-                    SELECT c.id_cliente, c.nombre_corto, c.whatsapp_internal_id,
-                           (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE LIMIT 1) as tel_prin
-                    FROM clientes c WHERE c.activo=TRUE ORDER BY c.nombre_corto
-                """), conn)
-                
-                if not df.empty:
-                    opciones = df.apply(lambda x: f"{x['nombre_corto']} | {x['tel_prin']} (ID: {x['id_cliente']})", axis=1).tolist()
-                    mapa_ids = dict(zip(opciones, df['id_cliente']))
-                    mapa_wids = dict(zip(opciones, df['whatsapp_internal_id']))
-
-                    c1, c2 = st.columns(2)
-                    sel_keep = st.selectbox("✅ Cliente a CONSERVAR (Destino)", opciones, key="fusion_keep")
-                    sel_del = st.selectbox("❌ Cliente a ELIMINAR (Origen con teléfono secundario)", opciones, key="fusion_del")
-
-                    if sel_keep and sel_del:
-                        id_keep = mapa_ids[sel_keep]
-                        id_del = mapa_ids[sel_del]
-                        wid_keep = mapa_wids[sel_keep]
-                        wid_del = mapa_wids[sel_del]
-
-                        if id_keep == id_del:
-                            st.error("Debes seleccionar dos clientes diferentes.")
-                        else:
-                            st.warning(f"⚠️ Al fusionar, **{sel_del}** se desactivará y su número pasará a ser un **teléfono adicional** de **{sel_keep}**.")
-                            if st.button("🚀 Confirmar Fusión"):
-                                with st.spinner("Fusionando..."):
-                                    try:
-                                        with engine.begin() as tx:
-                                            tx.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
-                                            tx.execute(text("UPDATE ventas SET id_cliente = :new WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
-                                            tx.execute(text("UPDATE direcciones SET id_cliente = :new WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
-                                            
-                                            if wid_del and not wid_keep:
-                                                tx.execute(text("UPDATE clientes SET whatsapp_internal_id=:wid WHERE id_cliente=:id"), {"wid": wid_del, "id": id_keep})
-                                            
-                                            tx.execute(text("UPDATE clientes SET activo=FALSE WHERE id_cliente = :id"), {"id": id_del})
-                                        st.success("¡Fusión completada con éxito!")
-                                        time.sleep(1)
-                                        st.rerun()
-                                    except Exception as e: st.error(f"Error: {e}")
-        except Exception as e: st.error(f"Error cargando herramienta: {e}")
-
-# ==============================================================================
-# HERRAMIENTA DE SINCRONIZACIÓN MASIVA GOOGLE (PASO 2 OPTIMIZADO)
-# ==============================================================================
-def render_sincronizacion_masiva():
-    with st.expander("🔄 Sincronización Masiva con Google Contacts", expanded=False):
-        st.info("💡 **Sincronización de Historial:** Esta herramienta busca todos los clientes activos que no están vinculados para registrarlos en Google Contacts y asociar su ID permanentemente.")
-        if st.button("🚀 Vincular Clientes Antiguos"):
-            with st.spinner("Sincronizando historial..."):
-                try:
-                    with engine.connect() as conn:
-                        df_sin_sync = pd.read_sql(text("""
-                            SELECT c.id_cliente, c.nombre_corto, 
-                                   COALESCE(
-                                       (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
-                                       c.telefono
-                                   ) as tel_prin
-                            FROM clientes c 
-                            WHERE c.activo=TRUE AND (c.google_id IS NULL OR TRIM(c.google_id) = '')
-                        """), conn)
-                    
-                    if df_sin_sync.empty:
-                        st.success("¡Todos los clientes ya se encuentran vinculados!")
-                    else:
-                        cont = 0
-                        detalles_omisiones = []
-                        with engine.begin() as conn_tx:
-                            for idx, row in df_sin_sync.iterrows():
-                                id_cli = row['id_cliente']
-                                nombre = row['nombre_corto']
-                                tel = row['tel_prin']
-                                
-                                if pd.isna(tel) or str(tel).strip().lower() in ['nan', '']:
-                                    detalles_omisiones.append(f"⚠️ ID {id_cli} ({nombre}): Sin ningún teléfono en base de datos.")
-                                    continue
-                                    
-                                norm = normalizar_telefono_maestro(tel)
-                                if not norm:
-                                    detalles_omisiones.append(f"⚠️ ID {id_cli} ({nombre}): Formato inválido para '{tel}'.")
-                                    continue
-                                    
-                                tel_db = norm['db']
-                                tel_google = norm.get('google', tel_db)
-                                
-                                res_g = buscar_contacto_google(tel_db)
-                                g_id = None
-                                if res_g and res_g.get('encontrado'):
-                                    g_id = res_g['google_id']
-                                else:
-                                    if crear_en_google(nombre, "", tel_google):
-                                        res_g2 = buscar_contacto_google(tel_db)
-                                        if res_g2 and res_g2.get('encontrado'):
-                                            g_id = res_g2['google_id']
-                                
-                                if g_id:
-                                    conn_tx.execute(text("UPDATE clientes SET google_id = :gid WHERE id_cliente = :id"), {"gid": g_id, "id": id_cli})
-                                    cont += 1
-                        
-                        if detalles_omisiones:
-                            st.markdown("##### 🔍 Detalles de registros omitidos:")
-                            for msg in detalles_omisiones:
-                                st.warning(msg)
-                                
-                        st.success(f"¡Sincronización completada! Se vincularon {cont} clientes con éxito.")
-                        if cont > 0:
-                            time.sleep(1)
-                            st.rerun()
-                except Exception as e:
-                    st.error(f"Error en la sincronización masiva: {e}")
-
-# ==============================================================================
 # RENDERIZADO PRINCIPAL
 # ==============================================================================
 def render_clientes():
@@ -152,8 +32,6 @@ def render_clientes():
         mapa_subgrupo_id = {}
 
     st.title("👤 Gestión de Clientes")
-    render_herramienta_fusion()
-    render_sincronizacion_masiva()
 
     # --- CREAR NUEVO CLIENTE ---
     with st.expander("➕ Registrar Nuevo Cliente", expanded=False):
@@ -182,21 +60,27 @@ def render_clientes():
                         if not nuevo_alias: nuevo_alias = "Cliente Nuevo"
                         
                         if vincular_google:
+                            # LÓGICA DE DOBLE BÚSQUEDA PARA EVITAR DUPLICADOS
                             res_g = buscar_contacto_google(tel_db)
+                            
+                            if not (res_g and res_g.get('encontrado')):
+                                tel_google = norm.get('google', tel_db)
+                                res_g = buscar_contacto_google(tel_google)
+                                
                             if res_g and res_g.get('encontrado'):
                                 g_id = res_g['google_id']
                                 g_nom = res_g['nombre']
                                 g_ape = res_g['apellido']
-                                nuevo_alias = f"{g_nom} {g_ape}".strip()
+                                nuevo_alias = f"{g_nom} {g_ape}".strip() if f"{g_nom} {g_ape}".strip() else nuevo_alias
+                                st.toast("✅ Vinculado a un contacto existente en Google.", icon="🔗")
                             else:
                                 tel_google = norm.get('google', tel_db)
-                                if crear_en_google(nuevo_alias, "", tel_google):
-                                    res_g2 = buscar_contacto_google(tel_db)
-                                    if res_g2 and res_g2.get('encontrado'):
-                                        g_id = res_g2['google_id']
-                                        # Capturamos el nombre asignado para que no quede como nulo
-                                        g_nom = res_g2.get('nombre', nuevo_alias)
-                                        g_ape = res_g2.get('apellido', '')
+                                nuevo_gid = crear_en_google(nuevo_alias, "", tel_google)
+                                if nuevo_gid:
+                                    g_id = nuevo_gid
+                                    g_nom = nuevo_alias
+                                    g_ape = ""
+                                    st.toast("🆕 Nuevo contacto creado en Google.", icon="👤")
 
                         nombre_ia = generar_nombre_ia(nuevo_alias, g_nom or "")
                         id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
@@ -281,7 +165,7 @@ def render_clientes():
             time.sleep(1)
             st.rerun()
 
-        # --- GESTIÓN INDIVIDUAL (PASO 3: DESBLOQUEADO Y VINCULADO) ---
+        # --- GESTIÓN INDIVIDUAL ---
         filas_sel = edited_df[edited_df["Seleccionar"] == True]
         if not filas_sel.empty:
             row_full = df.loc[filas_sel.index[0]]
@@ -304,7 +188,6 @@ def render_clientes():
                     st.markdown("##### 👥 Sincronización Directa a Google Contacts")
                     c4, c5, c6 = st.columns(3)
                     
-                    # Manejo seguro para evitar que los nulos (NaN) se impriman como texto "nan"
                     val_nom = row_full['nombre'] if pd.notna(row_full['nombre']) else ""
                     val_ape = row_full['apellido'] if pd.notna(row_full['apellido']) else ""
                     val_tel = row_full['tel_principal'] if pd.notna(row_full['tel_principal']) else ""
@@ -320,7 +203,6 @@ def render_clientes():
                         id_etapa_val = mapa_subgrupo_id.get(new_estado)
                         google_id_crudo = row_full['google_id']
                         
-                        # Validación estricta para asegurar que el ID de Google es real y no un NaN/Vacío
                         tiene_google_id = pd.notna(google_id_crudo) and str(google_id_crudo).strip().lower() not in ['', 'nan', 'none']
                         
                         if tiene_google_id:
@@ -337,7 +219,6 @@ def render_clientes():
                         else:
                             st.warning("⚠️ Este cliente no tiene un ID de Google Contacts vinculado. Usa la sincronización masiva o manual primero.")
                         
-                        # Guardado en Base de Datos Local
                         with engine.begin() as conn:
                             conn.execute(text("""
                                 UPDATE clientes 
@@ -365,20 +246,39 @@ def render_clientes():
                         time.sleep(1)
                         st.rerun()
 
-                if st.button("🔍 Forzar Sincronización Manual (Obtener ID de Google)"):
+                if st.button("🔍 Forzar Sincronización Manual (Vincular o Crear)"):
                     if row_full['tel_principal']:
-                        res = buscar_contacto_google(row_full['tel_principal'])
+                        with st.spinner("Buscando exhaustivamente en Google Contacts..."):
+                            res = buscar_contacto_google(row_full['tel_principal'])
+                                
                         if res and res.get('encontrado'):
+                            # Lo encontró (incluso si tenía espacios raros), lo vinculamos sin duplicar
                             with engine.begin() as conn:
                                 conn.execute(text("UPDATE clientes SET nombre=:n, apellido=:a, google_id=:gid WHERE id_cliente=:id"),
                                             {"n": res['nombre'], "a": res['apellido'], "gid": res['google_id'], "id": id_cli_sel})
-                            st.success("Sincronizado con éxito.")
-                            time.sleep(1)
+                            st.success("✅ ¡Contacto encontrado y vinculado con éxito! (No se crearon duplicados)")
+                            time.sleep(2)
                             st.rerun()
-                        else: st.error("No encontrado en Google.")
-                    else: st.warning("No tiene un teléfono asignado para buscar.")
+                        else: 
+                            # Si llegó hasta aquí, garantizamos al 100% que NO existe, lo creamos.
+                            st.warning("⚠️ No existe en Google. Creando contacto nuevo...")
+                            norm_t = normalizar_telefono_maestro(row_full['tel_principal'])
+                            tel_google = norm_t['google'] if norm_t else row_full['tel_principal']
+                            alias_crear = row_full['nombre_corto'] or f"Cliente {id_cli_sel}"
+                            
+                            nuevo_gid = crear_en_google(alias_crear, "", tel_google)
+                            if nuevo_gid:
+                                with engine.begin() as conn:
+                                    conn.execute(text("UPDATE clientes SET nombre=:n, apellido='', google_id=:gid WHERE id_cliente=:id"),
+                                                {"n": alias_crear, "gid": nuevo_gid, "id": id_cli_sel})
+                                st.success("✨ ¡Contacto nuevo creado y vinculado en Google!")
+                                time.sleep(2)
+                                st.rerun()
+                            else:
+                                st.error("❌ Falló la creación en Google Contacts. Revisa la consola para más detalles.")
+                    else: 
+                        st.warning("⚠️ Este cliente no tiene un teléfono asignado para buscar.")
 
-            # --- PESTAÑA TELÉFONOS ---
             with tab_tel:
                 st.markdown("##### Números Asociados")
                 with engine.connect() as conn:
@@ -429,7 +329,6 @@ def render_clientes():
                             st.error("Formato de número inválido.")
 
             with tab_dir:
-                # --- PARCHE AUTOMÁTICO PARA DIRECCIÓN PRINCIPAL ---
                 try:
                     with engine.begin() as conn:
                         conn.execute(text("ALTER TABLE direcciones ADD COLUMN IF NOT EXISTS es_principal BOOLEAN DEFAULT FALSE"))
@@ -446,7 +345,6 @@ def render_clientes():
                         ORDER BY es_principal DESC, id_direccion DESC
                     """), conn, params={"id": id_cli_sel})
 
-                # Mapeos entre Interfaz (UI) y Base de Datos (DB)
                 mapa_ui_to_db = {"Motorizado": "MOTO", "Agencia": "AGENCIA", "Otros": "OTROS"}
                 mapa_db_to_ui = {"MOTO": "Motorizado", "AGENCIA": "Agencia", "OTROS": "Otros"}
 
@@ -482,7 +380,6 @@ def render_clientes():
 
                     st.divider()
 
-                    # --- FORMULARIO DE EDICIÓN ---
                     dirs_view = dirs.copy()
                     dirs_view.insert(0, "Editar", False)
                     ed_dirs = st.data_editor(
@@ -547,7 +444,6 @@ def render_clientes():
                 else:
                     st.info("El cliente no cuenta con direcciones registradas.")
 
-                # --- FORMULARIO PARA CREAR NUEVA DIRECCIÓN ---
                 with st.expander("➕ Agregar Nueva Dirección", expanded=False):
                     nn_tipo_ui = st.selectbox("Tipo de Envío para Nueva Dirección", ["Motorizado", "Agencia", "Otros"], key="sb_new_tipo")
                     nn_tipo_db = mapa_ui_to_db[nn_tipo_ui]
@@ -575,7 +471,6 @@ def render_clientes():
                         nn_obs = st.text_area("Observación")
                         
                         if st.form_submit_button("Crear Dirección"):
-                            # Detectar si es la primera dirección activa del cliente
                             es_primera_direccion = True if dirs.empty else False
                             
                             with engine.begin() as conn:
@@ -592,3 +487,177 @@ def render_clientes():
                             st.success("Nueva dirección creada.")
                             time.sleep(1)
                             st.rerun()
+
+    else:
+        st.info("No se encontraron clientes activos.")
+        
+    st.divider()
+    # ==============================================================================
+    # OPCIONES ADICIONALES (FUSIÓN, SINCRONIZACIÓN Y REACTIVACIÓN)
+    # ==============================================================================
+    with st.expander("⚙️ Opciones Adicionales y Mantenimiento", expanded=False):
+        
+        st.markdown("#### 🔄 Fusionar Clientes Duplicados")
+        st.info("El número de teléfono del cliente que elimines se guardará como un **teléfono adicional** del cliente que decidas conservar.")
+        try:
+            with engine.connect() as conn:
+                df_fusion = pd.read_sql(text("""
+                    SELECT c.id_cliente, c.nombre_corto, c.whatsapp_internal_id,
+                           (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE LIMIT 1) as tel_prin
+                    FROM clientes c WHERE c.activo=TRUE ORDER BY c.nombre_corto
+                """), conn)
+                
+                if not df_fusion.empty:
+                    opciones = df_fusion.apply(lambda x: f"{x['nombre_corto']} | {x['tel_prin']} (ID: {x['id_cliente']})", axis=1).tolist()
+                    mapa_ids = dict(zip(opciones, df_fusion['id_cliente']))
+                    mapa_wids = dict(zip(opciones, df_fusion['whatsapp_internal_id']))
+
+                    c1, c2 = st.columns(2)
+                    sel_keep = c1.selectbox("✅ Cliente a CONSERVAR (Destino)", opciones, key="fusion_keep")
+                    sel_del = c2.selectbox("❌ Cliente a ELIMINAR (Origen)", opciones, key="fusion_del")
+
+                    if st.button("🚀 Confirmar Fusión"):
+                        if sel_keep and sel_del:
+                            id_keep = mapa_ids[sel_keep]
+                            id_del = mapa_ids[sel_del]
+                            wid_keep = mapa_wids[sel_keep]
+                            wid_del = mapa_wids[sel_del]
+
+                            if id_keep == id_del:
+                                st.error("Debes seleccionar dos clientes diferentes.")
+                            else:
+                                with st.spinner("Fusionando..."):
+                                    try:
+                                        with engine.begin() as tx:
+                                            tx.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
+                                            tx.execute(text("UPDATE ventas SET id_cliente = :new WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
+                                            tx.execute(text("UPDATE direcciones SET id_cliente = :new WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
+                                            
+                                            if wid_del and not wid_keep:
+                                                tx.execute(text("UPDATE clientes SET whatsapp_internal_id=:wid WHERE id_cliente=:id"), {"wid": wid_del, "id": id_keep})
+                                            
+                                            tx.execute(text("UPDATE clientes SET activo=FALSE WHERE id_cliente = :id"), {"id": id_del})
+                                        st.success("¡Fusión completada con éxito!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    except Exception as e: st.error(f"Error: {e}")
+        except Exception as e: st.error(f"Error cargando herramienta de fusión: {e}")
+        
+        st.divider()
+
+        st.markdown("#### 📱 Sincronización Masiva con Google Contacts")
+        st.caption("Busca clientes activos sin vincular y los asocia a Google.")
+        if st.button("🚀 Iniciar Sincronización Masiva"):
+            with st.spinner("Sincronizando historial..."):
+                try:
+                    with engine.connect() as conn:
+                        df_sin_sync = pd.read_sql(text("""
+                            SELECT c.id_cliente, c.nombre_corto, 
+                                   COALESCE(
+                                       (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                                       c.telefono
+                                   ) as tel_prin
+                            FROM clientes c 
+                            WHERE c.activo=TRUE AND (c.google_id IS NULL OR TRIM(c.google_id) = '')
+                        """), conn)
+                    
+                    if df_sin_sync.empty:
+                        st.success("¡Todos los clientes ya se encuentran vinculados!")
+                    else:
+                        cont = 0
+                        detalles_omisiones = []
+                        with engine.begin() as conn_tx:
+                            for idx, row in df_sin_sync.iterrows():
+                                id_cli = row['id_cliente']
+                                nombre = row['nombre_corto']
+                                tel = row['tel_prin']
+                                
+                                if pd.isna(tel) or str(tel).strip().lower() in ['nan', '']:
+                                    detalles_omisiones.append(f"⚠️ ID {id_cli} ({nombre}): Sin ningún teléfono en base de datos.")
+                                    continue
+                                    
+                                norm = normalizar_telefono_maestro(tel)
+                                if not norm:
+                                    detalles_omisiones.append(f"⚠️ ID {id_cli} ({nombre}): Formato inválido para '{tel}'.")
+                                    continue
+                                    
+                                tel_db = norm['db']
+                                tel_google = norm.get('google', tel_db)
+                                
+                                # DOBLE BÚSQUEDA EN SINCRONIZACIÓN MASIVA
+                                res_g = buscar_contacto_google(tel_db)
+                                if not (res_g and res_g.get('encontrado')):
+                                    res_g = buscar_contacto_google(tel_google)
+                                
+                                g_id = None
+                                if res_g and res_g.get('encontrado'):
+                                    g_id = res_g['google_id']
+                                else:
+                                    if crear_en_google(nombre, "", tel_google):
+                                        res_g2 = buscar_contacto_google(tel_db)
+                                        if not (res_g2 and res_g2.get('encontrado')):
+                                            res_g2 = buscar_contacto_google(tel_google)
+                                            
+                                        if res_g2 and res_g2.get('encontrado'):
+                                            g_id = res_g2['google_id']
+                                
+                                if g_id:
+                                    conn_tx.execute(text("UPDATE clientes SET google_id = :gid WHERE id_cliente = :id"), {"gid": g_id, "id": id_cli})
+                                    cont += 1
+                        
+                        if detalles_omisiones:
+                            for msg in detalles_omisiones:
+                                st.warning(msg)
+                                
+                        st.success(f"¡Sincronización completada! Se vincularon {cont} clientes con éxito.")
+                        if cont > 0:
+                            time.sleep(1)
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"Error en la sincronización masiva: {e}")
+                    
+        st.divider()
+
+        st.markdown("#### ♻️ Reactivar Clientes Bloqueados")
+        try:
+            with engine.connect() as conn:
+                df_inactivos = pd.read_sql(text("""
+                    SELECT id_cliente, nombre_corto, telefono, estado, etiquetas 
+                    FROM clientes WHERE activo = FALSE ORDER BY id_cliente DESC
+                """), conn)
+            
+            if not df_inactivos.empty:
+                df_inactivos.insert(0, "Reactivar", False)
+                
+                ed_inactivos = st.data_editor(
+                    df_inactivos,
+                    key="ed_reactivar_clientes",
+                    column_config={
+                        "Reactivar": st.column_config.CheckboxColumn("✅", width="small"),
+                        "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                        "nombre_corto": st.column_config.TextColumn("Alias", disabled=True),
+                        "telefono": st.column_config.TextColumn("Teléfono", disabled=True),
+                        "estado": st.column_config.TextColumn("Estado", disabled=True),
+                        "etiquetas": st.column_config.TextColumn("Etiquetas", disabled=True),
+                    },
+                    hide_index=True, use_container_width=True
+                )
+                
+                filas_reactivar = ed_inactivos[ed_inactivos["Reactivar"] == True]
+                
+                if not filas_reactivar.empty:
+                    if st.button("♻️ Reactivar Seleccionados", type="primary"):
+                        ids_a_reactivar = filas_reactivar["id_cliente"].tolist()
+                        try:
+                            with engine.begin() as conn:
+                                for id_cli in ids_a_reactivar:
+                                    conn.execute(text("UPDATE clientes SET activo = TRUE WHERE id_cliente = :id"), {"id": int(id_cli)})
+                            st.success(f"¡Se han reactivado {len(ids_a_reactivar)} cliente(s) exitosamente!")
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al reactivar: {e}")
+            else:
+                st.write("✅ No hay clientes inactivos o bloqueados en el sistema.")
+        except Exception as e:
+            st.error(f"Error cargando inactivos: {e}")

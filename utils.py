@@ -94,17 +94,16 @@ def get_google_service():
         return None
 
 def buscar_contacto_google(telefono):
-    """Busca un contacto en Google por número probando múltiples formatos."""
+    """Busca un contacto en Google por número probando múltiples formatos y búsqueda exhaustiva."""
     datos = normalizar_telefono_maestro(telefono)
     if not datos: return {'encontrado': False}
     
     service = get_google_service()
     if not service: return {'encontrado': False, 'error': 'No auth'}
 
+    # 1. BÚSQUEDA RÁPIDA (API nativa de Google)
     try:
-        # Se añade datos['google'] (con espacios) y el texto original de la búsqueda
-        queries = [datos['corto'], datos['db'], datos['google'], str(telefono)]
-        
+        queries = [datos['google'], f"+{datos['db']}", datos['db'], datos['corto'], str(telefono)]
         for q in queries:
             results = service.people().searchContacts(
                 query=q, readMask='names,phoneNumbers,emailAddresses'
@@ -115,21 +114,53 @@ def buscar_contacto_google(telefono):
                 names = person.get('names', [])
                 nombre_completo = names[0].get('displayName', 'Sin Nombre') if names else "Sin Nombre"
                 partes = nombre_completo.split()
-                nombre = partes[0] if partes else ""
-                apellido = " ".join(partes[1:]) if len(partes) > 1 else ""
-
                 return {
                     'encontrado': True,
                     'nombre_completo': nombre_completo,
-                    'nombre': nombre,
-                    'apellido': apellido,
+                    'nombre': partes[0] if partes else "",
+                    'apellido': " ".join(partes[1:]) if len(partes) > 1 else "",
                     'google_id': person.get('resourceName'),
                     'telefono_google': q
                 }
     except Exception as e:
-        print(f"Error Google Search: {e}")
-    return {'encontrado': False}
+        print(f"Error Google Search Rápido: {e}")
 
+    # 2. BÚSQUEDA EXHAUSTIVA (El arma secreta contra los duplicados)
+    print(f"Búsqueda rápida falló para {telefono}. Iniciando búsqueda exhaustiva...")
+    try:
+        request = service.people().connections().list(
+            resourceName='people/me',
+            pageSize=1000,
+            personFields='names,phoneNumbers'
+        )
+        
+        while request is not None:
+            response = request.execute()
+            for person in response.get('connections', []):
+                for phone in person.get('phoneNumbers', []):
+                    val = phone.get('value', '')
+                    # Quitamos todos los espacios y símbolos del número que nos da Google
+                    val_norm = "".join(filter(str.isdigit, val))
+                    
+                    # Si los 9 dígitos locales coinciden (sin importar el +51), es la misma persona!
+                    if datos['corto'] in val_norm or datos['db'] in val_norm:
+                        names = person.get('names', [])
+                        nombre_completo = names[0].get('displayName', 'Sin Nombre') if names else "Sin Nombre"
+                        partes = nombre_completo.split()
+                        print(f"✅ ¡Encontrado exhaustivamente!: {nombre_completo}")
+                        return {
+                            'encontrado': True,
+                            'nombre_completo': nombre_completo,
+                            'nombre': partes[0] if partes else "",
+                            'apellido': " ".join(partes[1:]) if len(partes) > 1 else "",
+                            'google_id': person.get('resourceName'),
+                            'telefono_google': val
+                        }
+            request = service.people().connections().list_next(request, response)
+    except Exception as e:
+        print(f"Error en búsqueda exhaustiva: {e}")
+
+    return {'encontrado': False}
 
 def crear_en_google(nombre, apellido, telefono, email=None):
     """Crea un contacto en Google Contacts"""

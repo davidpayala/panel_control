@@ -10,8 +10,10 @@ def render_estadisticas():
 
     st.title("📊 Panel de Estadísticas")
     
-    # Consulta única para obtener todo el detalle
-    query = text("""
+    # --------------------------------------------------------
+    # 1. DATOS DE VENTAS
+    # --------------------------------------------------------
+    query_ventas = text("""
         SELECT 
             DATE_TRUNC('month', v.fecha_venta)::DATE AS "Mes",
             COALESCE(prod.categoria, 'Otros') AS "Categoría",
@@ -23,57 +25,69 @@ def render_estadisticas():
         LEFT JOIN productos prod ON var.id_producto = prod.id_producto
         WHERE v.anulado = FALSE 
         GROUP BY 1, 2
-        ORDER BY 1 DESC, 4 DESC;
+        ORDER BY 1 ASC;
     """)
     
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn)
+        df = pd.read_sql(query_ventas, conn)
     
     if not df.empty:
-        # Formatear Mes
-        df['Mes_Label'] = pd.to_datetime(df['Mes']).dt.strftime('%b %Y')
+        df['Mes'] = pd.to_datetime(df['Mes'])
         
-        # --- 1. RESUMEN MENSUAL GENERAL ---
+        # --- 1. RESUMEN MENSUAL GENERAL CON FILTRO ---
         st.subheader("📈 Resumen Mensual General")
         
-        # 1. Agrupamos por mes
-        df_mensual = df.groupby('Mes')[['Cantidad', 'Total']].sum().sort_index(ascending=True)
+        # Filtro de categoría
+        lista_categorias = ["Todas"] + sorted(df['Categoría'].unique().tolist())
+        cat_seleccionada = st.selectbox("Filtrar por Categoría:", lista_categorias, index=0)
         
-        # 2. ASEGURAR QUE EL ÍNDICE SEA DATETIME ANTES DE USAR .dt o .strftime
-        df_mensual.index = pd.to_datetime(df_mensual.index)
+        if cat_seleccionada == "Todas":
+            df_filtrado = df.copy()
+        else:
+            df_filtrado = df[df['Categoría'] == cat_seleccionada]
+            
+        # Agrupamos manteniendo el Mes original para ordenar cronológicamente
+        df_mensual = df_filtrado.groupby('Mes', as_index=False)[['Cantidad', 'Total']].sum()
+        df_mensual = df_mensual.sort_values('Mes')
         
-        # 3. Creamos la etiqueta de texto para visualizar
-        df_visual = df_mensual.copy()
-        df_visual.index = df_visual.index.strftime('%b %Y')
+        # SOLUCIÓN EJE X (Tu idea): Usamos YYYY - MM para que el orden alfabético sea igual al cronológico
+        df_mensual['Mes_Grafico'] = df_mensual['Mes'].dt.strftime('%Y - %m')
         
         col_t1, col_t2 = st.columns([1, 2])
+        
         with col_t1:
-            st.dataframe(df_visual, use_container_width=True)
+            df_tabla = df_mensual.copy()
+            # La tabla también usará el nuevo formato para mantener la coherencia visual
+            df_tabla['Mes'] = df_tabla['Mes'].dt.strftime('%Y - %m')
+            st.dataframe(df_tabla.set_index('Mes')[['Cantidad', 'Total']], use_container_width=True)
             
         with col_t2:
-            # 4. Usamos el DataFrame formateado para el gráfico
-            # Como el índice es string, forzamos un orden lógico pasando el df ya ordenado
-            st.bar_chart(df_visual['Total'])
+            st.bar_chart(df_mensual, x='Mes_Grafico', y='Total')
 
         st.divider()
 
         # --- 2. DESGLOSE POR CATEGORÍA ---
-        st.subheader("💰 Ventas Detalladas por Categoría")
+        st.subheader("💰 Ventas Detalladas por Mes")
         
-        # Filtro de mes para el desglose
-        meses = df['Mes_Label'].unique()
-        mes_seleccionado = st.selectbox("Seleccionar mes para ver detalle:", meses)
+        df['Mes_Label'] = df['Mes'].dt.strftime('%Y - %m')
+        meses_disponibles = df_mensual['Mes_Grafico'].unique()
         
-        df_detalle = df[df['Mes_Label'] == mes_seleccionado]
-        st.dataframe(df_detalle[['Categoría', 'Cantidad', 'Total']], use_container_width=True, hide_index=True)
-        
-        # Gráfico de categorías para ese mes
-        st.bar_chart(df_detalle.set_index('Categoría')['Total'])
-        
+        if len(meses_disponibles) > 0:
+            mes_seleccionado = st.selectbox("Seleccionar mes para ver detalle:", meses_disponibles)
+            
+            df_detalle = df[df['Mes_Label'] == mes_seleccionado]
+            st.dataframe(df_detalle[['Categoría', 'Cantidad', 'Total']], use_container_width=True, hide_index=True)
+            
+            st.bar_chart(df_detalle.set_index('Categoría')['Total'])
+            
     else:
         st.info("No hay datos de ventas para mostrar.")
 
-    # 3. Stock Actual
+    st.divider()
+
+    # --------------------------------------------------------
+    # 3. STOCK ACTUAL
+    # --------------------------------------------------------
     st.subheader("📦 Stock Actual por Categoría")
     query_stock = text("""
         SELECT COALESCE(prod.categoria, 'Otros') AS "Categoría", SUM(var.stock_interno) AS "Stock"
@@ -86,3 +100,67 @@ def render_estadisticas():
     
     if not df_stock.empty:
         st.bar_chart(df_stock.set_index('Categoría')['Stock'])
+
+# --------------------------------------------------------
+    # 4. EVOLUCIÓN HISTÓRICA DEL STOCK 
+    # --------------------------------------------------------
+    st.subheader("📊 Evolución del Stock Histórico")
+    
+    query_mov = text("""
+        SELECT 
+            DATE_TRUNC('month', m.fecha)::DATE AS "Mes",
+            COALESCE(prod.categoria, 'Otros') AS "Categoría",
+            SUM(COALESCE(m.stock_nuevo, 0) - COALESCE(m.stock_anterior, 0)) AS "Neto"
+        FROM movimientos m
+        LEFT JOIN variantes var ON m.sku = var.sku
+        LEFT JOIN productos prod ON var.id_producto = prod.id_producto
+        GROUP BY 1, 2
+        ORDER BY 1 ASC;
+    """)
+    
+    with engine.connect() as conn:
+        df_mov = pd.read_sql(query_mov, conn)
+
+    if not df_mov.empty and not df_stock.empty:
+        df_mov['Mes'] = pd.to_datetime(df_mov['Mes'])
+        df_pivot = df_mov.pivot_table(index='Mes', columns='Categoría', values='Neto', aggfunc='sum').fillna(0)
+        
+        stock_actual_serie = df_stock.set_index('Categoría')['Stock']
+
+        # Asegurarnos de que todas las categorías del stock actual estén en nuestro pivot
+        for cat in stock_actual_serie.index:
+            if cat not in df_pivot.columns:
+                df_pivot[cat] = 0.0
+
+        # Calculamos la base: Stock Inicial = Stock Actual - Todos los movimientos
+        movimientos_totales = df_pivot.sum()
+        stock_base = stock_actual_serie.fillna(0) - movimientos_totales.fillna(0)
+        
+        # Generamos la evolución real
+        df_acumulado = df_pivot.cumsum() + stock_base
+        
+        # Formateo del Eje X a texto ordenado
+        df_acumulado.index = df_acumulado.index.strftime('%Y - %m')
+        
+        # --- NUEVO: FILTRO MULTISELECCIÓN ---
+        categorias_disponibles = df_acumulado.columns.tolist()
+        
+        # Por defecto seleccionamos todas las categorías MENOS "Otros"
+        categorias_por_defecto = [cat for cat in categorias_disponibles if cat != 'Otros']
+        
+        categorias_seleccionadas = st.multiselect(
+            "Filtrar categorías a mostrar en el gráfico:",
+            options=categorias_disponibles,
+            default=categorias_por_defecto
+        )
+        
+        # Dibujamos el gráfico solo si hay al menos una categoría seleccionada
+        if categorias_seleccionadas:
+            st.line_chart(df_acumulado[categorias_seleccionadas])
+            
+            with st.expander("Ver tabla detallada de la evolución del stock"):
+                st.dataframe(df_acumulado[categorias_seleccionadas], use_container_width=True)
+        else:
+            st.warning("⚠️ Selecciona al menos una categoría para visualizar el gráfico.")
+    else:
+        st.info("Aún no hay suficientes movimientos de inventario registrados para generar la evolución.")
