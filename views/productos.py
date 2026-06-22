@@ -8,50 +8,45 @@ import utils
 
 
 def vista_productos():
-    st.title("📦 Gestión de Productos")
+    st.title("📦 Gestión de Productos e Inventario")
     
     # Creamos dos pestañas principales
     tab_stock, tab_grupos = st.tabs(["📊 Inventario (Stock)", "📁 Grupos de Marketing"])
 
-# --- PESTAÑA 1: INVENTARIO ---
+    # ==============================================================================
+    # --- PESTAÑA 1: INVENTARIO ---
+    # ==============================================================================
     with tab_stock:
         st.subheader("🔎 Gestión de Inventario e Importación")
 
-        # PASO A: Traer los grupos para el selector
+        # PASO A: Traer los grupos de marketing para el selector de la tabla
         with engine.connect() as conn:
             res_grupos = conn.execute(text("SELECT id_grupo, nombre_grupo FROM Grupos_Productos ORDER BY nombre_grupo")).fetchall()
-            # Creamos un diccionario para mapear Nombre -> ID y viceversa
             mapa_grupos = {row.nombre_grupo: row.id_grupo for row in res_grupos}
             opciones_grupos = ["Sin Grupo"] + list(mapa_grupos.keys())
 
-        tab_gestion, tab_importar = st.tabs(["📊 Gestión de Inventario", "📦 Importar Stock Externo"])
+        tab_gestion, tab_importar = st.tabs(["📊 Gestión de Inventario Avanzada", "📦 Importar Stock Externo (CSV)"])
 
-        # ==============================================================================
-        # PESTAÑA 1A: GESTIÓN DE INVENTARIO
-        # ==============================================================================
+        # ------------------------------------------------------------------------------
+        # PESTAÑA 1A: GESTIÓN DE INVENTARIO CON FILTROS MULTI-VARIABLE
+        # ------------------------------------------------------------------------------
         with tab_gestion:
-            col_search, col_btn = st.columns([4, 1])
-            with col_search:
-                filtro_inv = st.text_input("🔍 Buscar:", placeholder="Escribe SKU, Marca, Modelo o Ubicación...")
-            with col_btn:
-                st.write("") 
-                if st.button("🔄 Recargar Tabla"):
-                    if 'df_inventario' in st.session_state: del st.session_state['df_inventario']
-                    st.rerun()
-
+            # Consulta SQL optimizada trayendo la macro_categoria blindada
             if 'df_inventario' not in st.session_state:
                 with engine.connect() as conn:
                     q_inv = """
                         SELECT 
-                            v.sku, v.id_producto, p.categoria, p.marca, p.modelo, p.nombre,
+                            v.sku, v.id_producto, 
+                            COALESCE(p.macro_categoria, 'Lentes') as macro_categoria, 
+                            p.categoria, p.marca, p.modelo, p.nombre,
                             p.color_principal, p.diametro, v.medida, v.stock_interno,
                             v.stock_externo, v.stock_transito, v.ubicacion, p.importacion,
                             p.url_compra, p.url_imagen,
-                            g.nombre_grupo as grupo_mkt -- Traemos el nombre del grupo
+                            g.nombre_grupo as grupo_mkt
                         FROM Variantes v
                         JOIN Productos p ON v.id_producto = p.id_producto
-                        LEFT JOIN Grupos_Productos g ON v.id_grupo = g.id_grupo -- Unión con grupos
-                        ORDER BY p.marca, p.modelo, v.sku ASC
+                        LEFT JOIN Grupos_Productos g ON v.id_grupo = g.id_grupo
+                        ORDER BY p.macro_categoria, p.marca, p.modelo, v.sku ASC
                     """
                     st.session_state.df_inventario = pd.read_sql(text(q_inv), conn)
 
@@ -68,34 +63,70 @@ def vista_productos():
 
             df_calc['detalles_info'] = df_calc.apply(formatear_detalles, axis=1)
 
-            if filtro_inv:
-                f = filtro_inv.lower()
-                df_calc = df_calc[
-                    df_calc['nombre_completo'].str.lower().str.contains(f, na=False) |
-                    df_calc['sku'].str.lower().str.contains(f, na=False) |
-                    df_calc['ubicacion'].str.lower().str.contains(f, na=False) |
-                    df_calc['importacion'].str.lower().str.contains(f, na=False)
-                ]
+            # --- PANEL DE FILTROS SUPERIOR ---
+            with st.container(border=True):
+                st.markdown("##### 🔍 Filtros Avanzados de Búsqueda")
+                c_mac, c_cat, c_stk, c_txt, c_btn = st.columns([1.5, 1.5, 1.5, 2.5, 1])
+                
+                with c_btn:
+                    st.write("") # Espaciado para alinear verticalmente con los inputs
+                    if st.button("🔄 Recargar BD", use_container_width=True, type="primary"):
+                        if 'df_inventario' in st.session_state: del st.session_state['df_inventario']
+                        st.rerun()
 
+                # 1. Filtro por Macro-Categoría (Línea Mayor)
+                lineas_disp = ["Todas"] + sorted(df_calc['macro_categoria'].unique().tolist())
+                filtro_macro = c_mac.selectbox("📂 Línea Mayor:", lineas_disp)
+                if filtro_macro != "Todas":
+                    df_calc = df_calc[df_calc['macro_categoria'] == filtro_macro]
+
+                # 2. Filtro por Subcategoría dinámica
+                cats_disp = ["Todas"] + sorted(df_calc['categoria'].dropna().unique().tolist())
+                filtro_cat = c_cat.selectbox("📑 Subcategoría:", cats_disp)
+                if filtro_cat != "Todas":
+                    df_calc = df_calc[df_calc['categoria'] == filtro_cat]
+
+                # 3. Filtro por Estado de Stock Físico
+                filtro_stk = c_stk.selectbox("📦 Estado Almacén:", ["Todos", "Con Stock (>0)", "Sin Stock (0)", "En Camino (>0)"])
+                if filtro_stk == "Con Stock (>0)":
+                    df_calc = df_calc[df_calc['stock_interno'] > 0]
+                elif filtro_stk == "Sin Stock (0)":
+                    df_calc = df_calc[df_calc['stock_interno'] <= 0]
+                elif filtro_stk == "En Camino (>0)":
+                    df_calc = df_calc[df_calc['stock_transito'] > 0]
+
+                # 4. Búsqueda de Texto Libre
+                filtro_txt = c_txt.text_input("🔎 Búsqueda Libre:", placeholder="SKU, Marca, Modelo o Ubicación...")
+                if filtro_txt:
+                    f = filtro_txt.lower()
+                    df_calc = df_calc[
+                        df_calc['nombre_completo'].str.lower().str.contains(f, na=False) |
+                        df_calc['sku'].str.lower().str.contains(f, na=False) |
+                        df_calc['ubicacion'].str.lower().str.contains(f, na=False) |
+                        df_calc['importacion'].str.lower().str.contains(f, na=False)
+                    ]
+
+            # Seleccionamos las columnas finales a renderizar en el editor
             df_final = df_calc[[
-                'url_imagen', 'sku', 'id_producto', 'categoria', 'grupo_mkt', 'nombre_completo', 
+                'url_imagen', 'sku', 'id_producto', 'macro_categoria', 'categoria', 'grupo_mkt', 'nombre_completo', 
                 'detalles_info', 'stock_interno', 'stock_externo', 'stock_transito',
                 'ubicacion', 'importacion', 'url_compra'
             ]]
 
-            st.caption("📝 Editables: **En Tránsito**, **Ubicación**, **Importación** y **URL**.")
+            st.caption(f"Mostrando **{len(df_final)} variantes** acordes a los filtros. 📝 Editables: **En Tránsito**, **Ubicación**, **Importación** y **URL**.")
 
             cambios_inv = st.data_editor(
                 df_final,
                 key="editor_inventario_v3",
                 column_config={
-                    "url_imagen": st.column_config.ImageColumn("Foto 📸", width="small", help="Clic para ver en grande"),
+                    "url_imagen": st.column_config.ImageColumn("Foto 📸", width="small", help="Clic para agrandar"),
                     "sku": st.column_config.TextColumn("SKU", disabled=True, width="small"),
                     "id_producto": None, 
-                    "categoria": st.column_config.TextColumn("Cat.", disabled=True, width="small"),
+                    "macro_categoria": st.column_config.TextColumn("Línea", disabled=True, width="small"),
+                    "categoria": st.column_config.TextColumn("Subcat.", disabled=True, width="small"),
                     "grupo_mkt": st.column_config.SelectboxColumn(
                         "📁 Grupo Marketing", 
-                        options=opciones_grupos, # Aquí salen tus grupos creados
+                        options=opciones_grupos,
                         width="medium"
                     ),
                     "nombre_completo": st.column_config.TextColumn("Producto", disabled=True, width="large"),
@@ -116,7 +147,7 @@ def vista_productos():
 
             if edited_rows:
                 st.info(f"💾 Tienes cambios pendientes en {len(edited_rows)} filas...")
-                if st.button("Confirmar Cambios"):
+                if st.button("Confirmar Cambios en Inventario", type="primary"):
                     with engine.connect() as conn:
                         trans = conn.begin()
                         try:
@@ -141,17 +172,15 @@ def vista_productos():
                                     conn.execute(text("UPDATE Productos SET importacion = :imp, url_compra = :url WHERE id_producto = :idp"), 
                                                  {"imp": nuevo_imp, "url": nueva_url, "idp": id_prod_target})
                                     count_prod += 1
-                                # Lógica para vincular el grupo
+                                    
                                 if 'grupo_mkt' in updates:
                                     nombre_sel = updates['grupo_mkt']
-                                    # Si elige 'Sin Grupo', ponemos NULL, si no, buscamos su ID
                                     id_g_db = mapa_grupos.get(nombre_sel) if nombre_sel != "Sin Grupo" else None
-                                    
                                     conn.execute(text("UPDATE Variantes SET id_grupo = :idg WHERE sku = :s"), 
                                                  {"idg": id_g_db, "s": sku_target})
                             
                             trans.commit()
-                            st.success(f"✅ Guardado: {count_ubi} Ubicaciones, {count_transito} Stocks y {count_prod} Importaciones.")
+                            st.success(f"✅ Guardado con éxito: {count_ubi} Ubicaciones, {count_transito} Stocks en Camino y {count_prod} Enlaces.")
                             del st.session_state['df_inventario'] 
                             time.sleep(1.5)
                             st.rerun()
@@ -159,9 +188,9 @@ def vista_productos():
                             trans.rollback()
                             st.error(f"Error al guardar: {e}")
 
-        # ==============================================================================
-        # PESTAÑA 1B: IMPORTAR STOCK EXTERNO
-        # ==============================================================================
+        # ------------------------------------------------------------------------------
+        # PESTAÑA 1B: IMPORTAR STOCK EXTERNO (CSV)
+        # ------------------------------------------------------------------------------
         with tab_importar:
             st.markdown("### 📥 Actualización Masiva de Stock de Proveedor")
             st.info("Sube un archivo CSV con exactamente dos columnas: `sku` y `stock`.")
@@ -196,7 +225,7 @@ def vista_productos():
                                     
                                     trans.commit()
                                     st.balloons()
-                                    st.success(f"✅ Se ha actualizado el stock de {contador} variantes.")
+                                    st.success(f"✅ Se ha actualizado el stock externo de {contador} variantes.")
                                     if 'df_inventario' in st.session_state: del st.session_state['df_inventario']
                                     time.sleep(2)
                                     st.rerun()
@@ -205,22 +234,24 @@ def vista_productos():
                                     trans.rollback()
                                     st.error(f"❌ Error en la base de datos: {e}")
                 except Exception as e:
-                    st.error(f"❌ Error al leer el CSV: {e}")
+                    st.error(f"❌ Error al leer el archivo CSV: {e}")
 
+    # ==============================================================================
     # --- PESTAÑA 2: GRUPOS DE MARKETING ---
+    # ==============================================================================
     with tab_grupos:
-        st.subheader("Configuración de Grupos para Mensajes")
+        st.subheader("Configuración de Grupos para Mensajes y Automatizaciones")
         
-        # 1. Formulario para crear nuevos grupos
+        # 1. Formulario para crear nuevos grupos (Añadido "Pelucas")
         with st.expander("➕ Crear Nuevo Grupo de Productos", expanded=True):
             with st.form("nuevo_grupo"):
-                nombre = st.text_input("Nombre del Grupo (Ej: FL002 - Sharingan)*")
-                tipo = st.selectbox("Tipo de Lente", ["Natural", "Fantasía", "Accesorios"])
-                marcas = st.multiselect("Marcas asociadas", ["FreshLady", "Meetone", "UYAAI"]) # TODO: Cargar desde BD
+                nombre = st.text_input("Nombre del Grupo (Ej: FL002 - Sharingan / Peluca Bob)*")
+                tipo = st.selectbox("Línea / Tipo de Producto", ["Natural", "Fantasía", "Accesorios", "Pelucas"])
+                marcas = st.multiselect("Marcas asociadas", ["FreshLady", "Meetone", "UYAAI", "Pelucat", "Generico"])
                 modelo = st.text_input("Modelo base")
-                contorno = st.checkbox("¿Tiene contorno?")
-                enlace = st.text_input("Enlace de WordPress")
-                descripcion = st.text_area("Texto para el mensaje de WhatsApp")
+                contorno = st.checkbox("¿Tiene contorno o Lace Front?")
+                enlace = st.text_input("Enlace directo de la Tienda Web")
+                descripcion = st.text_area("Texto persuasivo para el mensaje de WhatsApp")
                 imagenes = st.text_area("Enlaces de imágenes (uno por línea o separados por coma)")
                 
                 guardar_btn = st.form_submit_button("Guardar Grupo")
@@ -230,13 +261,10 @@ def vista_productos():
                         st.warning("⚠️ El nombre del grupo es obligatorio.")
                     else:
                         try:
-                            # Preparamos los datos JSON
                             marcas_json = json.dumps(marcas)
-                            # Limpiamos las imágenes por si pones enters o espacios
                             lista_imagenes = [img.strip() for img in imagenes.replace('\n', ',').split(',') if img.strip()]
                             imagenes_json = json.dumps(lista_imagenes)
 
-                            # Guardado en Base de Datos
                             with engine.connect() as conn:
                                 trans = conn.begin()
                                 try:
@@ -260,7 +288,7 @@ def vista_productos():
                         except Exception as e:
                             st.error(f"❌ Error al procesar datos: {e}")
 
-# 2. Visualización y Edición de Grupos existentes
+        # 2. Visualización y Edición de Grupos existentes
         st.write("---")
         st.write("### 📂 Grupos Registrados")
         
@@ -269,17 +297,16 @@ def vista_productos():
             df_grupos = pd.read_sql(query_grupos, conn)
 
         if not df_grupos.empty:
-            # Editor de datos
             editado_grupos = st.data_editor(
                 df_grupos,
                 key="editor_grupos_mkt_v2",
                 column_config={
                     "id_grupo": st.column_config.TextColumn("ID", disabled=True),
                     "nombre_grupo": "Nombre del Grupo",
-                    "tipo": st.column_config.SelectboxColumn("Tipo", options=["Natural", "Fantasía", "Accesorios"]),
+                    "tipo": st.column_config.SelectboxColumn("Tipo", options=["Natural", "Fantasía", "Accesorios", "Pelucas"]),
                     "marca": "Marcas (JSON)",
                     "modelo": "Modelo",
-                    "tiene_contorno": "Contorno",
+                    "tiene_contorno": "Contorno/Lace",
                     "enlace_tienda": st.column_config.LinkColumn("Tienda 🔗"),
                     "descripcion": st.column_config.TextColumn("Descripción", width="large"),
                     "imagenes": "Imágenes (JSON)",
@@ -289,47 +316,39 @@ def vista_productos():
                 use_container_width=True
             )
             
-            # --- LÓGICA PARA GUARDAR CAMBIOS ---
             cambios_mkt = st.session_state["editor_grupos_mkt_v2"].get("edited_rows")
             
             if cambios_mkt:
                 st.info(f"💾 Tienes cambios pendientes en {len(cambios_mkt)} grupos...")
             
             if st.button("Confirmar Cambios en Grupos", type="primary"):
-                    with engine.connect() as conn:
-                        trans = conn.begin()
-                        try:
-                            for idx, updates in cambios_mkt.items():
-                                id_target = int(df_grupos.iloc[idx]['id_grupo'])
-                                
-                                # Construimos el UPDATE dinámicamente según lo que cambió
-                                for col, val in updates.items():
-                                    if col in ['marca', 'imagenes']:
-                                        # Si Streamlit nos da una lista, la convertimos a texto JSON
-                                        val_json = json.dumps(val) if isinstance(val, (list, dict)) else val
-                                        
-                                        # Ahora sí lo mandamos a PostgreSQL sin que se confunda
-                                        conn.execute(text(f"UPDATE Grupos_Productos SET {col} = CAST(:v AS JSONB) WHERE id_grupo = :id"), 
-                                                     {"v": val_json, "id": id_target})
-                                    else:
-                                        # Para campos normales (texto, boolean)
-                                        conn.execute(text(f"UPDATE Grupos_Productos SET {col} = :v WHERE id_grupo = :id"), 
-                                                     {"v": val, "id": id_target})
+                with engine.connect() as conn:
+                    trans = conn.begin()
+                    try:
+                        for idx, updates in cambios_mkt.items():
+                            id_target = int(df_grupos.iloc[idx]['id_grupo'])
                             
-                            trans.commit()
-                            
-                            if 'df_inventario' in st.session_state: del st.session_state['df_inventario']
-                            
-                            st.success("✅ ¡Cambios guardados correctamente!")
-                            time.sleep(1)
-                            st.rerun()
-                        except Exception as e:
-                            trans.rollback()
-                            st.error(f"❌ Error al actualizar: {e}")
+                            for col, val in updates.items():
+                                if col in ['marca', 'imagenes']:
+                                    val_json = json.dumps(val) if isinstance(val, (list, dict)) else val
+                                    conn.execute(text(f"UPDATE Grupos_Productos SET {col} = CAST(:v AS JSONB) WHERE id_grupo = :id"), 
+                                                 {"v": val_json, "id": id_target})
+                                else:
+                                    conn.execute(text(f"UPDATE Grupos_Productos SET {col} = :v WHERE id_grupo = :id"), 
+                                                 {"v": val, "id": id_target})
+                        
+                        trans.commit()
+                        if 'df_inventario' in st.session_state: del st.session_state['df_inventario']
+                        st.success("✅ ¡Cambios en grupos guardados correctamente!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        trans.rollback()
+                        st.error(f"❌ Error al actualizar grupos: {e}")
 
-            # --- LÓGICA PARA BORRAR ---
+            # Zona de Borrado
             st.write("")
-            with st.expander("🗑️ Zona de Peligro (Eliminar)"):
+            with st.expander("🗑️ Zona de Peligro (Eliminar Grupo)"):
                 col_del, col_espacio = st.columns([2, 3])
                 with col_del:
                     id_borrar = st.number_input("ID del grupo a eliminar", min_value=0, step=1, value=0)
@@ -339,7 +358,7 @@ def vista_productos():
                                 trans = conn.begin()
                                 conn.execute(text("DELETE FROM Grupos_Productos WHERE id_grupo = :id"), {"id": id_borrar})
                                 trans.commit()
-                                st.success(f"Grupo {id_borrar} eliminado.")
+                                st.success(f"Grupo ID {id_borrar} eliminado.")
                                 time.sleep(1)
                                 st.rerun()
         else:

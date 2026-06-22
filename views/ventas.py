@@ -13,6 +13,7 @@ try:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE Ventas ADD COLUMN IF NOT EXISTS anulado BOOLEAN DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS id_etapa INTEGER"))
+        conn.execute(text("ALTER TABLE DetalleVenta ADD COLUMN IF NOT EXISTS macro_categoria VARCHAR(50)"))
 except:
     pass
 
@@ -27,7 +28,7 @@ def render_ventas():
 
 def render_nueva_venta():
     # --- FUNCIÓN AUXILIAR LOCAL ---
-    def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None):
+    def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None, macro_cat="Otros"):
         for item in st.session_state.carrito:
             if item['sku'] == sku and sku is not None:
                 if es_inventario and (item['cantidad'] + cantidad) > stock_max:
@@ -48,7 +49,8 @@ def render_nueva_venta():
             "cantidad": int(cantidad),
             "precio": float(precio),
             "subtotal": float(precio * cantidad),
-            "es_inventario": es_inventario
+            "es_inventario": es_inventario,
+            "macro_categoria": macro_cat
         })
         st.success(f"Añadido: {nombre}")
 
@@ -70,7 +72,7 @@ def render_nueva_venta():
     # COLUMNA IZQUIERDA: BUSCADOR
     # ------------------------------------------------------------------
     with col_izq:
-        st.caption("1. Buscar Productos")
+        st.caption("1. Buscar Productos o Ingresar Manual")
         tipo_producto = st.radio("Origen:", ["Inventario (SQL)", "Manual/Extra"], horizontal=True, label_visibility="collapsed")
         
         if tipo_producto == "Inventario (SQL)":
@@ -78,7 +80,7 @@ def render_nueva_venta():
             if sku_input:
                 with engine.connect() as conn:
                     res = pd.read_sql(text("""
-                        SELECT v.sku, p.modelo, p.nombre as color, v.medida, v.stock_interno, v.precio, v.ubicacion 
+                        SELECT v.sku, p.modelo, p.nombre as color, v.medida, v.stock_interno, v.precio, v.ubicacion, COALESCE(p.macro_categoria, 'Lentes') as macro_categoria
                         FROM Variantes v JOIN Productos p ON v.id_producto = p.id_producto
                         WHERE v.sku = :sku
                     """), conn, params={"sku": sku_input})
@@ -99,19 +101,29 @@ def render_nueva_venta():
                     precio_sugerido = float(prod['precio']) if modo_operacion == "💰 Venta" else 0.0
                     precio_final = c2.number_input("Precio Unit.", value=precio_sugerido, disabled=(modo_operacion != "💰 Venta"))
                     
-                    if st.button("➕ Agregar"):
-                        agregar_al_carrito(prod['sku'], nombre_full, cantidad, precio_final, True, prod['stock_interno'])
+                    if st.button("➕ Agregar al Carrito"):
+                        agregar_al_carrito(prod['sku'], nombre_full, cantidad, precio_final, True, prod['stock_interno'], prod['macro_categoria'])
                 else:
-                    st.warning("SKU no encontrado.")
+                    st.warning("SKU no encontrado en inventario.")
         
         else: 
-            st.info("Item Manual (Servicios, etc.)")
-            desc_manual = st.text_input("Descripción:")
+            st.info("📦 Ítem Manual / Extra (Sin SKU en Base de Datos)")
+            
+            # --- NUEVO SELECTOR DE MACROCATEGORÍA ---
+            macro_manual = st.selectbox("Macrocategoría:", ["Pelucas", "Lentes", "Otros"], key="macro_man")
+            desc_manual = st.text_input("Detalle / Descripción del producto o servicio:", placeholder="Ej: Peinado especial, redecilla extra, servicio...")
+            
             c1, c2 = st.columns(2)
             cant_manual = c1.number_input("Cant.", min_value=1, value=1, key="cm")
-            precio_manual = c2.number_input("Precio", value=0.0, key="pm", disabled=(modo_operacion != "💰 Venta"))
-            if st.button("➕ Agregar Manual"):
-                if desc_manual: agregar_al_carrito(None, desc_manual, cant_manual, precio_manual, False)
+            precio_manual = c2.number_input("Precio Unit.", value=0.0, key="pm", disabled=(modo_operacion != "💰 Venta"))
+            
+            if st.button("➕ Agregar Ítem Manual"):
+                if desc_manual and desc_manual.strip():
+                    # Formateamos anteponiendo la macrocategoría para que sea legible en cualquier reporte o Excel
+                    nombre_formateado = f"[{macro_manual}] {desc_manual.strip()}"
+                    agregar_al_carrito(None, nombre_formateado, cant_manual, precio_manual, False, None, macro_manual)
+                else:
+                    st.warning("⚠️ Debes ingresar el detalle o descripción del ítem.")
 
     # ------------------------------------------------------------------
     # COLUMNA DERECHA: PROCESAR (CARRITO EDITABLE)
@@ -126,6 +138,7 @@ def render_nueva_venta():
                 df_cart,
                 column_config={
                     "cantidad": st.column_config.NumberColumn("Cant.", min_value=1, step=1, width="small"),
+                    "macro_categoria": st.column_config.TextColumn("Línea", disabled=True, width="small"),
                     "precio": st.column_config.NumberColumn("Precio", min_value=0.0, width="small"),
                     "subtotal": st.column_config.NumberColumn("Subtotal", disabled=True, width="small"),
                     "descripcion": st.column_config.TextColumn("Descripción", width="medium"),
@@ -280,7 +293,6 @@ def render_nueva_venta():
                         }
 
                 clave_agencia = None
-                # Se pedirá clave solo si el tipo de envío principal en la interfaz es "Agencia" o si la dirección elegida es de tipo "AGENCIA"
                 es_agencia_clave = (tipo_envio_ui == "Agencia") or (usar_guardada and opciones_visuales.get(seleccion_dir, {}).get('tipo_envio') == 'AGENCIA')
                 
                 if es_agencia_clave:
@@ -300,6 +312,14 @@ def render_nueva_venta():
                     try:
                         with engine.connect() as conn:
                             trans = conn.begin()
+                            
+                            # Verificamos de forma segura si la columna macro_categoria se alteró correctamente en DetalleVenta
+                            has_macro_col = False
+                            try:
+                                conn.execute(text("SELECT macro_categoria FROM DetalleVenta LIMIT 1"))
+                                has_macro_col = True
+                            except: pass
+
                             if not usar_guardada and datos_nuevos:
                                 conn.execute(text("""
                                     INSERT INTO Direcciones (id_cliente, tipo_envio, nombre_receptor, telefono_receptor, 
@@ -315,10 +335,17 @@ def render_nueva_venta():
                             id_venta = res_v.fetchone()[0]
 
                             for item in st.session_state.carrito:
-                                conn.execute(text("""
-                                    INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario)
-                                    VALUES (:idv, :sku, :desc, :cant, :pu, :sub, :inv)
-                                """), {"idv": id_venta, "sku": item['sku'], "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario']})
+                                mac_val = item.get('macro_categoria', 'Otros')
+                                if has_macro_col:
+                                    conn.execute(text("""
+                                        INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario, macro_categoria)
+                                        VALUES (:idv, :sku, :desc, :cant, :pu, :sub, :inv, :mac)
+                                    """), {"idv": id_venta, "sku": item['sku'], "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario'], "mac": mac_val})
+                                else:
+                                    conn.execute(text("""
+                                        INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario)
+                                        VALUES (:idv, :sku, :desc, :cant, :pu, :sub, :inv)
+                                    """), {"idv": id_venta, "sku": item['sku'], "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario']})
                                 
                                 if item['es_inventario']:
                                     res_s = conn.execute(text("UPDATE Variantes SET stock_interno = stock_interno - :c WHERE sku=:s RETURNING stock_interno"),
@@ -334,17 +361,19 @@ def render_nueva_venta():
                             
                             trans.commit()
                         
-                        skus_vendidos = [item["sku"] for item in st.session_state.carrito]
-                        threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
+                        # Filtramos los ítems manuales (sku is not None) antes de llamar a WooCommerce
+                        skus_vendidos = [item["sku"] for item in st.session_state.carrito if item["sku"] is not None]
+                        if skus_vendidos:
+                            threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
 
                         st.balloons()
-                        st.success(f"¡Venta #{id_venta} registrada!")
+                        st.success(f"¡Venta #{id_venta} registrada exitosamente!")
                         st.session_state.carrito = []
                         if 'clave_temp' in st.session_state: del st.session_state['clave_temp']
                         time.sleep(2)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Error al registrar la venta: {e}")
 
             # ==========================================================
             # MODO B: SALIDA (Merma)
@@ -352,7 +381,7 @@ def render_nueva_venta():
             else:
                 st.warning("⚠️ Estás registrando una salida de stock (Sin cobro).")
                 motivo_salida = st.selectbox("Motivo:", ["Merma / Dañado", "Regalo / Marketing", "Uso Personal", "Ajuste Inventario"])
-                detalle_motivo = st.text_input("Detalle (Opcional):", placeholder="Ej: Se rompió una luna...")
+                detalle_motivo = st.text_input("Detalle (Opcional):", placeholder="Ej: Se rompió una luna, obsequio por reclamo...")
                 
                 if st.button("📉 CONFIRMAR SALIDA", type="primary"):
                     try:
@@ -374,13 +403,14 @@ def render_nueva_venta():
                                     items_procesados += 1
                             trans.commit()
 
-                        skus_vendidos = [item["sku"] for item in st.session_state.carrito]
-                        threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
+                        skus_vendidos = [item["sku"] for item in st.session_state.carrito if item["sku"] is not None]
+                        if skus_vendidos:
+                            threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
 
                         if items_procesados > 0:
-                            st.success(f"✅ ¡Salida registrada! ({items_procesados} productos actualizados)")
+                            st.success(f"✅ ¡Salida registrada! ({items_procesados} productos en inventario actualizados)")
                         else:
-                            st.warning("⚠️ El carrito solo tenía items manuales, no se descontó nada.")
+                            st.warning("⚠️ El carrito solo tenía ítems manuales/extra; no se descontó inventario físico.")
                             
                         st.session_state.carrito = []
                         time.sleep(1.5)
@@ -418,7 +448,18 @@ def render_gestion_ventas():
     
     with engine.connect() as conn:
         venta_info = conn.execute(text("SELECT * FROM Ventas WHERE id_venta = :id"), {"id": int(id_venta_sel)}).fetchone()
-        detalles = pd.read_sql(text("SELECT sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario FROM DetalleVenta WHERE id_venta = :id"), conn, params={"id": int(id_venta_sel)})
+        
+        # Verificamos si DetalleVenta tiene macro_categoria para renderizarla
+        has_mac = False
+        try:
+            conn.execute(text("SELECT macro_categoria FROM DetalleVenta LIMIT 1"))
+            has_mac = True
+        except: pass
+
+        if has_mac:
+            detalles = pd.read_sql(text("SELECT sku, macro_categoria as linea, descripcion, cantidad, precio_unitario, subtotal, es_inventario FROM DetalleVenta WHERE id_venta = :id"), conn, params={"id": int(id_venta_sel)})
+        else:
+            detalles = pd.read_sql(text("SELECT sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario FROM DetalleVenta WHERE id_venta = :id"), conn, params={"id": int(id_venta_sel)})
 
     st.markdown(f"### Detalle de Venta #{id_venta_sel}")
     if venta_info.anulado:
@@ -451,7 +492,7 @@ def render_gestion_ventas():
                             })
                     trans.commit()
 
-                    skus_anulados = [item['sku'] for idx, item in detalles.iterrows() if item['es_inventario']]
+                    skus_anulados = [item['sku'] for idx, item in detalles.iterrows() if item['es_inventario'] and item['sku'] is not None]
                     if skus_anulados:
                         threading.Thread(target=sync_woo_background, args=(skus_anulados,)).start()
 
