@@ -1,22 +1,15 @@
 import os
-from dotenv import load_dotenv
-
-# =====================================================================
-# 1. PRIMERO CARGAMOS EL .ENV
-# =====================================================================
-ruta_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-load_dotenv(ruta_env)
-
-# =====================================================================
-# 2. AHORA SÍ IMPORTAMOS LAS LIBRERÍAS
-# =====================================================================
 import requests
 import random
 import time
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# 🔥 IMPORTANTE: Agregamos las dos nuevas funciones de estados desde utils
+# 1. Cargar variables de entorno
+ruta_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+load_dotenv(ruta_env)
+
 from utils import (
     normalizar_telefono_maestro, 
     verificar_numero_waha, 
@@ -27,224 +20,151 @@ from utils import (
 )
 
 def ejecutar_francotirador():
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Despertando Bot de Marketing...")
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Despertando Motor de Marketing Omni-Canal...")
 
-    # ==========================================================
-    # 🎲 MODO HUMANO: Retraso aleatorio (1 a 59 min)
-    # ==========================================================
-    retraso_minutos = random.randint(1, 59)
-    retraso_segundos = retraso_minutos * 60
+    # Retraso orgánico humano (1 a 55 min)
+    retraso_minutos = random.randint(1, 55)
     print(f"⏳ Modo orgánico: Esperando {retraso_minutos} minutos antes de actuar...")
-    time.sleep(retraso_segundos)
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⏰ Tiempo de espera terminado. Iniciando proceso...")
+    time.sleep(retraso_minutos * 60)
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⏰ Tiempo de espera terminado. Iniciando ráfaga...")
 
-    # ==========================================================
-    # 🔗 CONEXIÓN A BASE DE DATOS BLINDADA
-    # ==========================================================
     db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        print("❌ FATAL: No se encontró DATABASE_URL en tu archivo .env")
-        return
-        
-    if db_url.startswith("postgres://"):
+    if db_url and db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
         
     motor_seguro = create_engine(db_url)
 
     try:
         with motor_seguro.connect() as conn:
-            # LEER ÓRDENES DEL PANEL DE CONTROL
             config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
             if not config:
-                print("🛑 No hay configuración en la base de datos.")
+                print("🛑 No hay configuración registrada en la base de datos.")
                 return
 
+            hora_peru = datetime.now(timezone.utc) - timedelta(hours=5)
+            ahora = hora_peru.time()
+            dentro_de_horario = (config.hora_inicio <= ahora <= config.hora_fin)
+
             # ==================================================================
-            # 🎯 TAREA 1: BOT FRANCOTIRADOR (MENSAJES DIRECTOS)
+            # 🎯 TAREA 1: BOT FRANCOTIRADOR (MENSAJES DIRECTOS CON ENRUTAMIENTO)
             # ==================================================================
             if config.bot_activo:
-                print("\n▶️ INICIANDO TAREA 1: Mensajes Directos")
-                # VALIDAR HORARIO COMERCIAL
-                hora_peru = datetime.now(timezone.utc) - timedelta(hours=5)
-                ahora = hora_peru.time()
-                if not (config.hora_inicio <= ahora <= config.hora_fin):
-                    print(f"⏰ Fuera de horario para mensajes directos. Permitido: {config.hora_inicio} a {config.hora_fin}.")
+                print("\n▶️ INICIANDO TAREA 1: Mensajes Directos (Sniper Bot)")
+                if not dentro_de_horario:
+                    print(f"⏰ Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
                 else:
-                    # VALIDAR LÍMITE DE MENSAJES DIARIOS
-                    enviados_hoy = conn.execute(text("""
-                        SELECT COUNT(*) FROM mensajes 
-                        WHERE tipo = 'SALIENTE_BOT' AND fecha::date = CURRENT_DATE
-                    """)).scalar()
+                    enviados_hoy = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND fecha::date = CURRENT_DATE")).scalar()
                     
                     if enviados_hoy >= config.max_mensajes_dia:
-                        print(f"📈 Límite diario alcanzado ({enviados_hoy}/{config.max_mensajes_dia}).")
+                        print(f"📈 Límite de mensajes diarios alcanzado ({enviados_hoy}/{config.max_mensajes_dia}).")
                     else:
-                        # BUSCAR EL GRUPO DE PRODUCTOS
                         filtro_sql = "" if config.tipo_objetivo == 'Todos' else "WHERE tipo = :t"
                         grupos = conn.execute(text(f"SELECT * FROM Grupos_Productos {filtro_sql}"), {"t": config.tipo_objetivo}).fetchall()
                         
-                        if not grupos:
-                            print(f"⚠️ No encontré ningún grupo del tipo '{config.tipo_objetivo}'.")
-                        else:
+                        if grupos:
                             grupo_elegido = random.choice(grupos)
+                            
+                            # --- CORRECCIÓN VITAL 1: Enrutamiento de Sesión ---
+                            # Si el grupo es de Pelucas, dispara por la cuenta 'principal'; si es de Lentes, por 'default'
+                            sesion_disparo = "principal" if getattr(grupo_elegido, 'tipo', '') == 'Pelucas' else "default"
 
-                            # BUSCAR CLIENTE IDEAL (Con hasta 3 intentos)
-                            enviado_exitoso = False
                             for intento in range(3):
                                 query_clientes = text("""
                                     SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, t.telefono 
                                     FROM clientes c
                                     JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
-                                    WHERE c.activo = TRUE 
-                                      AND c.estado IN ('Sin empezar')
-                                      AND t.activo = TRUE
-                                      AND t.es_principal = TRUE
-                                      AND length(t.telefono) > 6
-                                      AND t.telefono NOT IN (
-                                          SELECT telefono FROM mensajes 
-                                          WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days'
-                                      )
+                                    WHERE c.activo = TRUE AND c.estado = 'Sin empezar'
+                                      AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6
+                                      AND t.telefono NOT IN (SELECT telefono FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days')
                                 """)
                                 clientes_validos = conn.execute(query_clientes).fetchall()
                                 
                                 if not clientes_validos:
-                                    print("🛡️ No hay clientes disponibles ahora mismo.")
+                                    print("🛡️ No hay clientes en estado 'Sin empezar' elegibles en este momento.")
                                     break
 
                                 cliente = random.choice(clientes_validos)
                                 norm = normalizar_telefono_maestro(cliente.telefono)
-                                
-                                if not norm:
-                                    conn.execute(text("UPDATE Clientes SET activo = FALSE, notas = 'Formato de teléfono inválido' WHERE id_cliente = :idc"), {"idc": cliente.id_cliente})
-                                    conn.commit()
-                                    continue 
+                                if not norm: continue 
 
                                 telefono_final = norm['db']
-                                existe_wsp = verificar_numero_waha(telefono_final)
-                                
-                                if existe_wsp is False:
-                                    # Lógica de búsqueda de alternativa de teléfono
-                                    otro_telefono = conn.execute(text("""
-                                        SELECT telefono FROM telefonoscliente 
-                                        WHERE id_cliente = :idc AND telefono != :t AND activo = TRUE 
-                                        LIMIT 1
-                                    """), {"idc": cliente.id_cliente, "t": telefono_final}).fetchone()
-                                    
-                                    if otro_telefono:
-                                        nuevo_tel = otro_telefono[0]
-                                        conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t"), {"t": telefono_final})
-                                        conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :idc"), {"idc": cliente.id_cliente})
-                                        conn.execute(text("UPDATE telefonoscliente SET es_principal = TRUE WHERE telefono = :nt"), {"nt": nuevo_tel})
-                                        conn.execute(text("UPDATE Clientes SET telefono = :nt WHERE id_cliente = :idc"), {"nt": nuevo_tel, "idc": cliente.id_cliente})
-                                        conn.commit()
-                                        telefono_final = nuevo_tel
-                                    else:
-                                        conn.execute(text("UPDATE Clientes SET activo = FALSE, notas = 'Ningún número tiene WhatsApp' WHERE id_cliente = :idc"), {"idc": cliente.id_cliente})
-                                        conn.commit()
-                                        continue 
+                                if verificar_numero_waha(telefono_final):
+                                    saludo = random.choice(["Hola", "¡Hola!", "¡Qué tal", "Saludos", "Buen día"])
+                                    nom_ia = cliente.nombre_ia.strip() if cliente.nombre_ia else ""
+                                    cabecera = f"{saludo} {nom_ia} 👋" if nom_ia else "¡Hola! 👋"
                                         
-                                elif existe_wsp is None:
-                                    break 
+                                    mensaje_texto = f"{cabecera}\n\n{grupo_elegido.descripcion}\n\n{grupo_elegido.enlace_tienda}"
+                                    url_img = grupo_elegido.imagenes[0] if (grupo_elegido.imagenes and len(grupo_elegido.imagenes) > 0) else None
 
-                                # CONSTRUIR Y ENVIAR MENSAJE
-                                if cliente.nombre_ia and str(cliente.nombre_ia).strip():
-                                    saludo_aleatorio = random.choice(["Hola", "¡Hola!", "¡Qué tal", "Saludos", "Buen día"])
-                                    cabecera = f"{saludo_aleatorio} {cliente.nombre_ia} 👋"
-                                else:
-                                    cabecera = "¡Hola! 👋"
-                                    
-                                mensaje_texto = f"{cabecera}\n\n{grupo_elegido.descripcion}\n\n{grupo_elegido.enlace_tienda}"
-                                url_img = grupo_elegido.imagenes[0] if (grupo_elegido.imagenes and len(grupo_elegido.imagenes) > 0) else None
-
-                                envio_ok = enviar_mensaje_whatsapp(telefono_final, mensaje_texto, url_img)
-                                
-                                if envio_ok:
-                                    conn.execute(text("""
-                                        INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido) 
-                                        VALUES (:idc, :t, 'SALIENTE_BOT', :c, (NOW() - INTERVAL '5 hours'), TRUE)
-                                    """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_texto})
-                                    conn.commit()
-                                    print("✅ ¡Mensaje enviado con éxito!")
-                                    enviado_exitoso = True
-                                    break 
-                                else:
-                                    print("❌ Falló el envío en la API de WhatsApp.")
-                                    break
-                            
-                            if not enviado_exitoso:
-                                print("⚠️ Se agotaron los intentos de envío de mensajes directos.")
+                                    # Disparamos respetando estrictamente la sesión asignada
+                                    if enviar_mensaje_whatsapp(telefono_final, mensaje_texto, url_img, session=sesion_disparo):
+                                        conn.execute(text("INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW() - INTERVAL '5 hours', TRUE, :sess)"), 
+                                                     {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_texto, "sess": sesion_disparo})
+                                        conn.commit()
+                                        print(f"✅ ¡Mensaje directo enviado a {telefono_final} (Vía: {sesion_disparo})!")
+                                        break 
             else:
-                print("\n⏸️ TAREA 1 OMITIDA: Los mensajes directos están apagados en el Panel.")
-            # ==        ================================================================
-            # 📱 TAREA 2: PUBLICACIÓN DE ESTADOS (LÓGICA DINÁMICA DE CUENTAS)
+                print("\n⏸️ TAREA 1 OMITIDA: El Sniper Bot está apagado en el Panel.")
+
+            # ==================================================================
+            # 📱 TAREA 2: PUBLICACIÓN DE ESTADOS (EVALUACIÓN INDEPENDIENTE)
             # ==================================================================
             if getattr(config, 'estados_activo', False):
-                print("\n▶️ INICIANDO TAREA 2: Publicación de Estado de WhatsApp")
-                
-                # --- NUEVA VALIDACIÓN DE HORARIO PARA ESTADOS ---
-                hora_peru = datetime.now(timezone.utc) - timedelta(hours=5)
-                ahora = hora_peru.time()
-                
-                if not (config.hora_inicio <= ahora <= config.hora_fin):
-                    print(f"⏰ Fuera de horario para publicar estados. Permitido: {config.hora_inicio} a {config.hora_fin}.")
+                print("\n▶️ INICIANDO TAREA 2: Publicación de Estados en WhatsApp")
+                if not dentro_de_horario:
+                    print(f"⏰ Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
                 else:
-                    # Importamos la nueva herramienta de evaluación
-                    from utils import determinar_sesiones_para_estado
+                    prob_nat = getattr(config, 'prob_natural', 34)
+                    prob_fan = getattr(config, 'prob_fantasia', 33)
+                    prob_acc = getattr(config, 'prob_accesorios', 33)
 
-                    prob_len = getattr(config, 'prob_sesion_lentes', 100)
-                    prob_pri = getattr(config, 'prob_sesion_principal', 50)
-
-                    # 1. El algoritmo decide qué cuentas de WhatsApp publicarán en esta oportunidad
-                    sesiones_a_publicar = determinar_sesiones_para_estado(prob_len, prob_pri)
-
-                    if not sesiones_a_publicar:
-                        print(f"🎲 Sorteo finalizado: Ninguna cuenta superó la probabilidad esta hora (Lentes: {prob_len}%, Principal: {prob_pri}%).")
-                    else:
-                        # 2. El Cerebro elige el producto según las probabilidades de categoría
-                        producto = seleccionar_producto_para_estado(
-                            getattr(config, 'prob_natural', 34), 
-                            getattr(config, 'prob_fantasia', 33), 
-                            getattr(config, 'prob_accesorios', 33)
-                        )
-
-                        if not producto:
-                            print("⚠️ No hay productos elegibles (sin stock o ya publicados en los últimos 14 días).")
-                        else:
-                            # -------- LA IA ENTRA EN ACCIÓN AQUÍ --------
-                            print(f"🧠 Pidiendo a la RTX 3060 que redacte el texto para: {producto['nombre']}...")
-                            texto_estado = generar_texto_estado_ia(producto)
-                            print(f"✍️ Texto generado: {texto_estado}")
-                            # --------------------------------------------
+                    # --- CORRECCIÓN VITAL 2: Evaluación Aislada para 'default' (Solo Lentes) ---
+                    prob_lentes_roll = getattr(config, 'prob_sesion_lentes', 100)
+                    if random.randint(1, 100) <= prob_lentes_roll:
+                        print(f"\n👉 [Cuenta: default / Lentes] Ganó el roll ({prob_lentes_roll}%). Buscando ítem de Lentes...")
+                        producto_lentes = seleccionar_producto_para_estado(prob_nat, prob_fan, prob_acc, macro_objetivo='Lentes')
+                        
+                        if producto_lentes:
+                            print(f"🧠 Redactando copy con IA para: {producto_lentes['nombre']}...")
+                            texto_ia_lentes = generar_texto_estado_ia(producto_lentes)
                             
-                            registro_historial_ok = False
-                            # 3. Iteramos sobre las sesiones que ganaron el sorteo de probabilidad
-                            for sesion in sesiones_a_publicar:
-                                print(f"🚀 [Cuenta: {sesion}] Subiendo estado: {producto['sku']} - {producto['nombre']}")
-                                
-                                exito, mensaje_estado = subir_estado_whatsapp(
-                                    session_name=sesion, 
-                                    texto=texto_estado, 
-                                    media_url=producto['imagen']
-                                )
+                            exito, msg_resp = subir_estado_whatsapp("default", texto_ia_lentes, producto_lentes['imagen'])
+                            if exito:
+                                conn.execute(text("INSERT INTO Historial_Estados (sku) VALUES (:sku)"), {"sku": producto_lentes['sku']})
+                                conn.commit()
+                                print(f"   ✅ ¡Estado de Lentes publicado exitosamente en 'default'!")
+                            else:
+                                print(f"   ❌ Falló estado en 'default': {msg_resp}")
+                    else:
+                        print(f"\n⏸️ [Cuenta: default] No superó el roll de probabilidad esta hora.")
 
-                                if exito:
-                                    print(f"✅ ¡Estado subido con éxito en la cuenta: '{sesion}'!")
-                                    registro_historial_ok = True
-                                else:
-                                    print(f"❌ Falló la publicación en la cuenta '{sesion}': {mensaje_estado}")
-
-                            # 4. Guardar en el historial general si se publicó con éxito en al menos una cuenta
-                            if registro_historial_ok:
-                                with motor_seguro.begin() as trans_estados:
-                                    trans_estados.execute(text("""
-                                        INSERT INTO Historial_Estados (sku) VALUES (:sku)
-                                    """), {"sku": producto['sku']})
-                                print(f"📝 Producto {producto['sku']} anotado en el historial de exclusión.")
+                    # --- CORRECCIÓN VITAL 3: Evaluación Aislada para 'principal' (Omnicanal) ---
+                    prob_master_roll = getattr(config, 'prob_sesion_principal', 50)
+                    if random.randint(1, 100) <= prob_master_roll:
+                        # El cerebro decide qué promocionar en esta hora (60% Pelucas, 40% Lentes)
+                        macro_elegida_master = random.choices(['Pelucas', 'Lentes'], weights=[60, 40], k=1)[0]
+                        print(f"\n👉 [Cuenta: principal / Master] Ganó el roll ({prob_master_roll}%). El altavoz principal promocionará hoy: {macro_elegida_master.upper()}...")
+                        
+                        producto_master = seleccionar_producto_para_estado(prob_nat, prob_fan, prob_acc, macro_objetivo=macro_elegida_master)
+                        
+                        if producto_master:
+                            print(f"🧠 Redactando copy con IA para: {producto_master['nombre']}...")
+                            texto_ia_master = generar_texto_estado_ia(producto_master)
+                            
+                            exito, msg_resp = subir_estado_whatsapp("principal", texto_ia_master, producto_master['imagen'])
+                            if exito:
+                                conn.execute(text("INSERT INTO Historial_Estados (sku) VALUES (:sku)"), {"sku": producto_master['sku']})
+                                conn.commit()
+                                print(f"   ✅ ¡Estado de {macro_elegida_master} publicado exitosamente en la cuenta 'principal'!")
+                            else:
+                                print(f"   ❌ Falló estado en 'principal': {msg_resp}")
+                    else:
+                        print(f"\n⏸️ [Cuenta: principal] No superó el roll de probabilidad esta hora.")
             else:
-                print("\n⏸️ TAREA 2 OMITIDA: La publicación de Estados está apagada en el Panel.")
+                print("\n⏸️ TAREA 2 OMITIDA: Los estados automáticos están apagados en el Panel.")
 
     except Exception as e:
-        print(f"🔥 Error catastrófico en el script: {e}")
+        print(f"🔥 Error en la ejecución del bot de marketing: {e}")
 
 if __name__ == "__main__":
     ejecutar_francotirador()

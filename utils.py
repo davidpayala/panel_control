@@ -363,11 +363,16 @@ def generar_nombre_ia(nombre_corto, nombre_real):
 # 🛒 5. FUNCIONES DE WOOCOMMERCE
 # ==============================================================================
 def sync_woo_background(skus_a_sincronizar):
-    """Actualiza en 2do plano solo los productos especificados en WooCommerce."""
+    """Actualiza en 2do plano productos simples y variaciones en WooCommerce."""
     if not skus_a_sincronizar:
         return
 
     try:
+        from woocommerce import API
+        import os
+        from database import engine
+        from sqlalchemy import text
+
         wcapi = API(
             url=os.getenv("WOO_URL"),
             consumer_key=os.getenv("WOO_KEY"),
@@ -375,47 +380,50 @@ def sync_woo_background(skus_a_sincronizar):
             version="wc/v3",
             timeout=15
         )
-
-        from database import engine
-        from sqlalchemy import text
         
         with engine.connect() as conn:
-            # Generar los marcadores seguros para la consulta SQL
             placeholders = ", ".join([f":sku_{i}" for i in range(len(skus_a_sincronizar))])
             query = text(f"""
-                SELECT sku, (COALESCE(stock_interno, 0) + COALESCE(stock_externo, 0)) AS stock_total, COALESCE(stock_transito, 0) AS stock_transito
+                SELECT sku, 
+                       (COALESCE(stock_interno, 0) + COALESCE(stock_externo, 0)) AS stock_total,
+                       COALESCE(stock_transito, 0) AS stock_transito
                 FROM Variantes 
                 WHERE sku IN ({placeholders})
             """)
             params = {f"sku_{i}": sku for i, sku in enumerate(skus_a_sincronizar)}
             resultados = conn.execute(query, params).fetchall()
 
-        paquete_actualizacion = []
-        
-        # Buscar el ID de WooCommerce de los productos modificados y preparar actualización
         for row in resultados:
             sku = row.sku
-            stock = row.stock_total
-            visibilidad = "visible" if (stock > 0 or row.stock_transito > 0) else "hidden"
+            stock_real = row.stock_total
+            stock_camino = row.stock_transito
 
             resp = wcapi.get("products", params={"sku": sku})
             if resp.status_code == 200:
                 woo_data = resp.json()
                 if woo_data:
-                    paquete_actualizacion.append({
-                        "id": woo_data[0]["id"],
+                    prod = woo_data[0]
+                    woo_id = prod["id"]
+                    
+                    data_update = {
                         "manage_stock": True,
-                        "stock_quantity": stock,
-                        "catalog_visibility": visibilidad
-                    })
+                        "stock_quantity": stock_real
+                    }
 
-        # Enviar la actualización directa de este pequeño lote
-        if paquete_actualizacion:
-            wcapi.post("products/batch", {"update": paquete_actualizacion})
-            print(f"⚡ Sync en tiempo real completada silenciosamente para: {skus_a_sincronizar}")
+                    # Detectar si es variación o producto simple
+                    if prod.get("type") == "variation" or prod.get("parent_id", 0) != 0:
+                        parent_id = prod.get("parent_id")
+                        wcapi.put(f"products/{parent_id}/variations/{woo_id}", data_update)
+                    else:
+                        # Solo los productos simples/padres soportan cambio de visibilidad
+                        visibilidad = "visible" if (stock_real > 0 or stock_camino > 0) else "hidden"
+                        data_update["catalog_visibility"] = visibilidad
+                        wcapi.put(f"products/{woo_id}", data_update)
+
+        print(f"⚡ Sync en tiempo real completada para: {skus_a_sincronizar}")
 
     except Exception as e:
-        print(f"🔥 Error en sync de WooCommerce en tiempo real: {e}")
+        print(f"🔥 Error en sync de WooCommerce: {e}")
 
 def _tarea_sync_woo(skus):
     """Tarea interna que se ejecuta en segundo plano para no congelar la pantalla de ventas"""
@@ -426,6 +434,14 @@ def _tarea_sync_woo(skus):
         
         if not woo_url or not woo_key or not woo_secret:
             return
+        # Lógica dentro de _tarea_sync_woo:
+        query_cat = text("SELECT p.categoria FROM Variantes v JOIN Productos p ON v.id_producto = p.id_producto WHERE v.sku = :sku")
+        categoria = conn.execute(query_cat, {"sku": sku}).scalar()
+
+        if categoria == 'Pelucas':
+            url, key, secret = os.getenv("WOO_PELUCAS_URL"), os.getenv("WOO_PELUCAS_KEY"), os.getenv("WOO_PELUCAS_SECRET")
+        else:
+            url, key, secret = os.getenv("WOO_LENTES_URL"), os.getenv("WOO_LENTES_KEY"), os.getenv("WOO_LENTES_SECRET")
 
         wcapi = API(
             url=woo_url,
@@ -468,102 +484,61 @@ def _tarea_sync_woo(skus):
     except Exception as e:
         print(f"❌ Error en Woo Sync [Fondo]: {e}")
 
-def sync_woo_background(skus):
-    """
-    Función principal que llama ventas.py. 
-    Lanza un hilo para no hacer esperar al vendedor mientras se actualiza WooCommerce.
-    """
-    if isinstance(skus, str):
-        skus = [skus]
-    hilo = threading.Thread(target=_tarea_sync_woo, args=(skus,))
-    hilo.start()
-
-def subir_estado_whatsapp(session_name, texto, media_url=None):
-    """
-    Sube un estado a WhatsApp (Texto, Imagen o Video).
-    """
-    try:
-        if media_url:
-            # Detectamos si es un video por la extensión
-            if media_url.lower().endswith('.mp4'):
-                endpoint = f"{WAHA_URL}/api/{session_name}/status/video"
-            else:
-                endpoint = f"{WAHA_URL}/api/{session_name}/status/image"
-                
-            payload = {
-                "file": {
-                    "url": media_url 
-                },
-                "caption": texto if texto else ""
-            }
-        else:
-            endpoint = f"{WAHA_URL}/api/{session_name}/status/text"
-            payload = {
-                "text": texto
-            }
-
-        headers = {
-            "accept": "application/json",
-            "Content-Type": "application/json",
-            "X-Api-Key": WAHA_KEY  
-        }
-
-        response = requests.post(endpoint, json=payload, headers=headers)
-        
-        if response.status_code in [200, 201]:
-            return True, "Estado subido correctamente a WhatsApp."
-        else:
-            return False, f"Error de WAHA: {response.text} (Código: {response.status_code})"
-
-    except Exception as e:
-        return False, f"Error interno al conectar con WAHA: {str(e)}"
 
 # CREACION DEL NOMBRE COMPLETO DEL PRODUCTO
-def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorios):
+def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorios, macro_objetivo='Lentes'):
     """
-    Selecciona un producto aplicando las reglas de negocio, incluyendo
-    color principal y detalles de su grupo promocional.
+    Selecciona un producto con stock aplicando probabilidades de subcategoría, filtrado estrictamente por macro_categoria.
     """
     import random
     from sqlalchemy import text
     from database import engine
 
-    categorias = ["Estilo Natural", "Estilo Fantasía", "Accesorio"] 
+    # 1. Asignamos las subcategorías correspondientes a la macro-categoría buscada
+    if macro_objetivo == 'Pelucas':
+        categorias = ["Peluca Natural", "Peluca Fantasía", "Accesorios Pelucas"]
+    else:
+        categorias = ["Estilo Natural", "Estilo Fantasía", "Accesorios"] 
+
     pesos_categoria = [prob_natural, prob_fantasia, prob_accesorios]
-    
     if sum(pesos_categoria) == 0:
-        pesos_categoria = [33, 33, 34]
+        pesos_categoria = [34, 33, 33]
         
     categoria_elegida = random.choices(categorias, weights=pesos_categoria, k=1)[0]
     
     with engine.connect() as conn:
         sql = text("""
             SELECT 
-                v.sku, 
-                p.nombre, 
-                p.marca,
-                p.modelo,
-                p.categoria,
-                p.color_principal,
-                g.nombre_grupo,
-                g.descripcion AS descripcion_grupo,
-                v.stock_interno, 
-                p.url_imagen 
-            FROM productos p
-            JOIN variantes v ON p.id_producto = v.id_producto
-            LEFT JOIN grupos_productos g ON v.id_grupo = g.id_grupo
-            WHERE p.categoria = :cat 
+                v.sku, p.nombre, p.marca, p.modelo, p.categoria, p.macro_categoria, p.color_principal,
+                g.nombre_grupo, g.descripcion AS descripcion_grupo, v.stock_interno, p.url_imagen 
+            FROM Productos p
+            JOIN Variantes v ON p.id_producto = v.id_producto
+            LEFT JOIN Grupos_Productos g ON v.id_grupo = g.id_grupo
+            WHERE p.categoria = :cat AND COALESCE(p.macro_categoria, 'Lentes') = :macro
               AND v.stock_interno > 0 
               AND v.sku NOT IN (
                   SELECT sku FROM Historial_Estados 
                   WHERE fecha_publicacion > NOW() - INTERVAL '14 days'
               )
         """)
+        resultados = conn.execute(sql, {"cat": categoria_elegida, "macro": macro_objetivo}).fetchall()
         
-        resultados = conn.execute(sql, {"cat": categoria_elegida}).fetchall()
-        
+    # Fallback de seguridad: Si no hay ítems en esa subcategoría, trae cualquiera con stock de esa macro-categoría
     if not resultados:
-        return None 
+        with engine.connect() as conn:
+            fb_sql = text("""
+                SELECT v.sku, p.nombre, p.marca, p.modelo, p.categoria, p.macro_categoria, p.color_principal,
+                       g.nombre_grupo, g.descripcion AS descripcion_grupo, v.stock_interno, p.url_imagen 
+                FROM Productos p
+                JOIN Variantes v ON p.id_producto = v.id_producto
+                LEFT JOIN Grupos_Productos g ON v.id_grupo = g.id_grupo
+                WHERE COALESCE(p.macro_categoria, 'Lentes') = :macro AND v.stock_interno > 0 
+                LIMIT 50
+            """)
+            resultados = conn.execute(fb_sql, {"macro": macro_objetivo}).fetchall()
+            
+        if not resultados:
+            return None 
 
     opciones = []
     pesos_stock = []
@@ -579,23 +554,20 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
         'modelo': producto_elegido.modelo,
         'nombre': producto_elegido.nombre,
         'sku': producto_elegido.sku,
-        'color_principal': producto_elegido.color_principal,
-        'grupo': producto_elegido.nombre_grupo,
-        'descripcion_grupo': producto_elegido.descripcion_grupo
+        'color_principal': producto_elegido.color_principal
     }
-    
     nombre_final = generar_nombre_inteligente(datos_producto)
 
     return {
         "sku": producto_elegido.sku,
         "nombre": nombre_final,
+        "macro_categoria": producto_elegido.macro_categoria,
         "color_principal": producto_elegido.color_principal,
         "grupo": producto_elegido.nombre_grupo,
         "descripcion_grupo": producto_elegido.descripcion_grupo,
         "stock": producto_elegido.stock_interno,
         "imagen": producto_elegido.url_imagen
     }
-
 
 # ==============================================================================
 # FUNCIÓN INDEPENDIENTE PARA EL NOMBRE INTELIGENTE (USADA EN EL PANEL)
@@ -659,64 +631,61 @@ import requests
 
 def generar_texto_estado_ia(producto):
     """
-    Conecta con Ollama local. Python procesa la categoría primero 
-    y le da una orden estricta e inequívoca a la IA.
+    Conecta con Ollama local inyectando dinámicamente la marca (KMLentes o Pelucat) según la macro-categoría.
     """
+    import requests
     url_ia = "http://localhost:11434/api/generate"
     
-    # Usamos 'or' para asegurarnos de que si viene vacío (None), tenga un valor por defecto
     nombre = producto.get('nombre') or 'Producto'
-    categoria = producto.get('categoria') or 'Accesorio'
-    color = producto.get('color_principal') or 'No especificado'
-    grupo = producto.get('grupo') or 'No especificado'
+    macro = producto.get('macro_categoria') or 'Lentes'
+    categoria = producto.get('categoria') or 'General'
+    color = producto.get('color_principal') or 'Destacado'
+    grupo = producto.get('grupo') or 'Exclusivo'
     desc_grupo = producto.get('descripcion_grupo') or ''
     
-    # 🧠 LÓGICA EN PYTHON: Evaluamos la categoría sin importar mayúsculas o si le faltan palabras
+    # Adaptación de marca y producto
+    tienda_nombre = "Pelucat.pe" if macro == 'Pelucas' else "KMLentes.pe"
+    tipo_articulo = "peluca de calidad premium" if macro == 'Pelucas' else "lentes de contacto"
+
     cat_lower = str(categoria).lower()
     
-    if 'natural' in cat_lower:
+    if macro == 'Pelucas':
+        enfoque_estricto = "ENFOQUE OBLIGATORIO: Destaca el cambio de look instantáneo, el volumen natural de la fibra, lo sedoso del cabello y la confianza que transmite. Usa un tono glamuroso, moderno y muy empoderador."
+    elif 'natural' in cat_lower:
         enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre resaltar la belleza natural, el uso diario, cosmética y una mirada sutil pero impactante. NO hables de cosplay, ni disfraces."
     elif 'fantas' in cat_lower or 'cosplay' in cat_lower or 'anime' in cat_lower:
         enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre cosplay, disfraces, anime, eventos de cultura pop y transformaciones extremas. Usa un tono muy llamativo y atrevido."
-    elif 'lentes' in cat_lower:
-        enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre resaltar la belleza natural, el uso diario, cosmética y una mirada sutil pero impactante. NO hables de cosplay, ni disfraces."
     else:
-        enfoque_estricto = "ENFOQUE OBLIGATORIO: Destaca su utilidad, diseño exclusivo y lo práctico que es como accesorio para complementar el estilo."
+        enfoque_estricto = f"ENFOQUE OBLIGATORIO: Destaca su diseño exclusivo y lo práctico que es este {tipo_articulo} para tu estilo."
 
-    # Armamos el prompt con el enfoque inyectado
-    prompt = f"""Eres un copywriter experto en marketing digital para KMLentes.pe, tienda virtual de lentes de contacto en Perú. 
-    Escribe un mensaje corto para un estado de WhatsApp ofreciendo este producto.
+    prompt = f"""Eres un copywriter experto en marketing digital para {tienda_nombre}, tienda virtual en Perú. 
+    Escribe un mensaje corto para un estado de WhatsApp ofreciendo este ítem.
     
-    DATOS DEL PRODUCTO:
-    - Nombre: {nombre}
-    - Color destacado: {color}
+    DATOS DEL ARTÍCULO:
+    - Producto: {nombre}
+    - Tono/Color: {color}
     - Colección: {grupo}
-    - Detalles: {desc_grupo}
+    - Atractivo: {desc_grupo}
     
     {enfoque_estricto}
     
     REGLAS DE FORMATO:
     1. Sigue al pie de la letra el ENFOQUE OBLIGATORIO.
     2. Usa emojis adecuados al tema. 
-    3. Invita a que te envíen un mensaje al final al Whatsapp, no es necesario decir el numero telefonico ya que es un estado.
+    3. Invita a que envíen un mensaje directo al WhatsApp para pedir el catálogo.
     4. Máximo 35 palabras.
-    5. Devuelve ÚNICAMENTE el texto final para copiar y pegar (sin comillas, sin decir 'Aquí tienes', sin saludos iniciales).
+    5. Devuelve ÚNICAMENTE el texto final para copiar y pegar.
     """
 
-    payload = {
-        "model": "llama3.1",
-        "prompt": prompt,
-        "stream": False
-    }
-
     try:
-        response = requests.post(url_ia, json=payload, timeout=30)
+        response = requests.post(url_ia, json={"model": "llama3.1", "prompt": prompt, "stream": False}, timeout=30)
         if response.status_code == 200:
             return response.json().get("response", "").strip()
     except Exception as e:
-        print(f"⚠️ Error en IA local: {e}")
+        print(f"⚠️ Advertencia IA local: {e}")
 
-    return f"✨ ¡{nombre} disponible! Ideal para tu estilo. Escríbenos para asegurar el tuyo. 📲"
+    return f"✨ ¡Nuevo {nombre} en stock! Complemento perfecto para tu look. Escríbenos para asegurar el tuyo. 📲"
+
 
 # ==============================================================================
 # HERRAMIENTA DE SINCRONIZACIÓN MASIVA GOOGLE
@@ -826,3 +795,43 @@ def obtener_historial_compras(telefono):
         return df_compras
     
     return None
+
+def subir_estado_whatsapp(session_name, texto, media_url=None):
+    """
+    Sube un estado a WhatsApp (Texto, Imagen o Video).
+    """
+    try:
+        if media_url:
+            # Detectamos si es un video por la extensión
+            if media_url.lower().endswith('.mp4'):
+                endpoint = f"{WAHA_URL}/api/{session_name}/status/video"
+            else:
+                endpoint = f"{WAHA_URL}/api/{session_name}/status/image"
+                
+            payload = {
+                "file": {
+                    "url": media_url 
+                },
+                "caption": texto if texto else ""
+            }
+        else:
+            endpoint = f"{WAHA_URL}/api/{session_name}/status/text"
+            payload = {
+                "text": texto
+            }
+
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Api-Key": WAHA_KEY  
+        }
+
+        response = requests.post(endpoint, json=payload, headers=headers)
+        
+        if response.status_code in [200, 201]:
+            return True, "Estado subido correctamente a WhatsApp."
+        else:
+            return False, f"Error de WAHA: {response.text} (Código: {response.status_code})"
+
+    except Exception as e:
+        return False, f"Error interno al conectar con WAHA: {str(e)}"
