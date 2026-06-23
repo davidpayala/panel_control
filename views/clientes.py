@@ -31,10 +31,10 @@ def render_clientes():
         estados_opciones = ESTADOS_CLIENTE_FALLBACK
         mapa_subgrupo_id = {}
 
-    st.title("👤 Gestión de Clientes")
+    st.title("👤 Gestión de Clientes y Proveedores")
 
     # --- CREAR NUEVO CLIENTE ---
-    with st.expander("➕ Registrar Nuevo Cliente", expanded=False):
+    with st.expander("➕ Registrar Nuevo Cliente / Proveedor", expanded=False):
         with st.form("form_nuevo_cliente"):
             c1, c2, c3 = st.columns([2, 2, 2])
             nuevo_tel = c1.text_input("Teléfono Principal (Obligatorio)")
@@ -42,9 +42,14 @@ def render_clientes():
             nuevo_estado = c3.selectbox("Estado Inicial", options=estados_opciones, index=0)
 
             nuevas_etiquetas = st.text_input("Etiquetas (Separadas por coma)")
-            vincular_google = st.checkbox("🔍 Intentar vincular con Google Contactos", value=True)
+            
+            # --- NUEVO: RESTRICCIÓN LISTA NEGRA DESDE EL ALTA ---
+            st.write("")
+            c_goo, c_mkt = st.columns(2)
+            vincular_google = c_goo.checkbox("🔍 Intentar vincular con Google Contactos", value=True)
+            excluir_publicidad = c_mkt.checkbox("🚫 Excluir de campañas publicitarias (Proveedor / No Molestar)", value=False)
 
-            if st.form_submit_button("💾 Crear Cliente", type="primary"):
+            if st.form_submit_button("💾 Crear Registro", type="primary"):
                 norm = normalizar_telefono_maestro(nuevo_tel)
                 if not norm:
                     st.error("Número de teléfono inválido.")
@@ -60,9 +65,7 @@ def render_clientes():
                         if not nuevo_alias: nuevo_alias = "Cliente Nuevo"
                         
                         if vincular_google:
-                            # LÓGICA DE DOBLE BÚSQUEDA PARA EVITAR DUPLICADOS
                             res_g = buscar_contacto_google(tel_db)
-                            
                             if not (res_g and res_g.get('encontrado')):
                                 tel_google = norm.get('google', tel_db)
                                 res_g = buscar_contacto_google(tel_google)
@@ -72,7 +75,7 @@ def render_clientes():
                                 g_nom = res_g['nombre']
                                 g_ape = res_g['apellido']
                                 nuevo_alias = f"{g_nom} {g_ape}".strip() if f"{g_nom} {g_ape}".strip() else nuevo_alias
-                                st.toast("✅ Vinculado a un contacto existente en Google.", icon="🔗")
+                                st.toast("✅ Vinculado a un contacto en Google.", icon="🔗")
                             else:
                                 tel_google = norm.get('google', tel_db)
                                 nuevo_gid = crear_en_google(nuevo_alias, "", tel_google)
@@ -80,18 +83,19 @@ def render_clientes():
                                     g_id = nuevo_gid
                                     g_nom = nuevo_alias
                                     g_ape = ""
-                                    st.toast("🆕 Nuevo contacto creado en Google.", icon="👤")
+                                    st.toast("🆕 Nuevo contacto en Google.", icon="👤")
 
                         nombre_ia = generar_nombre_ia(nuevo_alias, g_nom or "")
                         id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
 
                         try:
                             with engine.begin() as conn:
+                                # --- REFACTOR 1: INYECTAR EXCLUIR_PUBLICIDAD EN EL INSERT ---
                                 res = conn.execute(text("""
-                                    INSERT INTO clientes (nombre_corto, estado, id_etapa, etiquetas, google_id, nombre, apellido, nombre_ia, telefono, activo, fecha_registro)
-                                    VALUES (:nc, :e, :id_etapa, :et, :gid, :n, :a, :nia, :t, TRUE, NOW())
+                                    INSERT INTO clientes (nombre_corto, estado, id_etapa, etiquetas, google_id, nombre, apellido, nombre_ia, telefono, excluir_publicidad, activo, fecha_registro)
+                                    VALUES (:nc, :e, :id_etapa, :et, :gid, :n, :a, :nia, :t, :exc, TRUE, NOW())
                                     RETURNING id_cliente
-                                """), {"nc": nuevo_alias, "e": nuevo_estado, "id_etapa": id_etapa_val, "et": nuevas_etiquetas, "gid": g_id, "n": g_nom, "a": g_ape, "nia": nombre_ia, "t": tel_db})
+                                """), {"nc": nuevo_alias, "e": nuevo_estado, "id_etapa": id_etapa_val, "et": nuevas_etiquetas, "gid": g_id, "n": g_nom, "a": g_ape, "nia": nombre_ia, "t": tel_db, "exc": excluir_publicidad})
                                 nuevo_id = res.fetchone()[0]
 
                                 conn.execute(text("""
@@ -99,7 +103,7 @@ def render_clientes():
                                     VALUES (:id, :t, TRUE)
                                 """), {"id": nuevo_id, "t": tel_db})
 
-                            st.success(f"✅ Cliente registrado con ID {nuevo_id}.")
+                            st.success(f"✅ Registro guardado con ID {nuevo_id}.")
                             time.sleep(1)
                             st.rerun()
                         except Exception as e:
@@ -107,16 +111,17 @@ def render_clientes():
 
     st.divider()
 
-    # --- BUSCADOR Y EDITOR ---
+    # --- BUSCADOR Y EDITOR MASIVO ---
     st.subheader("🔍 Buscador y Editor Masivo")
-    busqueda = st.text_input("Buscar cliente...", placeholder="Nombre, Teléfono o Etiquetas")
+    busqueda = st.text_input("Buscar registro...", placeholder="Nombre, Teléfono o Etiquetas")
 
     busqueda_limpia = "".join(filter(str.isdigit, busqueda))
     term_tel = f"%{busqueda_limpia}%" if busqueda_limpia else f"%{busqueda}%"
     term_gen = f"%{busqueda}%"
 
+    # --- REFACTOR 2: TRAER EXCLUIR_PUBLICIDAD EN EL SELECT MASIVO ---
     query = """
-        SELECT c.id_cliente, c.nombre_corto, c.estado, c.nombre, c.apellido, c.etiquetas, c.google_id, c.whatsapp_internal_id, c.nombre_ia,
+        SELECT c.id_cliente, c.nombre_corto, c.estado, c.excluir_publicidad, c.nombre, c.apellido, c.etiquetas, c.google_id, c.whatsapp_internal_id, c.nombre_ia,
                COALESCE((SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1), c.telefono) as tel_principal,
                (SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE) as todos_telefonos
         FROM clientes c
@@ -136,6 +141,7 @@ def render_clientes():
 
     if not df.empty:
         df_view = df.copy()
+        df_view['excluir_publicidad'] = df_view['excluir_publicidad'].fillna(False).astype(bool)
         df_view.insert(0, "Seleccionar", False)
 
         edited_df = st.data_editor(
@@ -147,6 +153,7 @@ def render_clientes():
                 "nombre_corto": st.column_config.TextColumn("Alias Original", width="medium"),
                 "nombre_ia": st.column_config.TextColumn("Nombre IA", width="medium"),
                 "estado": st.column_config.SelectboxColumn("Estado", options=estados_opciones, width="medium"),
+                "excluir_publicidad": st.column_config.CheckboxColumn("🚫 Sin Mkt", help="Tilda para que el bot no le envíe publicidad"),
                 "tel_principal": st.column_config.TextColumn("Telf. Principal", disabled=True),
                 "todos_telefonos": st.column_config.TextColumn("Todos los Teléfonos", disabled=True, width="large"),
                 "nombre": None, "apellido": None, "google_id": None, "whatsapp_internal_id": None, "etiquetas": None
@@ -154,13 +161,19 @@ def render_clientes():
             hide_index=True, use_container_width=True
         )
 
-        if st.button("💾 Guardar Cambios Rápidos"):
+        if st.button("💾 Guardar Cambios Rápidos", type="primary"):
             with engine.begin() as conn:
                 for idx, row in edited_df.iterrows():
                     id_etapa_val = mapa_subgrupo_id.get(row['estado'])
                     nia_val = row['nombre_ia'] if pd.notna(row['nombre_ia']) else ""
-                    conn.execute(text("UPDATE clientes SET nombre_corto=:nc, nombre_ia=:nia, estado=:est, id_etapa=:id_etapa WHERE id_cliente=:id"),
-                                 {"nc": row['nombre_corto'], "nia": nia_val, "est": row['estado'], "id_etapa": id_etapa_val, "id": row['id_cliente']})
+                    exc_val = bool(row['excluir_publicidad'])
+                    
+                    # --- REFACTOR 3: ACTUALIZAR EXCLUSIÓN MASIVAMENTE ---
+                    conn.execute(text("""
+                        UPDATE clientes 
+                        SET nombre_corto=:nc, nombre_ia=:nia, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc 
+                        WHERE id_cliente=:id
+                    """), {"nc": row['nombre_corto'], "nia": nia_val, "est": row['estado'], "id_etapa": id_etapa_val, "exc": exc_val, "id": row['id_cliente']})
             st.success("Cambios guardados.")
             time.sleep(1)
             st.rerun()
@@ -185,6 +198,10 @@ def render_clientes():
                     curr_est = row_full['estado']
                     new_estado = c3.selectbox("Estado", options=estados_opciones, index=estados_opciones.index(curr_est) if curr_est in estados_opciones else 0)
 
+                    # --- REFACTOR 4: TOGGLE DE LISTA NEGRA EN GESTIÓN INDIVIDUAL ---
+                    st.write("")
+                    new_excluir = st.toggle("🚫 Excluir de campañas publicitarias automáticas (Proveedor / No Molestar)", value=bool(row_full.get('excluir_publicidad', False)))
+
                     st.markdown("##### 👥 Sincronización Directa a Google Contacts")
                     c4, c5, c6 = st.columns(3)
                     
@@ -199,7 +216,7 @@ def render_clientes():
                     
                     new_etiquetas = st.text_area("Etiquetas / Notas", value=val_eti)
 
-                    if st.form_submit_button("💾 Guardar Datos"):
+                    if st.form_submit_button("💾 Guardar Datos Personales"):
                         id_etapa_val = mapa_subgrupo_id.get(new_estado)
                         google_id_crudo = row_full['google_id']
                         
@@ -212,21 +229,17 @@ def render_clientes():
                             with st.spinner("Sincronizando con Google Contacts..."):
                                 exito_google = actualizar_en_google(str(google_id_crudo), new_real_nombre, new_apellido, tel_g)
                                 
-                            if exito_google:
-                                st.toast("✅ Contacto actualizado en Google", icon="👥")
-                            else:
-                                st.error("❌ Falló la actualización en Google Contacts. Revisa la función 'actualizar_en_google' en utils.py o las credenciales.")
-                        else:
-                            st.warning("⚠️ Este cliente no tiene un ID de Google Contacts vinculado. Usa la sincronización masiva o manual primero.")
+                            if exito_google: st.toast("✅ Contacto actualizado en Google", icon="👥")
+                            else: st.error("❌ Falló la actualización en Google Contacts.")
                         
                         with engine.begin() as conn:
                             conn.execute(text("""
                                 UPDATE clientes 
-                                SET nombre_corto=:nc, nombre_ia=:nia, nombre=:n, apellido=:a, etiquetas=:e, estado=:est, id_etapa=:id_etapa 
+                                SET nombre_corto=:nc, nombre_ia=:nia, nombre=:n, apellido=:a, etiquetas=:e, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc
                                 WHERE id_cliente=:id
                             """), {
                                 "nc": new_nombre, "nia": new_nombre_ia, "n": new_real_nombre, "a": new_apellido,
-                                "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "id": id_cli_sel
+                                "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "exc": new_excluir, "id": id_cli_sel
                             })
                             
                             if str(new_tel_principal).strip() != str(row_full['tel_principal']).strip():
@@ -252,15 +265,13 @@ def render_clientes():
                             res = buscar_contacto_google(row_full['tel_principal'])
                                 
                         if res and res.get('encontrado'):
-                            # Lo encontró (incluso si tenía espacios raros), lo vinculamos sin duplicar
                             with engine.begin() as conn:
                                 conn.execute(text("UPDATE clientes SET nombre=:n, apellido=:a, google_id=:gid WHERE id_cliente=:id"),
                                             {"n": res['nombre'], "a": res['apellido'], "gid": res['google_id'], "id": id_cli_sel})
-                            st.success("✅ ¡Contacto encontrado y vinculado con éxito! (No se crearon duplicados)")
+                            st.success("✅ ¡Contacto encontrado y vinculado con éxito!")
                             time.sleep(2)
                             st.rerun()
                         else: 
-                            # Si llegó hasta aquí, garantizamos al 100% que NO existe, lo creamos.
                             st.warning("⚠️ No existe en Google. Creando contacto nuevo...")
                             norm_t = normalizar_telefono_maestro(row_full['tel_principal'])
                             tel_google = norm_t['google'] if norm_t else row_full['tel_principal']
@@ -274,10 +285,8 @@ def render_clientes():
                                 st.success("✨ ¡Contacto nuevo creado y vinculado en Google!")
                                 time.sleep(2)
                                 st.rerun()
-                            else:
-                                st.error("❌ Falló la creación en Google Contacts. Revisa la consola para más detalles.")
-                    else: 
-                        st.warning("⚠️ Este cliente no tiene un teléfono asignado para buscar.")
+                            else: st.error("❌ Falló la creación en Google Contacts.")
+                    else: st.warning("⚠️ Este cliente no tiene un teléfono asignado.")
 
             with tab_tel:
                 st.markdown("##### Números Asociados")

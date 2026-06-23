@@ -71,27 +71,55 @@ def obtener_posdata_cruzada(macro_actual):
 # 🔎 SELECTOR SQL DE MERCADERÍA EN STOCK PARA MENSAJES DIRECTOS
 # ==============================================================================
 def buscar_producto_aleatorio_en_stock(conn, macro_categoria, subcategorias_permitidas):
-    """Busca 1 producto al azar que tenga stock físico > 0 y pertenezac a las carpetas con check"""
+    """Busca 1 producto al azar con stock físico > 0 blindando fotos y textos"""
     if not subcategorias_permitidas:
         return None
     
-    # Formateo defensivo de lista de strings para SQL
-    lista_sql = ', '.join([f"'{s}'" for s in subcategorias_permitidas])
+    # 1. Limpieza defensiva de los strings autorizados para PostgreSQL
+    lista_clean = [s.strip().lower() for s in subcategorias_permitidas]
+    lista_sql = ', '.join([f"'{s}'" for s in lista_clean])
     
-    query = text(f"""
-        SELECT p.id_producto, p.marca, p.modelo, p.nombre, p.categoria, p.url_imagen, v.sku, v.precio
+    query_principal = text(f"""
+        SELECT 
+            p.id_producto, p.marca, p.modelo, p.nombre, p.categoria, 
+            COALESCE(v.url_imagen, p.url_imagen) AS url_imagen, -- <--- ¡SOSPECHOSO 1 CERRADO!
+            v.sku, v.precio
         FROM Variantes v
         JOIN Productos p ON v.id_producto = p.id_producto
-        WHERE p.macro_categoria = :macro 
-          AND p.categoria IN ({lista_sql})
-          AND v.stock_interno > 0
-          AND p.url_imagen IS NOT NULL AND p.url_imagen != ''
+        WHERE TRIM(p.macro_categoria) ILIKE :macro            -- <--- ¡SOSPECHOSO 3 CERRADO!
+          AND LOWER(TRIM(p.categoria)) IN ({lista_sql})       -- <--- ¡SOSPECHOSO 2 CERRADO!
+          AND COALESCE(v.stock_interno, 0) > 0
+          AND COALESCE(v.url_imagen, p.url_imagen) IS NOT NULL 
+          AND TRIM(COALESCE(v.url_imagen, p.url_imagen)) != ''
         ORDER BY RANDOM()
         LIMIT 1
     """)
-    row = conn.execute(query, {"macro": macro_categoria}).fetchone()
+    
+    row = conn.execute(query_principal, {"macro": f"%{macro_categoria.strip()}%"}).fetchone()
     if row:
         return dict(row._mapping)
+        
+    # ==========================================================================
+    # 🚨 FALLBACK DE EMERGENCIA (Por si tus pelucas tienen nombres de categoría raros)
+    # ==========================================================================
+    if macro_categoria == 'Pelucas':
+        print(f"  ⚠️ [Alerta Sniper]: Las subcategorías oficiales no devolvieron stock. Forzando rescate de cualquier Peluca física...")
+        query_rescate = text("""
+            SELECT p.id_producto, p.marca, p.modelo, p.nombre, p.categoria, 
+                   COALESCE(v.url_imagen, p.url_imagen) AS url_imagen, v.sku, v.precio
+            FROM Variantes v
+            JOIN Productos p ON v.id_producto = p.id_producto
+            WHERE p.macro_categoria ILIKE '%peluca%'
+              AND COALESCE(v.stock_interno, 0) > 0
+              AND COALESCE(v.url_imagen, p.url_imagen) IS NOT NULL 
+              AND TRIM(COALESCE(v.url_imagen, p.url_imagen)) != ''
+            ORDER BY RANDOM()
+            LIMIT 1
+        """)
+        row_rescate = conn.execute(query_rescate).fetchone()
+        if row_rescate:
+            return dict(row_rescate._mapping)
+
     return None
 
 def obtener_subcarpetas_activas(config, macro_categoria):
@@ -191,7 +219,9 @@ def ejecutar_francotirador():
                             SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, t.telefono 
                             FROM clientes c
                             JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
-                            WHERE c.activo = TRUE AND c.estado = 'Sin empezar'
+                            WHERE c.activo = TRUE 
+                              AND c.estado = 'Sin empezar'
+                              AND COALESCE(c.excluir_publicidad, FALSE) = FALSE -- <--- ¡Restricción de Lista Negra!
                               AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6
                               AND t.telefono NOT IN (
                                   SELECT telefono FROM mensajes 
