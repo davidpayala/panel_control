@@ -21,7 +21,10 @@ def get_headers():
 def render_diagnostico():
     st.title("🛠️ Centro de Diagnóstico")
     
-    tab_logs, tab_inspector, tab_simulador, tab_respuestas = st.tabs(["📡 Logs Webhook", "🕵️ Inspector API", "🧪 Simulador (Test)", "🤖 Auto-Respuestas"])
+# --- DECLARACIÓN ACTUALIZADA CON 5 TABS ---
+    tab_logs, tab_inspector, tab_simulador, tab_respuestas, tab_auditoria = st.tabs([
+        "📡 Logs Webhook", "🕵️ Inspector API", "🧪 Simulador (Test)", "🤖 Auto-Respuestas", "⚖️ Auditoría WOO"
+    ])
     # ==========================================================================
     # PESTAÑA 1: LOGS DE BASE DE DATOS
     # ==========================================================================
@@ -225,3 +228,51 @@ def render_diagnostico():
                 
         except Exception as e:
             st.error(f"❌ Error al cargar/guardar la tabla: {e}")
+    
+    # ==========================================================================
+    # PESTAÑA 5: INSPECTOR DE DESAJUSTES DE CATÁLOGO (SQL vs WordPress)
+    # ==========================================================================
+    with tab_auditoria:
+        st.markdown("### ⚖️ Conciliación de Catálogo (PostgreSQL vs WordPress)")
+        st.info("Muestra las discrepancias atrapadas durante la última ejecución de la sincronización de stock en segundo plano.")
+        
+        col_btn_aud, col_vacio = st.columns([2, 8])
+        if col_btn_aud.button("🔄 Refrescar Auditoría", key="btn_ref_aud"):
+            st.rerun()
+            
+        try:
+            with engine.connect() as conn:
+                df_aud = pd.read_sql(text("SELECT tienda, tipo_error, sku, detalle, fecha_deteccion FROM auditoria_skus_woo ORDER BY tienda, tipo_error, sku"), conn)
+        except Exception:
+            df_aud = pd.DataFrame() # Si la tabla aún no se crea
+            
+        if df_aud.empty:
+            st.success("✨ **¡Catálogo Inmaculado!** No existen SKUs huérfanos ni discrepancias entre tu PostgreSQL local y WooCommerce en ninguna de tus tiendas.")
+        else:
+            tiendas_afectadas = df_aud['tienda'].unique()
+            for t in tiendas_afectadas:
+                st.markdown(f"#### 🏪 Instancia: `{t}`")
+                df_t = df_aud[df_aud['tienda'] == t]
+                
+                c_db_woo, c_woo_db = st.columns(2)
+                
+                # COLUMNA IZQUIERDA: En BD pero no en la Web
+                with c_db_woo:
+                    df_faltan_woo = df_t[df_t['tipo_error'] == 'FALTA_EN_WOO']
+                    st.error(f"🔴 En tu BD pero NO en WordPress ({len(df_faltan_woo)})")
+                    st.caption("Falta crear estos ítems en tu página web:")
+                    if not df_faltan_woo.empty:
+                        st.dataframe(df_faltan_woo[['sku', 'detalle']], hide_index=True, use_container_width=True)
+                    else:
+                        st.write("Todo en orden aquí ✔️")
+                        
+                # COLUMNA DERECHA: En la Web pero no en la BD
+                with c_woo_db:
+                    df_faltan_db = df_t[df_t['tipo_error'] == 'FALTA_EN_DB']
+                    st.warning(f"🟡 En WordPress pero NO en tu BD ({len(df_faltan_db)})")
+                    st.caption("Falta registrar este SKU en tu inventario de Streamlit:")
+                    if not df_faltan_db.empty:
+                        st.dataframe(df_faltan_db[['sku', 'detalle']], hide_index=True, use_container_width=True)
+                    else:
+                        st.write("Todo en orden aquí ✔️")
+                st.divider()

@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime
 from dotenv import load_dotenv
 from woocommerce import API
 from sqlalchemy import create_engine, text
@@ -7,23 +8,29 @@ from sqlalchemy import create_engine, text
 # 1. Cargar las llaves de seguridad
 load_dotenv()
 
-def sincronizar_tienda_woo(nombre_tienda, wcapi, stock_local_tienda):
+def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     """
-    Motor 'Obrero' reutilizable: Descarga, mapea y actualiza una instancia específica de WooCommerce.
+    Motor 'Obrero' con observabilidad: Mapea, concilia estrictamente por SKU y emite métricas.
     """
+    hora_inicio = datetime.now()
+    str_hora_inicio = hora_inicio.strftime('%Y-%m-%d %H:%M:%S')
+
     print(f"\n==============================================================")
-    print(f"🌐 INICIANDO SINCRONIZACIÓN WEB PARA: {nombre_tienda.upper()}")
+    print(f"🌐 [{str_hora_inicio}] INICIANDO SINCRONIZACIÓN PARA: {nombre_tienda.upper()}")
     print(f"==============================================================")
 
     if not stock_local_tienda:
         print(f"ℹ️ OMITIDO: No hay SKUs locales clasificados para {nombre_tienda}.")
         return
 
-    # 1. Descargar y mapear el catálogo de esta web específica
+    # 1. Descargar y mapear el catálogo web basado 100% en SKUs
     print(f"📥 Descargando y mapeando catálogo web de {nombre_tienda}...")
-    mapa_simples = {}
-    mapa_variaciones = {} 
     
+    mapa_simples = {}         # {sku: product_id}
+    mapa_variaciones = {}     # {parent_id: {sku: variation_id}}
+    nombres_web = {}          # {sku: "Nombre Web (Solo para lectura humana)"}
+    woo_skus_totales = set()  # Saco absoluto de todos los SKUs vivos en esta web
+
     pagina = 1
     while True:
         resp = wcapi.get("products", params={"per_page": 100, "page": pagina})
@@ -35,6 +42,7 @@ def sincronizar_tienda_woo(nombre_tienda, wcapi, stock_local_tienda):
             p_id = p["id"]
             p_sku = p.get("sku", "").strip()
             p_type = p.get("type")
+            p_title = p.get("name", "Producto sin título")
             
             if p_type == "variable":
                 if p_id not in mapa_variaciones:
@@ -47,28 +55,61 @@ def sincronizar_tienda_woo(nombre_tienda, wcapi, stock_local_tienda):
                         break
                     for v in v_items:
                         v_sku = v.get("sku", "").strip()
-                        if v_sku:
+                        if v_sku: # IDENTIDAD BASADA ESTRICTAMENTE EN EL SKU
                             mapa_variaciones[p_id][v_sku] = v["id"]
+                            woo_skus_totales.add(v_sku)
+                            
+                            opciones = [attr.get('option', '') for attr in v.get('attributes', [])]
+                            nombres_web[v_sku] = f"{p_title} ({' '.join(opciones)})".strip()
                     v_pagina += 1
-            elif p_sku:
+            elif p_sku: # Producto Simple con SKU
                 mapa_simples[p_sku] = p_id
+                woo_skus_totales.add(p_sku)
+                nombres_web[p_sku] = p_title
                 
         pagina += 1
 
-    print(f"🔗 Mapeo de {nombre_tienda} listo. Simples: {len(mapa_simples)}. Modelos variables: {len(mapa_variaciones)}.")
+    print(f"🔗 Mapeo de {nombre_tienda} listo. SKUs totales detectados en la Web: {len(woo_skus_totales)}.")
 
-    # 2. Reporte de SKUs no encontrados
-    woo_skus_totales = set(mapa_simples.keys())
-    for variaciones in mapa_variaciones.values():
-        woo_skus_totales.update(variaciones.keys())
+    # =========================================================================
+    # 2. AUDITORÍA CRUZADA DE CONJUNTOS POR SKU (Puntos 3 y 4 del usuario)
+    # =========================================================================
+    # Saco absoluto de SKUs de la Base de Datos para esta tienda
+    db_skus_totales = set(stock_local_tienda.keys())
 
-    skus_no_encontrados = [sku for sku in stock_local_tienda.keys() if sku not in woo_skus_totales]
-    if skus_no_encontrados:
-        print(f"⚠️ AVISO: Hay {len(skus_no_encontrados)} SKUs en PostgreSQL que NO existen en la web de {nombre_tienda}.")
-    else:
-        print(f"✅ Todos los SKUs locales de {nombre_tienda} matchean con la web.")
+    # RESTA MATEMÁTICA DE CONJUNTOS
+    faltan_en_woo = db_skus_totales - woo_skus_totales  # Viven en Postgres, no están en WordPress
+    faltan_en_db = woo_skus_totales - db_skus_totales   # Viven en WordPress, no están en Postgres
 
-    # 3. Procesar y empaquetar Productos Simples
+    with engine.begin() as conn:
+        # Purgar los desajustes anteriores estrictamente de esta tienda
+        conn.execute(text("DELETE FROM auditoria_skus_woo WHERE tienda = :t"), {"t": nombre_tienda})
+        
+        # Guardar Tipo A: Faltan en la Web
+        for sku_err in faltan_en_woo:
+            desc_db = stock_local_tienda[sku_err].get("nombre_ref", "Ítem en Postgres")
+            conn.execute(text("""
+                INSERT INTO auditoria_skus_woo (tienda, tipo_error, sku, detalle) 
+                VALUES (:t, 'FALTA_EN_WOO', :s, :d)
+            """), {"t": nombre_tienda, "s": sku_err, "d": desc_db})
+
+        # Guardar Tipo B: Faltan en la Base de Datos
+        for sku_err in faltan_en_db:
+            desc_w = nombres_web.get(sku_err, "Ítem en WordPress")
+            conn.execute(text("""
+                INSERT INTO auditoria_skus_woo (tienda, tipo_error, sku, detalle) 
+                VALUES (:t, 'FALTA_EN_DB', :s, :d)
+            """), {"t": nombre_tienda, "s": sku_err, "d": desc_w})
+
+    # Feedback en consola de los desajustes
+    if faltan_en_woo: print(f"  ⚠️ [FALTA EN WOO]: {len(faltan_en_woo)} SKUs locales no existen en la tienda web.")
+    if faltan_en_db:  print(f"  ⚠️ [FALTA EN BD]:  {len(faltan_en_db)} SKUs de la web no están registrados en PostgreSQL.")
+    if not faltan_en_woo and not faltan_en_db:
+        print("  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.")
+
+    # =========================================================================
+    # 3. ENVÍO DE LOTES (Usando el SKU como puente hacia el ID de Woo)
+    # =========================================================================
     paquete_simples = []
     for sku, data in stock_local_tienda.items():
         if sku in mapa_simples:
@@ -83,29 +124,57 @@ def sincronizar_tienda_woo(nombre_tienda, wcapi, stock_local_tienda):
                 "catalog_visibility": visibilidad
             })
 
+    simples_enviados_ok = 0
+    simples_objetivo = len(paquete_simples)
+
     if paquete_simples:
-        print(f"🚀 Enviando {len(paquete_simples)} simples a {nombre_tienda}...")
+        print(f"🚀 Enviando {simples_objetivo} simples a {nombre_tienda}...")
         lote_tamano = 100
         for i in range(0, len(paquete_simples), lote_tamano):
             lote = paquete_simples[i:i + lote_tamano]
-            wcapi.post("products/batch", {"update": lote})
-            print(f"   ✅ Lote simples {i//lote_tamano + 1} de {nombre_tienda} completado.")
+            try:
+                wcapi.post("products/batch", {"update": lote})
+                simples_enviados_ok += len(lote)
+            except Exception as e:
+                print(f"❌ Error en lote simples: {e}")
 
-    # 4. Procesar y empaquetar Variaciones
-    print(f"🚀 Enviando lotes de variaciones a {nombre_tienda}...")
+    # Variaciones
+    lotes_variaciones = []
     for parent_id, variaciones in mapa_variaciones.items():
-        paquete_variaciones_padre = []
+        paq_v = []
         for sku, var_id in variaciones.items():
             if sku in stock_local_tienda:
-                paquete_variaciones_padre.append({
+                paq_v.append({
                     "id": var_id,
                     "manage_stock": True,
                     "stock_quantity": stock_local_tienda[sku]["total"]
                 })
-        
-        if paquete_variaciones_padre:
-            wcapi.post(f"products/{parent_id}/variations/batch", {"update": paquete_variaciones_padre})
-            print(f"   ✅ Variaciones del producto padre #{parent_id} actualizadas.")
+        if paq_v: lotes_variaciones.append((parent_id, paq_v))
+
+    vars_enviados_ok = 0
+    vars_objetivo = sum(len(p) for _, p in lotes_variaciones)
+
+    if lotes_variaciones:
+        print(f"🚀 Enviando variaciones a {nombre_tienda}...")
+        for parent_id, paq_v in lotes_variaciones:
+            try:
+                wcapi.post(f"products/{parent_id}/variations/batch", {"update": paq_v})
+                vars_enviados_ok += len(paq_v)
+            except Exception as e:
+                print(f"❌ Error en variaciones del padre #{parent_id}: {e}")
+
+    # =========================================================================
+    # 4. CÁLCULO DE PORCENTAJES RESUMIDOS (Punto 2 del usuario)
+    # =========================================================================
+    pct_simples = (simples_enviados_ok / simples_objetivo * 100) if simples_objetivo > 0 else 100.0
+    pct_vars = (vars_enviados_ok / vars_objetivo * 100) if vars_objetivo > 0 else 100.0
+    
+    duracion = datetime.now() - hora_inicio
+
+    print(f"\n📊 RESUMEN DE TAREAS PARA {nombre_tienda.upper()}:")
+    print(f"   • Lotes Simples:  {pct_simples:.0f}% completado ({simples_enviados_ok}/{simples_objetivo})")
+    print(f"   • Variaciones:    {pct_vars:.0f}% completado ({vars_enviados_ok}/{vars_objetivo})")
+    print(f"   • Tiempo tomado:  {str(duracion).split('.')[0]}")
 
 # ==============================================================================
 # FUNCIÓN ORQUESTADORA PRINCIPAL
@@ -114,31 +183,43 @@ def sync_inventario_completo():
     print("⏳ Extrayendo inventario maestro unificado de PostgreSQL...")
     try:
         engine = create_engine(os.getenv("DATABASE_URL"))
+        
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS auditoria_skus_woo (
+                    id SERIAL PRIMARY KEY,
+                    tienda VARCHAR(50),
+                    tipo_error VARCHAR(50),
+                    sku VARCHAR(100),
+                    detalle VARCHAR(255),
+                    fecha_deteccion TIMESTAMP DEFAULT NOW()
+                );
+            """))
+
         with engine.connect() as conn:
-            # Traemos la macro_categoria para saber a qué tienda pertenece cada SKU
             query = text("""
                 SELECT v.sku, 
                        (COALESCE(v.stock_interno, 0) + COALESCE(v.stock_externo, 0)) AS stock_total,
                        COALESCE(v.stock_transito, 0) AS stock_transito,
-                       COALESCE(p.macro_categoria, 'Lentes') AS macro_categoria
+                       COALESCE(p.macro_categoria, 'Lentes') AS macro_categoria,
+                       CONCAT(COALESCE(p.marca, ''), ' ', COALESCE(p.modelo, ''), ' ', COALESCE(p.nombre, '')) AS nombre_ref
                 FROM Variantes v
                 JOIN Productos p ON v.id_producto = p.id_producto
                 WHERE v.sku IS NOT NULL AND TRIM(v.sku) != ''
             """)
             resultados = conn.execute(query).fetchall()
 
-        # Partición local en dos diccionarios independientes
-        stock_lentes = {}
-        stock_pelucas = {}
+        stock_lentes, stock_pelucas = {}, {}
 
         for r in resultados:
             sku = r.sku.strip()
-            item_data = {"total": r.stock_total, "transito": r.stock_transito}
-            
-            if r.macro_categoria == "Pelucas":
-                stock_pelucas[sku] = item_data
-            else:
-                stock_lentes[sku] = item_data
+            item_data = {
+                "total": r.stock_total, 
+                "transito": r.stock_transito,
+                "nombre_ref": r.nombre_ref.strip()
+            }
+            if r.macro_categoria == "Pelucas": stock_pelucas[sku] = item_data
+            else: stock_lentes[sku] = item_data
 
         print(f"📦 Reparto local listo -> LENTES: {len(stock_lentes)} SKUs | PELUCAS: {len(stock_pelucas)} SKUs.")
 
@@ -146,29 +227,19 @@ def sync_inventario_completo():
         print(f"🔥 Error crítico al conectar con PostgreSQL: {e}")
         return
 
-    # --- DISPARO 1: TIENDA DE LENTES ---
-    url_lentes = os.getenv("WOO_LENTES_URL")
-    key_lentes = os.getenv("WOO_LENTES_KEY")
-    sec_lentes = os.getenv("WOO_LENTES_SECRET")
-
+    # --- DISPARO 1: LENTES ---
+    url_lentes, key_lentes, sec_lentes = os.getenv("WOO_LENTES_URL"), os.getenv("WOO_LENTES_KEY"), os.getenv("WOO_LENTES_SECRET")
     if url_lentes and key_lentes and sec_lentes:
         wcapi_lentes = API(url=url_lentes, consumer_key=key_lentes, consumer_secret=sec_lentes, version="wc/v3", timeout=60)
-        sincronizar_tienda_woo("Lentes (kmlentes.pe)", wcapi_lentes, stock_lentes)
-    else:
-        print("\n⚠️ OMITIDO: No se encontraron credenciales de WOO_LENTES en el archivo .env")
+        sincronizar_tienda_woo(engine, "Lentes (kmlentes.pe)", wcapi_lentes, stock_lentes)
 
-    # --- DISPARO 2: TIENDA DE PELUCAS ---
-    url_pelucas = os.getenv("WOO_PELUCAS_URL")
-    key_pelucas = os.getenv("WOO_PELUCAS_KEY")
-    sec_pelucas = os.getenv("WOO_PELUCAS_SECRET")
-
+    # --- DISPARO 2: PELUCAS ---
+    url_pelucas, key_pelucas, sec_pelucas = os.getenv("WOO_PELUCAS_URL"), os.getenv("WOO_PELUCAS_KEY"), os.getenv("WOO_PELUCAS_SECRET")
     if url_pelucas and key_pelucas and sec_pelucas:
         wcapi_pelucas = API(url=url_pelucas, consumer_key=key_pelucas, consumer_secret=sec_pelucas, version="wc/v3", timeout=60)
-        sincronizar_tienda_woo("Pelucas (pelucat.pe)", wcapi_pelucas, stock_pelucas)
-    else:
-        print("\n⚠️ OMITIDO: No se encontraron credenciales de WOO_PELUCAS en el archivo .env")
+        sincronizar_tienda_woo(engine, "Pelucas (pelucat.pe)", wcapi_pelucas, stock_pelucas)
 
-    print("\n🎉 ¡Sincronización masiva de ambas tiendas completada con éxito!")
+    print("\n🎉 ¡Orquestación de inventario completada!")
 
 if __name__ == "__main__":
     sync_inventario_completo()
