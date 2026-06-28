@@ -210,6 +210,7 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
+                # --- NUEVA CONSULTA MAESTRA (FULL OUTER JOIN + ORDENAMIENTO INTELIGENTE) ---
                 query = f"""
                     WITH msg_vinculados AS (
                         SELECT m.id_mensaje, m.telefono, m.fecha, m.leido, m.tipo, 
@@ -227,24 +228,33 @@ def render_chat():
                         FROM msg_vinculados
                         GROUP BY COALESCE(CAST(id_cliente AS VARCHAR), telefono)
                     )
-                    SELECT cl.*, c.nombre_corto, c.whatsapp_internal_id, c.estado, c.nivel_zombie, c.ultimo_msg_zombie,
-                           CASE 
-                               WHEN c.nombre_corto IS NOT NULL AND c.nombre_corto != '' THEN c.nombre_corto
-                               ELSE cl.telefono_contacto
-                           END as nombre
+                    SELECT 
+                        COALESCE(cl.chat_id, CAST(c.id_cliente AS VARCHAR), c.telefono) as chat_id,
+                        COALESCE(cl.id_cliente, c.id_cliente) as id_cliente,
+                        COALESCE(cl.telefono_contacto, c.telefono) as telefono_contacto,
+                        cl.ultima_interaccion,
+                        COALESCE(cl.no_leidos, 0) as no_leidos,
+                        c.nombre_corto, c.whatsapp_internal_id, c.estado, c.nivel_zombie, c.ultimo_msg_zombie,
+                        CASE 
+                            WHEN c.nombre_corto IS NOT NULL AND c.nombre_corto != '' THEN c.nombre_corto
+                            WHEN cl.telefono_contacto IS NOT NULL THEN cl.telefono_contacto
+                            ELSE c.telefono
+                        END as nombre
                     FROM chat_list cl
-                    LEFT JOIN {tabla} c ON cl.id_cliente = c.id_cliente AND c.activo = TRUE
-                    WHERE 1=1
+                    FULL OUTER JOIN {tabla} c ON cl.id_cliente = c.id_cliente AND c.activo = TRUE
+                    WHERE (c.activo = TRUE OR cl.chat_id IS NOT NULL)
                 """
                 
                 if busqueda:
                     busqueda_limpia = "".join(filter(str.isdigit, busqueda))
                     filtro = f" AND (COALESCE(c.nombre_corto,'') ILIKE '%{busqueda}%'"
-                    if busqueda_limpia: filtro += f" OR cl.telefono_contacto ILIKE '%{busqueda_limpia}%' OR EXISTS (SELECT 1 FROM telefonoscliente tc WHERE tc.id_cliente = cl.id_cliente AND tc.telefono ILIKE '%{busqueda_limpia}%'))"
+                    if busqueda_limpia: filtro += f" OR COALESCE(cl.telefono_contacto, c.telefono, '') ILIKE '%{busqueda_limpia}%' OR EXISTS (SELECT 1 FROM telefonoscliente tc WHERE tc.id_cliente = COALESCE(cl.id_cliente, c.id_cliente) AND tc.telefono ILIKE '%{busqueda_limpia}%'))"
                     else: filtro += ")"
                     query += filtro
                 
-                query += " ORDER BY no_leidos DESC, ultima_interaccion DESC NULLS LAST LIMIT 100"
+                # Ordena: 1ro No leídos | 2do Etapas de venta (0) | 3ro Sin empezar (1) | 4to Fecha
+                query += " ORDER BY no_leidos DESC, (CASE WHEN c.estado IS NULL OR TRIM(c.estado) = '' OR TRIM(c.estado) ILIKE 'sin empezar' THEN 1 ELSE 0 END) ASC, ultima_interaccion DESC NULLS LAST LIMIT 1000"
+                
                 df_clientes = pd.read_sql(text(query), conn)
 
             with st.container(height=600):
@@ -695,31 +705,32 @@ def render_chat():
                     tab_info_dir, tab_galeria_img, tab_compras = st.tabs(["🏠 Dirección Principal", "🖼️ Galería de Imágenes", "🛍️ Historial de Compras"])
                     
                     with tab_info_dir:
-                        texto_cobro = f"\n\n**⚠️ Monto por cobrar:** S/ {pendiente_pago:.2f}" if pendiente_pago > 0 else ""
+                        # Dos espacios al final de la línea generan un <br> limpio en Markdown
+                        texto_cobro = f"  \n**⚠️ Monto por cobrar:** S/ {pendiente_pago:.2f}" if pendiente_pago > 0 else ""
                         
                         if dir_info:
                             st.markdown("##### 📦 Guía Completa de Entrega")
                             if dir_info.tipo_envio == 'MOTO':
-                                texto_dir = (f"**Tipo:** 🛵 Motorizado / Interno\n\n"
-                                             f"**Recibe:** {dir_info.nombre_receptor or ''}\n\n"
-                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}\n\n"
-                                             f"**Dirección:** {dir_info.direccion_texto or ''} ({dir_info.distrito or ''})\n\n"
-                                             f"**Referencia:** {dir_info.referencia or ''}\n\n"
-                                             f"**Link GPS:** {dir_info.gps_link or ''}\n\n"
+                                texto_dir = (f"**Tipo:** 🛵 Motorizado / Interno  \n"
+                                             f"**Recibe:** {dir_info.nombre_receptor or ''}  \n"
+                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}  \n"
+                                             f"**Dirección:** {dir_info.direccion_texto or ''} ({dir_info.distrito or ''})  \n"
+                                             f"**Referencia:** {dir_info.referencia or ''}  \n"
+                                             f"**Link GPS:** {dir_info.gps_link or ''}  \n"
                                              f"**Observación:** {dir_info.observacion or ''}"
                                              f"{texto_cobro}")
                             elif dir_info.tipo_envio == 'AGENCIA':
-                                texto_dir = (f"**Tipo:** 🏢 Agencia\n\n"
-                                             f"**Recibe:** {dir_info.nombre_receptor or ''}\n\n"
-                                             f"**DNI:** {dir_info.dni_receptor or ''}\n\n"
-                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}\n\n"
-                                             f"**Agencia:** {dir_info.agencia_nombre or ''} — {dir_info.sede_entrega or ''}\n\n"
+                                texto_dir = (f"**Tipo:** 🏢 Agencia  \n"
+                                             f"**Recibe:** {dir_info.nombre_receptor or ''}  \n"
+                                             f"**DNI:** {dir_info.dni_receptor or ''}  \n"
+                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}  \n"
+                                             f"**Agencia:** {dir_info.agencia_nombre or ''} — {dir_info.sede_entrega or ''}  \n"
                                              f"**Observación:** {dir_info.observacion or ''}"
                                              f"{texto_cobro}")
                             else:
-                                texto_dir = (f"**Tipo:** 📦 Otros\n\n"
-                                             f"**Recibe:** {dir_info.nombre_receptor or ''}\n\n"
-                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}\n\n"
+                                texto_dir = (f"**Tipo:** 📦 Otros  \n"
+                                             f"**Recibe:** {dir_info.nombre_receptor or ''}  \n"
+                                             f"**Teléfono:** {dir_info.telefono_receptor or ''}  \n"
                                              f"**Observación / Notas:** {dir_info.observacion or ''}"
                                              f"{texto_cobro}")
                             st.markdown(texto_dir)
@@ -727,7 +738,7 @@ def render_chat():
                             st.caption("⚠️ Este cliente no tiene ninguna dirección activa registrada.")
                             if pendiente_pago > 0:
                                 st.markdown(f"**⚠️ Monto por cobrar de última venta:** S/ {pendiente_pago:.2f}")
-                            
+
                     with tab_galeria_img:
                         if imagenes_galeria:
                             st.caption("Haz click en las flechas de la imagen para ver en pantalla completa.")

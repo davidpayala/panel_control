@@ -4,8 +4,35 @@ import time
 from sqlalchemy import text
 from database import engine
 
+# =========================================================================
+# AUTO-CREACIÓN DE TABLA MAESTRA DE SUBCATEGORÍAS AL INICIAR
+# =========================================================================
+try:
+    with engine.begin() as conn_init:
+        conn_init.execute(text("""
+            CREATE TABLE IF NOT EXISTS Subcategorias_Sistema (
+                id SERIAL PRIMARY KEY,
+                macro_categoria VARCHAR(50) NOT NULL,
+                subcategoria VARCHAR(100) NOT NULL,
+                UNIQUE(macro_categoria, subcategoria)
+            )
+        """))
+        # Sembrar subcategorías base por defecto si está vacía
+        conn_init.execute(text("""
+            INSERT INTO Subcategorias_Sistema (macro_categoria, subcategoria) VALUES 
+            ('Lentes', 'Estilo Natural'),
+            ('Lentes', 'Estilo Fantasía'),
+            ('Lentes', 'Accesorios'),
+            ('Pelucas', 'Peluca Natural'),
+            ('Pelucas', 'Peluca Fantasía'),
+            ('Pelucas', 'Accesorios Pelucas')
+            ON CONFLICT DO NOTHING
+        """))
+except Exception:
+    pass
+
+
 def render_opciones():
-    # Creamos las 3 pestañas organizadas
     tab1, tab2, tab3 = st.tabs(["📋 Estados de Clientes", "📁 Jerarquía de Categorías", "👥 Usuarios"])
 
     # =========================================================================
@@ -68,7 +95,6 @@ def render_opciones():
     with tab2:
         st.subheader("🛠️ Depuración de Categorías y Estructura")
         
-        # --- SUB-SECCIÓN A: DEPURADOR BLINDADO (PARÁMETRO VINCULADO) ---
         with engine.connect() as conn:
             erroneos_df = pd.read_sql(
                 text("""
@@ -88,7 +114,11 @@ def render_opciones():
                 opciones_prod = {row['id_producto']: f"[{row['marca']} {row['modelo']}] - {row['nombre']} ({row['categoria']})" for _, row in erroneos_df.iterrows()}
                 id_prod_sel = st.selectbox("Selecciona el producto a corregir:", options=list(opciones_prod.keys()), format_func=lambda x: opciones_prod[x])
                 
-                nueva_subcat = st.selectbox("Asignar a Subcategoría Correcta:", ["Estilo Natural", "Estilo Fantasía", "Accesorios"])
+                with engine.connect() as conn_sub:
+                    subs_lentes = [r[0] for r in conn_sub.execute(text("SELECT subcategoria FROM Subcategorias_Sistema WHERE macro_categoria = 'Lentes' ORDER BY subcategoria")).fetchall()]
+                if not subs_lentes: subs_lentes = ["Estilo Natural", "Estilo Fantasía", "Accesorios"]
+
+                nueva_subcat = st.selectbox("Asignar a Subcategoría Correcta:", subs_lentes)
                 
                 if st.button("🔄 Corregir Categoría de Producto", type="primary"):
                     with engine.begin() as conn_tx:
@@ -105,31 +135,34 @@ def render_opciones():
 
         st.divider()
 
-        # --- SUB-SECCIÓN B: EDITOR GLOBAL DE CATEGORÍAS ---
-        st.markdown("### 📂 Mantenimiento de Categorías del Sistema")
-        st.info("Aquí puedes visualizar cómo están mapeadas las carpetas de tus productos en el Panel.")
+        st.markdown("### 📂 Subcategorías Oficiales del Sistema")
+        st.info("Las subcategorías registradas aquí alimentan directamente las listas desplegables en la edición de Productos.")
         
         with engine.connect() as conn:
-            df_cat_resumen = pd.read_sql(text("""
-                SELECT macro_categoria as "Categoría Mayor", categoria as "Subcategoría", COUNT(id_producto) as "Cant. Productos"
-                FROM Productos 
-                GROUP BY macro_categoria, categoria
-                ORDER BY macro_categoria, categoria
-            """), conn)
-            
-        st.dataframe(df_cat_resumen, use_container_width=True, hide_index=True)
+            df_maestras = pd.read_sql(text("SELECT macro_categoria AS \"Línea Mayor\", subcategoria AS \"Subcategoría Registrada\" FROM Subcategorias_Sistema ORDER BY macro_categoria, subcategoria"), conn)
+        st.dataframe(df_maestras, use_container_width=True, hide_index=True)
         
-        with st.expander("➕ Preparar Categorías para Línea de Pelucas"):
-            st.caption("Nota: Al usar el asistente de carga masiva de Excel, estas configuraciones se indexarán automáticamente en la base de datos.")
+        with st.expander("➕ Agregar Nueva Subcategoría al Sistema", expanded=True):
             with st.form("nueva_categoria_form"):
-                macro_input = st.selectbox("Categoría Mayor (Línea de Negocio):", ["Pelucas", "Lentes", "Accesorios"])
-                sub_input = st.text_input("Nueva Subcategoría (Ej: Peluca Natural, Peluca Fantasía):")
+                macro_input = st.selectbox("Línea Mayor (Asociar a):", ["Pelucas", "Lentes", "Accesorios"])
+                sub_input = st.text_input("Nombre de la Nueva Subcategoría (Ej: Cosplay Premium, Lace Front):")
                 
-                if st.form_submit_button("Registrar en Estructura"):
+                if st.form_submit_button("Registrar Subcategoría en BD"):
                     if not sub_input.strip():
                         st.error("El nombre de la subcategoría no puede estar vacío.")
                     else:
-                        st.info(f"Estructura lista. Cuando importes tus pelucas del Excel, podrás usar la subcategoría '{sub_input}' bajo la línea '{macro_input}'.")
+                        try:
+                            with engine.begin() as conn_tx:
+                                conn_tx.execute(text("""
+                                    INSERT INTO Subcategorias_Sistema (macro_categoria, subcategoria)
+                                    VALUES (:m, :s)
+                                    ON CONFLICT DO NOTHING
+                                """), {"m": macro_input, "s": sub_input.strip()})
+                            st.success(f"✅ ¡Subcategoría '{sub_input.strip()}' agregada permanentemente a '{macro_input}'!")
+                            time.sleep(1.2)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error SQL: {e}")
 
         # --- SUB-SECCIÓN C: DESTRUCTOR DE FANTASMAS ---
         st.divider()

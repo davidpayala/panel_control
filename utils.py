@@ -488,15 +488,16 @@ def _tarea_sync_woo(skus):
 # CREACION DEL NOMBRE COMPLETO DEL PRODUCTO
 def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorios, macro_objetivo='Lentes'):
     """
-    Selecciona un producto con stock aplicando probabilidades de subcategoría, filtrado estrictamente por macro_categoria.
+    Selecciona un producto con stock aplicando probabilidades de subcategoría, 
+    filtrado estrictamente por macro_categoria y capturando la foto específica del SKU.
     """
     import random
     from sqlalchemy import text
     from database import engine
 
-    # 1. Asignamos las subcategorías correspondientes a la macro-categoría buscada
+    # 1. ARMONIZACIÓN: Matcheamos con los nombres reales que guardó el migrador de Excel
     if macro_objetivo == 'Pelucas':
-        categorias = ["Peluca Natural", "Peluca Fantasía", "Accesorios Pelucas"]
+        categorias = ["Estilo Natural", "Estilo Fantasía", "Accesorios Pelucas"]
     else:
         categorias = ["Estilo Natural", "Estilo Fantasía", "Accesorios"] 
 
@@ -507,10 +508,14 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
     categoria_elegida = random.choices(categorias, weights=pesos_categoria, k=1)[0]
     
     with engine.connect() as conn:
+        # 2. INYECCIÓN DEL COALESCE: Prioriza foto del hijo (Variantes), si no hay, toma la del padre (Productos)
         sql = text("""
             SELECT 
-                v.sku, p.nombre, p.marca, p.modelo, p.categoria, p.macro_categoria, p.color_principal,
-                g.nombre_grupo, g.descripcion AS descripcion_grupo, v.stock_interno, p.url_imagen 
+                v.sku, p.nombre, p.marca, p.modelo, p.categoria, 
+                COALESCE(p.macro_categoria, 'Lentes') AS macro_categoria, 
+                p.color_principal, g.nombre_grupo, g.descripcion AS descripcion_grupo, 
+                v.stock_interno, 
+                COALESCE(NULLIF(TRIM(v.url_imagen), ''), NULLIF(TRIM(p.url_imagen), '')) AS imagen
             FROM Productos p
             JOIN Variantes v ON p.id_producto = v.id_producto
             LEFT JOIN Grupos_Productos g ON v.id_grupo = g.id_grupo
@@ -523,12 +528,15 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
         """)
         resultados = conn.execute(sql, {"cat": categoria_elegida, "macro": macro_objetivo}).fetchall()
         
-    # Fallback de seguridad: Si no hay ítems en esa subcategoría, trae cualquiera con stock de esa macro-categoría
+    # Fallback de seguridad blindado con el mismo COALESCE de imagen
     if not resultados:
         with engine.connect() as conn:
             fb_sql = text("""
-                SELECT v.sku, p.nombre, p.marca, p.modelo, p.categoria, p.macro_categoria, p.color_principal,
-                       g.nombre_grupo, g.descripcion AS descripcion_grupo, v.stock_interno, p.url_imagen 
+                SELECT v.sku, p.nombre, p.marca, p.modelo, p.categoria, 
+                       COALESCE(p.macro_categoria, 'Lentes') AS macro_categoria, 
+                       p.color_principal, g.nombre_grupo, g.descripcion AS descripcion_grupo, 
+                       v.stock_interno, 
+                       COALESCE(NULLIF(TRIM(v.url_imagen), ''), NULLIF(TRIM(p.url_imagen), '')) AS imagen
                 FROM Productos p
                 JOIN Variantes v ON p.id_producto = v.id_producto
                 LEFT JOIN Grupos_Productos g ON v.id_grupo = g.id_grupo
@@ -550,6 +558,7 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
     
     datos_producto = {
         'categoria': producto_elegido.categoria,
+        'macro_categoria': producto_elegido.macro_categoria, # <-- Vital para que el generador inteligente sepa qué es
         'marca': producto_elegido.marca,
         'modelo': producto_elegido.modelo,
         'nombre': producto_elegido.nombre,
@@ -566,7 +575,7 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
         "grupo": producto_elegido.nombre_grupo,
         "descripcion_grupo": producto_elegido.descripcion_grupo,
         "stock": producto_elegido.stock_interno,
-        "imagen": producto_elegido.url_imagen
+        "imagen": producto_elegido.imagen # <-- Ahora sí despacha la foto resuelta exacta
     }
 
 # ==============================================================================
@@ -574,39 +583,78 @@ def seleccionar_producto_para_estado(prob_natural, prob_fantasia, prob_accesorio
 # ==============================================================================
 def generar_nombre_inteligente(row):
     """
-    Recibe una fila de base de datos o Pandas y devuelve el nombre formateado.
+    Recibe una fila de base de datos (dict o Series de Pandas) y genera el nombre 
+    comercial perfectamente formateado según sea Peluca o Lente de Contacto.
     """
-    # Obtenemos los datos limpiando los nulos
-    categoria = str(row.get('categoria', ''))
-    marca = str(row.get('marca', '')) if pd.notna(row.get('marca', None)) else ''
-    modelo = str(row.get('modelo', '')) if pd.notna(row.get('modelo', None)) else ''
-    nombre = str(row.get('nombre', '')) if pd.notna(row.get('nombre', None)) else ''
-    sku = str(row.get('sku', '')) if pd.notna(row.get('sku', None)) else ''
+    # 1. Extracción segura purgando nulos reales y falsos nulos de texto ('nan')
+    def _get_str(key):
+        val = row.get(key, '')
+        if pd.isna(val) or val is None:
+            return ''
+        txt = str(val).strip()
+        return '' if txt.lower() == 'nan' else txt
 
-    # Aplicamos la regla del prefijo
-    if categoria == 'Estilo Natural':
-        prefijo = marca
-    elif categoria == 'Estilo Fantasía':
-        prefijo = 'Lente'
-    else: # Accesorio u otros
-        prefijo = ''
+    macro = _get_str('macro_categoria')
+    categoria = _get_str('categoria')
+    marca = _get_str('marca')
+    modelo = _get_str('modelo')
+    nombre = _get_str('nombre')
+    sku = _get_str('sku')
 
-    # Armamos la primera parte (Prefijo + Modelo)
+    # Fallback de rescate por si la consulta SQL omitió jalar la columna macro
+    if not macro:
+        macro = 'Pelucas' if sku.upper().startswith(('WB-', 'WIG-')) else 'Lentes'
+
+    # =====================================================================
+    # 2. MOTOR DE PREFIJOS DINÁMICO POR LÍNEA DE NEGOCIO
+    # =====================================================================
+    prefijo = ''
+
+    if macro == 'Pelucas':
+        cat_low = categoria.lower()
+        if 'natural' in cat_low:
+            # Si la marca es genérica o Pelucat, antepone la palabra "Peluca", si es marca externa la respeta
+            prefijo = marca if marca.lower() not in ['pelucat', 'genérico', 'generico', ''] else 'Peluca'
+        elif any(k in cat_low for x in ['fantas', 'cosplay', 'lace'] for k in [x]):
+            prefijo = 'Peluca'
+        else:
+            prefijo = '' # Accesorios, redecillas, clips, extensiones
+
+    else: # Lentes de Contacto (Conserva tu lógica histórica intacta al 100%)
+        if categoria == 'Estilo Natural':
+            prefijo = marca
+        elif categoria == 'Estilo Fantasía':
+            prefijo = 'Lente'
+        else:
+            prefijo = ''
+
+    # =====================================================================
+    # 3. ENSAMBLAJE BLINDADO (Evita redundancias léxicas)
+    # =====================================================================
     partes_inicio = []
-    if prefijo: 
+
+    if prefijo:
         partes_inicio.append(prefijo)
-    if modelo: 
-        partes_inicio.append(modelo)
-    
+
+    if modelo:
+        # Si el modelo ya empezaba escribiendo el prefijo (Ej: Modelo="Peluca Bob"), absorbe el prefijo
+        if prefijo and modelo.lower().startswith(prefijo.lower()):
+            partes_inicio = [modelo]
+        else:
+            partes_inicio.append(modelo)
+
     inicio = " ".join(partes_inicio).strip()
 
-    # Armamos el texto final
-    if inicio:
-        resultado = f"{inicio} - {nombre} ({sku})"
+    # Combinamos cabecera con el Tono / Estilo
+    if inicio and nombre:
+        nombre_base = f"{inicio} - {nombre}"
+    elif inicio:
+        nombre_base = inicio
     else:
-        resultado = f"{nombre} ({sku})"
-        
-    return resultado.strip()
+        nombre_base = nombre or "Artículo sin título"
+
+    # Adosamos el código SKU final
+    return f"{nombre_base} ({sku})".strip() if sku else nombre_base.strip()
 
 def determinar_sesiones_para_estado(prob_lentes, prob_principal):
     """
@@ -629,9 +677,58 @@ def determinar_sesiones_para_estado(prob_lentes, prob_principal):
 
 import requests
 
-def generar_texto_estado_ia(producto):
+def buscar_producto_aleatorio_en_stock(conn, macro_categoria, subcategorias_permitidas):
+    """Busca 1 producto al azar con stock físico > 0 anclado a la foto del padre"""
+    if not subcategorias_permitidas:
+        return None
+
+    lista_clean = [s.strip().lower() for s in subcategorias_permitidas]
+    lista_sql = ', '.join([f"'{s}'" for s in lista_clean])
+
+    query_principal = text(f"""
+        SELECT
+            p.id_producto, p.marca, p.modelo, p.nombre, p.categoria,
+            p.url_imagen, -- <--- De vuelta estrictamente a la foto del Padre
+            v.sku, v.precio
+        FROM Variantes v
+        JOIN Productos p ON v.id_producto = p.id_producto
+        WHERE TRIM(p.macro_categoria) ILIKE :macro
+          AND LOWER(TRIM(p.categoria)) IN ({lista_sql})
+          AND COALESCE(v.stock_interno, 0) > 0
+          AND p.url_imagen IS NOT NULL
+          AND TRIM(p.url_imagen) != ''
+        ORDER BY RANDOM()
+        LIMIT 1
+    """)
+
+    row = conn.execute(query_principal, {"macro": f"%{macro_categoria.strip()}%"}).fetchone()
+    if row: return dict(row._mapping)
+
+    # --- FALLBACK DE RESCATE ---
+    if macro_categoria == 'Pelucas':
+        query_rescate = text("""
+            SELECT p.id_producto, p.marca, p.modelo, p.nombre, p.categoria,
+                   p.url_imagen, v.sku, v.precio
+            FROM Variantes v
+            JOIN Productos p ON v.id_producto = p.id_producto
+            WHERE p.macro_categoria ILIKE '%peluca%'
+              AND COALESCE(v.stock_interno, 0) > 0
+              AND p.url_imagen IS NOT NULL
+              AND TRIM(p.url_imagen) != ''
+            ORDER BY RANDOM()
+            LIMIT 1
+        """)
+
+        row_rescate = conn.execute(query_rescate).fetchone()
+        if row_rescate: return dict(row_rescate._mapping)
+
+    return None
+
+
+def generar_texto_estado_ia(producto, es_estado=False):
     """
-    Conecta con Ollama local inyectando dinámicamente la marca (KMLentes o Pelucat) según la macro-categoría.
+    Genera copys persuasivos con IA local (Ollama). 
+    Ahora inyecta promoción cruzada (cross-selling) según la macro-categoría.
     """
     import requests
     url_ia = "http://localhost:11434/api/generate"
@@ -643,49 +740,54 @@ def generar_texto_estado_ia(producto):
     grupo = producto.get('grupo') or 'Exclusivo'
     desc_grupo = producto.get('descripcion_grupo') or ''
     
-    # Adaptación de marca y producto
-    tienda_nombre = "Pelucat.pe" if macro == 'Pelucas' else "KMLentes.pe"
-    tipo_articulo = "peluca de calidad premium" if macro == 'Pelucas' else "lentes de contacto"
+    # Lógica de Cross-Selling (Promoción cruzada)
+    if macro == 'Pelucas':
+        tienda_actual = "Pelucat.pe"
+        cross_selling = "P.D. También tenemos lentes de contacto increíbles en kmlentes.pe"
+        tipo_articulo = "peluca"
+    else:
+        tienda_actual = "KMLentes.pe"
+        cross_selling = "P.D. ¡Complementa tu look con nuestras pelucas en pelucat.pe!"
+        tipo_articulo = "lentes"
 
     cat_lower = str(categoria).lower()
     
+    # Enfoques específicos por categoría
     if macro == 'Pelucas':
-        enfoque_estricto = "ENFOQUE OBLIGATORIO: Destaca el cambio de look instantáneo, el volumen natural de la fibra, lo sedoso del cabello y la confianza que transmite. Usa un tono glamuroso, moderno y muy empoderador."
+        enfoque = "Destaca el cambio de look instantáneo, la calidad de la fibra y la confianza. Tono glamuroso."
     elif 'natural' in cat_lower:
-        enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre resaltar la belleza natural, el uso diario, cosmética y una mirada sutil pero impactante. NO hables de cosplay, ni disfraces."
-    elif 'fantas' in cat_lower or 'cosplay' in cat_lower or 'anime' in cat_lower:
-        enfoque_estricto = "ENFOQUE OBLIGATORIO: Habla sobre cosplay, disfraces, anime, eventos de cultura pop y transformaciones extremas. Usa un tono muy llamativo y atrevido."
+        enfoque = "Habla sobre resaltar la belleza natural y un look sutil para el día a día."
+    elif 'fantas' in cat_lower or 'cosplay' in cat_lower:
+        enfoque = "Habla sobre cosplay, disfraces, eventos y transformaciones audaces."
     else:
-        enfoque_estricto = f"ENFOQUE OBLIGATORIO: Destaca su diseño exclusivo y lo práctico que es este {tipo_articulo} para tu estilo."
+        enfoque = f"Destaca la calidad de este {tipo_articulo} y su diseño exclusivo."
 
-    prompt = f"""Eres un copywriter experto en marketing digital para {tienda_nombre}, tienda virtual en Perú. 
-    Escribe un mensaje corto para un estado de WhatsApp ofreciendo este ítem.
+    # Prompt dinámico
+    prompt = f"""Eres un experto en marketing para {tienda_actual}.
+    Escribe un mensaje para {'un estado de WhatsApp' if es_estado else 'un mensaje directo a un cliente'}.
     
-    DATOS DEL ARTÍCULO:
-    - Producto: {nombre}
-    - Tono/Color: {color}
-    - Colección: {grupo}
-    - Atractivo: {desc_grupo}
+    ARTÍCULO: {nombre} ({color}).
+    ATRACTIVO: {desc_grupo}.
     
-    {enfoque_estricto}
+    {enfoque}
+    {cross_selling}
     
-    REGLAS DE FORMATO:
-    1. Sigue al pie de la letra el ENFOQUE OBLIGATORIO.
-    2. Usa emojis adecuados al tema. 
-    3. Invita a que envíen un mensaje directo al WhatsApp para pedir el catálogo.
-    4. Máximo 35 palabras.
-    5. Devuelve ÚNICAMENTE el texto final para copiar y pegar.
+    REGLAS:
+    1. Usa emojis.
+    2. Máximo 35 palabras.
+    3. Si es mensaje directo, invita a responder.
+    4. Devuelve SOLO el texto.
     """
 
     try:
-        response = requests.post(url_ia, json={"model": "llama3.1", "prompt": prompt, "stream": False}, timeout=30)
+        response = requests.post(url_ia, json={"model": "llama3.1", "prompt": prompt, "stream": False}, timeout=25)
         if response.status_code == 200:
             return response.json().get("response", "").strip()
     except Exception as e:
-        print(f"⚠️ Advertencia IA local: {e}")
+        print(f"⚠️ Error IA: {e}")
 
-    return f"✨ ¡Nuevo {nombre} en stock! Complemento perfecto para tu look. Escríbenos para asegurar el tuyo. 📲"
-
+    # Fallback seguro
+    return f"✨ ¡{nombre} en stock! Complementa tu estilo en {tienda_actual}. {cross_selling} 📲"
 
 # ==============================================================================
 # HERRAMIENTA DE SINCRONIZACIÓN MASIVA GOOGLE
