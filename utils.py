@@ -725,69 +725,116 @@ def buscar_producto_aleatorio_en_stock(conn, macro_categoria, subcategorias_perm
     return None
 
 
-def generar_texto_estado_ia(producto, es_estado=False):
+def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
     """
-    Genera copys persuasivos con IA local (Ollama). 
-    Ahora inyecta promoción cruzada (cross-selling) según la macro-categoría.
+    Genera copys persuasivos con IA local (Ollama) unificando Estados y Mensajes Directos (DM).
+    Inyecta promoción cruzada (cross-selling) y enlaces de compra dinámicos según la macro-categoría.
     """
+    import os
     import requests
-    url_ia = "http://localhost:11434/api/generate"
     
-    nombre = producto.get('nombre') or 'Producto'
-    macro = producto.get('macro_categoria') or 'Lentes'
-    categoria = producto.get('categoria') or 'General'
-    color = producto.get('color_principal') or 'Destacado'
-    grupo = producto.get('grupo') or 'Exclusivo'
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    modelo_ia = os.getenv("OLLAMA_MODEL", "llama3.1")
+    url_ia = f"{ollama_url.rstrip('/')}/api/generate"
+    
+    # 1. Resolución infalible de Línea de Negocio y Tienda
+    macro = producto.get('macro_categoria')
+    sku = str(producto.get('sku', '')).strip()
+    
+    if not macro or str(macro).lower() in ['none', 'nan', '']:
+        macro = 'Pelucas' if sku.upper().startswith(('WB-', 'WIG-')) else 'Lentes'
+
+    if macro == 'Pelucas':
+        tienda_actual = "pelucat.pe"
+        tienda_cruzada = "kmlentes.pe"
+        tipo_articulo = "esta espectacular peluca premium"
+        cross_selling = f"✨ P.D.: ¿Sabías que también contamos con increíbles lentes de contacto en 👉 https://{tienda_cruzada}"
+    else:
+        tienda_actual = "kmlentes.pe"
+        tienda_cruzada = "pelucat.pe"
+        tipo_articulo = "estos hermosos lentes de contacto"
+        cross_selling = f"✨ P.D.: ¡Complementa tu look descubriendo nuestra colección de pelucas importadas en 👉 https://{tienda_cruzada}!"
+
+    # 2. Construcción inteligente del nombre comercial
+    marca = producto.get('marca') or ''
+    modelo = producto.get('modelo') or ''
+    nom_color = producto.get('nombre') or 'Producto'
+    precio = producto.get('precio', '')
+    
+    if marca and modelo:
+        titulo_prod = f"{marca} {modelo} ({nom_color})".strip()
+    else:
+        titulo_prod = str(nom_color)
+
+    categoria = str(producto.get('categoria', 'General')).lower()
     desc_grupo = producto.get('descripcion_grupo') or ''
-    
-    # Lógica de Cross-Selling (Promoción cruzada)
-    if macro == 'Pelucas':
-        tienda_actual = "Pelucat.pe"
-        cross_selling = "P.D. También tenemos lentes de contacto increíbles en kmlentes.pe"
-        tipo_articulo = "peluca"
-    else:
-        tienda_actual = "KMLentes.pe"
-        cross_selling = "P.D. ¡Complementa tu look con nuestras pelucas en pelucat.pe!"
-        tipo_articulo = "lentes"
 
-    cat_lower = str(categoria).lower()
-    
-    # Enfoques específicos por categoría
+    # 3. Enfoques psicológicos por subcategoría
     if macro == 'Pelucas':
-        enfoque = "Destaca el cambio de look instantáneo, la calidad de la fibra y la confianza. Tono glamuroso."
-    elif 'natural' in cat_lower:
-        enfoque = "Habla sobre resaltar la belleza natural y un look sutil para el día a día."
-    elif 'fantas' in cat_lower or 'cosplay' in cat_lower:
-        enfoque = "Habla sobre cosplay, disfraces, eventos y transformaciones audaces."
+        enfoque = "Destaca el cambio de look instantáneo, volumen natural de la fibra sedosa, realismo del lace frontal y confianza. Tono glamuroso."
+    elif 'natural' in str(categoria):
+        enfoque = "Habla sobre resaltar la belleza natural, mirada sutil e impactante ideal para el día a día en oficina o universidad."
+    elif 'fantas' in str(categoria) or 'cosplay' in str(categoria):
+        enfoque = "Habla sobre cosplay, eventos de cultura pop, disfraces, anime y transformaciones extremas. Tono vibrante y audaz."
     else:
-        enfoque = f"Destaca la calidad de este {tipo_articulo} y su diseño exclusivo."
+        enfoque = f"Destaca la calidad indiscutible de {tipo_articulo} y su acabado exclusivo."
 
-    # Prompt dinámico
-    prompt = f"""Eres un experto en marketing para {tienda_actual}.
-    Escribe un mensaje para {'un estado de WhatsApp' if es_estado else 'un mensaje directo a un cliente'}.
-    
-    ARTÍCULO: {nombre} ({color}).
-    ATRACTIVO: {desc_grupo}.
-    
-    {enfoque}
-    {cross_selling}
-    
-    REGLAS:
-    1. Usa emojis.
-    2. Máximo 35 palabras.
-    3. Si es mensaje directo, invita a responder.
-    4. Devuelve SOLO el texto.
-    """
+    # 4. Contexto de intención de compra (CRM)
+    notas_crm = ""
+    if cliente_info and cliente_info.get('etiquetas'):
+        notas_crm = f"\n    INTERESES REGISTRADOS DEL CLIENTE: '{cliente_info['etiquetas']}' (Haz una mención muy natural a esto si guarda relación)."
+
+    # 5. Bifurcación del Prompt: Estado vs Mensaje Directo
+    if es_estado:
+        prompt = f"""Eres un copywriter experto en marketing digital para {tienda_actual}.
+        Escribe un texto publicitario corto para un ESTADO DE WHATSAPP:
+        
+        ARTÍCULO: {titulo_prod}
+        ATRACTIVO: {desc_grupo}
+        ENFOQUE: {enfoque}
+        PROMOCIÓN CRUZADA AL FINAL: {cross_selling}
+        
+        REGLAS ESTRICTAS:
+        1. Usa 2 o 3 emojis llamativos.
+        2. Máximo 35 palabras en total.
+        3. Invita a que respondan el estado por mensaje privado para pedir el catálogo.
+        4. Devuelve ÚNICAMENTE el texto listo para publicar.
+        """
+        texto_reserva = f"✨ ¡Reingresó stock de {titulo_prod}! Adquiérelo directo en https://{tienda_actual} 📲\n\n{cross_selling}"
+    else:
+        enlace_compra = f"https://{tienda_actual}/producto/{sku}"
+        txt_precio = f"a solo S/ {precio}" if precio else ""
+        
+        prompt = f"""Eres un experto en cierres de ventas por WhatsApp para la marca {tienda_actual}.
+        Redacta un MENSAJE DIRECTO (1 a 1) cálido, magnético y tentador ofreciendo {tipo_articulo}:
+        
+        PRODUCTO: {titulo_prod} {txt_precio}
+        ENLACE DE COMPRA DIRECTO: {enlace_compra}
+        ESTRATEGIA DE PERSUASIÓN: {enfoque}{notas_crm}
+        
+        REGLAS ESTRICTAS:
+        1. Máximo 3 párrafos cortos (optimizado para lectura rápida en celulares).
+        2. Usa emojis elegantes.
+        3. NO saludes al principio (el sistema pondrá 'Hola [Nombre] 👋' arriba automáticamente).
+        4. NO pongas despedidas genéricas.
+        5. Pide con un fuerte Llamado a la Acción (CTA) que hagan clic en el enlace para pedirlo.
+        6. Añade obligatoriamente la promoción cruzada al final del mensaje:\n{cross_selling}
+        7. Devuelve ÚNICAMENTE el cuerpo del mensaje redactado.
+        """
+        texto_reserva = f"¡Mira el hermoso modelo que acaba de reingresar a nuestro almacén!\n\n⭐ **{titulo_prod}** {txt_precio}.\n\nPuedes revisar fotos reales y pedirlo directo aquí:\n👉 {enlace_compra}\n\n{cross_selling}"
 
     try:
-        response = requests.post(url_ia, json={"model": "llama3.1", "prompt": prompt, "stream": False}, timeout=25)
+        response = requests.post(url_ia, json={"model": modelo_ia, "prompt": prompt, "stream": False}, timeout=30)
         if response.status_code == 200:
-            return response.json().get("response", "").strip()
+            respuesta_ia = response.json().get("response", "").strip()
+            if len(respuesta_ia) > 12:
+                return respuesta_ia
+        else:
+            print(f"   ⚠️ [Aviso IA] Ollama respondió HTTP {response.status_code} para {titulo_prod}.")
     except Exception as e:
-        print(f"⚠️ Error IA: {e}")
+        print(f"   ⚠️ [Aviso IA] No se pudo generar copy con Ollama ({e}). Usando variante de rescate.")
 
-    # Fallback seguro
-    return f"✨ ¡{nombre} en stock! Complementa tu estilo en {tienda_actual}. {cross_selling} 📲"
+    return texto_reserva
 
 # ==============================================================================
 # HERRAMIENTA DE SINCRONIZACIÓN MASIVA GOOGLE

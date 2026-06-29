@@ -11,9 +11,10 @@ from utils import sync_woo_background
 def render_compras():
     st.subheader("🚢 Gestión de Importaciones y Reposición")
 
+    # Pestañas desacopladas de nombres comerciales específicos
     tab_asistente, tab_pedir, tab_recepcionar = st.tabs([
-        "💡 Asistente de Compras (IA)", 
-        "✈️ Registrar Compra (AliExpress)", 
+        "💡 Asistente de Compras (IA)",
+        "✈️ Registrar Compra",
         "📦 Recepcionar Mercadería (Llegó)"
     ])
 
@@ -21,31 +22,50 @@ def render_compras():
     # A) ASISTENTE INTELIGENTE
     # -------------------------------------------------------------------------
     with tab_asistente:
-        # 1. CONTROLES
+        # 1. CONTROLES Y FILTROS EN REJILLA
         with st.container(border=True):
             c_filtros, c_acciones = st.columns([3, 1])
+            
             with c_filtros:
                 st.markdown("**Configuración del Reporte**")
-                col_f1, col_f2, col_f3 = st.columns(3)
+                col_f1, col_f2 = st.columns(2)
+                col_f3, col_f4 = st.columns(2)
                 
                 umbral_stock = col_f1.slider("Alerta Stock bajo (<):", 0, 50, 5)
-                solo_con_externo = col_f2.checkbox("Stock en Proveedor", value=True)
                 
-                filtro_ali = col_f3.radio(
-                    "Filtro AliExpress:", 
-                    ["Todos", "Con Link", "Sin Link"], 
+                # Obtener Macrocategorías dinámicamente de la BD
+                with engine.connect() as conn:
+                    try:
+                        res_mac = conn.execute(text("SELECT DISTINCT COALESCE(macro_categoria, 'Lentes') FROM Productos")).fetchall()
+                        macros_disp = sorted(list({r[0] for r in res_mac if r[0]}))
+                    except:
+                        macros_disp = ["Lentes", "Pelucas"]
+                        
+                filtro_macro = col_f2.selectbox("📂 Macrocategoría:", ["Todas"] + macros_disp)
+                
+                filtro_proveedor = col_f3.radio(
+                    "Stock en Proveedor:",
+                    ["Todos", "Con Proveedor", "Sin Proveedor"],
+                    index=1,
+                    horizontal=True
+                )
+                
+                filtro_enlace = col_f4.radio(
+                    "Enlace Compra:",
+                    ["Todos", "Con Link", "Sin Link"],
                     index=0,
                     horizontal=True
                 )
-            
+
             with c_acciones:
                 st.write("")
-                if st.button("🔄 Actualizar Tabla", type="primary", width='stretch'):
+                st.write("")
+                if st.button("🔄 Actualizar Tabla", type="primary", use_container_width=True):
                     st.rerun()
 
         # 2. DEFINIR AÑOS
-        year_actual = datetime.now().year 
-        y1, y2, y3 = year_actual, year_actual - 1, year_actual - 2 
+        year_actual = datetime.now().year
+        y1, y2, y3 = year_actual, year_actual - 1, year_actual - 2
 
         def get_hist_sql(year):
             return f"COALESCE(h.v{year}, 0)" if year <= 2025 else "0"
@@ -57,7 +77,7 @@ def render_compras():
 
                 query_hybrid = text(f"""
                     WITH VentasSQL AS (
-                        SELECT 
+                        SELECT
                             d.sku,
                             SUM(CASE WHEN EXTRACT(YEAR FROM v.fecha_venta) = :y3 THEN d.cantidad ELSE 0 END) as sql_y3,
                             SUM(CASE WHEN EXTRACT(YEAR FROM v.fecha_venta) = :y2 THEN d.cantidad ELSE 0 END) as sql_y2,
@@ -66,12 +86,14 @@ def render_compras():
                         JOIN Ventas v ON d.id_venta = v.id_venta
                         GROUP BY d.sku
                     )
-                    SELECT 
-                        v.sku, 
+                    SELECT
+                        v.sku,
+                        COALESCE(p.macro_categoria, 'Lentes') as macro_categoria,
                         p.marca || ' ' || p.modelo || ' - ' || COALESCE(p.nombre, '') || ' (' || v.medida || ')' as nombre,
                         v.stock_interno,
                         v.stock_externo,
                         COALESCE(v.stock_transito, 0) as stock_transito,
+                        COALESCE(v.costo_compra, 0) as costo_compra,
                         p.importacion,
                         p.url_compra,
                         ({hist_y3} + COALESCE(live.sql_y3, 0)) as venta_year_3,
@@ -95,18 +117,24 @@ def render_compras():
                 st.error(f"⚠️ Error en consulta: {e}")
                 df_reco = pd.DataFrame()
 
-        # 4. FILTROS
+        # 4. APLICACIÓN DE FILTROS
         if not df_reco.empty:
             df_reco['sku'] = df_reco['sku'].astype(str).str.strip()
             
-            # Filtro 1: Stock Externo
-            if solo_con_externo:
-                df_reco = df_reco[df_reco['stock_externo'] > 0]
+            # Filtro Macrocategoría
+            if filtro_macro != "Todas":
+                df_reco = df_reco[df_reco['macro_categoria'] == filtro_macro]
             
-            # Filtro 2: Lógica AliExpress (Apuntando a url_compra)
-            if filtro_ali == "Con Link":
+            # Filtro Proveedor
+            if filtro_proveedor == "Con Proveedor":
+                df_reco = df_reco[df_reco['stock_externo'] > 0]
+            elif filtro_proveedor == "Sin Proveedor":
+                df_reco = df_reco[df_reco['stock_externo'] <= 0]
+            
+            # Filtro Enlace
+            if filtro_enlace == "Con Link":
                 df_reco = df_reco[df_reco['url_compra'].notna() & (df_reco['url_compra'] != '')]
-            elif filtro_ali == "Sin Link":
+            elif filtro_enlace == "Sin Link":
                 df_reco = df_reco[df_reco['url_compra'].isna() | (df_reco['url_compra'] == '')]
 
             patron_medida = r'-\d{4}$'
@@ -121,76 +149,97 @@ def render_compras():
         col_res_txt, col_res_btn = st.columns([3, 1])
         with col_res_txt:
             st.markdown(f"### 📋 Sugerencias de Compra ({len(df_reco)} items)")
-            if filtro_ali == "Sin Link":
-                st.caption("Mostrando productos que **NO** tienen enlace de importación configurado.")
+            if filtro_enlace == "Sin Link":
+                st.caption("Mostrando productos que **NO** tienen enlace de compra configurado.")
 
         with col_res_btn:
             if not df_reco.empty:
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     df_reco.to_excel(writer, index=False, sheet_name='SugerenciaCompra')
-                st.download_button("📥 Descargar Excel", data=buffer.getvalue(), file_name=f"Compras_{date.today()}.xlsx", width='stretch')
+                st.download_button("📥 Descargar Excel", data=buffer.getvalue(), file_name=f"Compras_{date.today()}.xlsx", use_container_width=True)
 
         st.dataframe(
             df_reco,
             column_config={
                 "sku": "SKU",
+                "macro_categoria": "Línea",
                 "nombre": st.column_config.TextColumn("Producto", width="large"),
-                "importacion": None, # Ocultamos la columna de texto de importacion
-                "url_compra": st.column_config.LinkColumn("Link Ali", display_text="Ver Link"), # Mostramos el enlace real
+                "costo_compra": st.column_config.NumberColumn("Últ. Costo", format="S/ %.2f"),
+                "importacion": None,
+                "url_compra": st.column_config.LinkColumn("Enlace Compra", display_text="Ver Link"),
                 "stock_interno": st.column_config.NumberColumn("En Mano", format="%d"),
                 "stock_transito": st.column_config.NumberColumn("En Camino", format="%d"),
-                "stock_externo": None,
-                "venta_year_3": st.column_config.NumberColumn(str(y3), format="%d"), # Cabecera dinámica
-                "venta_year_2": st.column_config.NumberColumn(str(y2), format="%d"), # Cabecera dinámica
-                "venta_year_1": st.column_config.NumberColumn(str(y1), format="%d"), # Cabecera dinámica
+                "stock_externo": st.column_config.NumberColumn("En Proveedor", format="%d"),
+                "venta_year_3": st.column_config.NumberColumn(str(y3), format="%d"),
+                "venta_year_2": st.column_config.NumberColumn(str(y2), format="%d"),
+                "venta_year_1": st.column_config.NumberColumn(str(y1), format="%d"),
                 "sugerencia_compra": st.column_config.NumberColumn("⚠️ Sugerido", format="%d"),
                 "demanda_historica": st.column_config.ProgressColumn("Demanda Hist.", format="%d", min_value=0, max_value=int(df_reco['demanda_historica'].max()) if not df_reco.empty else 10),
             },
             hide_index=True,
-            width='stretch'
+            use_container_width=True
         )
+
     # -------------------------------------------------------------------------
-    # B) REGISTRAR PEDIDO
+    # B) REGISTRAR PEDIDO (CON HISTÓRICO Y MEMORIA DE COSTOS)
     # -------------------------------------------------------------------------
     with tab_pedir:
-        st.info("✈️ Registra aquí tus pagos en AliExpress para sumarlos a 'En Camino'.")
-        sku_pedido_raw = st.text_input("SKU a Importar:", key="sku_pedir")
+        st.info("✈️ Registra aquí tus compras para sumarlas a 'En Camino' y guardar su costo de adquisición.")
+        sku_pedido_raw = st.text_input("SKU a Importar / Comprar:", key="sku_pedir")
         sku_pedido = sku_pedido_raw.strip() if sku_pedido_raw else ""
         
         if sku_pedido:
             with engine.connect() as conn:
-                res = pd.read_sql(text("SELECT sku, stock_transito FROM Variantes WHERE sku = :s"), conn, params={"s": sku_pedido})
+                res = pd.read_sql(text("SELECT sku, stock_transito, COALESCE(costo_compra, 0) as costo_compra FROM Variantes WHERE sku = :s"), conn, params={"s": sku_pedido})
             
             if not res.empty:
                 curr_transito = int(res.iloc[0]['stock_transito'] or 0)
+                ultimo_costo = float(res.iloc[0]['costo_compra'] or 0.0)
                 st.success(f"Producto encontrado. En camino actual: **{curr_transito}**")
                 
-                with st.form("form_pedido_ali"):
-                    cant_pedido = st.number_input("Cantidad Comprada:", min_value=1, step=1)
-                    nota_pedido = st.text_input("Nota / ID Pedido:", help="Ej: Pedido #81234")
-                    fecha_pedido = st.date_input("Fecha de Compra:", value=date.today())
+                with st.form("form_pedido_compra"):
+                    c_c1, c_c2 = st.columns(2)
+                    cant_pedido = c_c1.number_input("Cantidad Comprada:", min_value=1, step=1)
+                    # Autocompletado inteligente con el costo anterior
+                    costo_unitario_input = c_c2.number_input("Costo Unitario de Adquisición (S/):", min_value=0.0, step=0.10, value=ultimo_costo, format="%.2f")
                     
-                    if st.form_submit_button("✈️ Registrar 'En Camino'", width='stretch'):
+                    c_c3, c_c4 = st.columns(2)
+                    nota_pedido = c_c3.text_input("Nota / ID Pedido:", help="Ej: Pedido #81234")
+                    fecha_pedido = c_c4.date_input("Fecha de Compra:", value=date.today())
+                    
+                    if st.form_submit_button("✈️ Registrar Compra y Costo", use_container_width=True):
                         with engine.connect() as conn:
                             trans = conn.begin()
                             try:
-                                conn.execute(text("UPDATE Variantes SET stock_transito = stock_transito + :c WHERE sku=:s"), 
-                                                        {"c": cant_pedido, "s": sku_pedido})
-                                
+                                # 1. Actualiza tránsito y sobrescribe el costo referencial rápido en Variantes
                                 conn.execute(text("""
-                                    INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota, fecha)
-                                    VALUES (:s, 'PEDIDO_IMPORT', :c, :ant, :nue, :nota, :fec)
-                                """), {"s": sku_pedido, "c": cant_pedido, "ant": curr_transito, "nue": curr_transito + cant_pedido, "nota": nota_pedido, "fec": fecha_pedido})
+                                    UPDATE Variantes 
+                                    SET stock_transito = stock_transito + :c, costo_compra = :costo 
+                                    WHERE sku=:s
+                                """), {"c": cant_pedido, "costo": costo_unitario_input, "s": sku_pedido})
+                                
+                                # 2. Guarda el costo exacto e inmutable en el historial transaccional
+                                conn.execute(text("""
+                                    INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, costo_unitario, nota, fecha)
+                                    VALUES (:s, 'PEDIDO_IMPORT', :c, :ant, :nue, :costo, :nota, :fec)
+                                """), {
+                                    "s": sku_pedido, 
+                                    "c": cant_pedido, 
+                                    "ant": curr_transito, 
+                                    "nue": curr_transito + cant_pedido, 
+                                    "costo": costo_unitario_input, 
+                                    "nota": nota_pedido, 
+                                    "fec": fecha_pedido
+                                })
                                 
                                 trans.commit()
-                                
-                                st.success("✅ Registrado correctamente.")
+                                st.success("✅ Compra y costos registrados correctamente.")
                                 time.sleep(1)
                                 st.rerun()
                             except Exception as e:
                                 trans.rollback()
-                                st.error(f"Error: {e}")
+                                st.error(f"Error al registrar: {e}")
             else:
                 st.warning(f"⚠️ El SKU '{sku_pedido}' no existe.")
 
@@ -200,7 +249,7 @@ def render_compras():
     with tab_recepcionar:
         with engine.connect() as conn:
             query = text("""
-                SELECT 
+                SELECT
                     v.sku,
                     p.modelo || ' - ' || COALESCE(p.nombre, '') as nombre,
                     v.stock_transito as pendiente,
@@ -216,7 +265,6 @@ def render_compras():
             df_transito = pd.read_sql(query, conn)
 
         if not df_transito.empty:
-            # --- SECCIÓN: ACCIÓN POR GRUPO ---
             st.markdown("### ⚡ Recepción por Grupo")
             notas_unicas = df_transito["ultima_nota"].unique().tolist()
             col_sel, col_btn = st.columns([2, 1])
@@ -231,8 +279,8 @@ def render_compras():
                         try:
                             for _, row in items_grupo.iterrows():
                                 conn.execute(text("""
-                                    UPDATE Variantes 
-                                    SET stock_interno = stock_interno + stock_transito, stock_transito = 0 
+                                    UPDATE Variantes
+                                    SET stock_interno = stock_interno + stock_transito, stock_transito = 0
                                     WHERE sku = :s
                                 """), {"s": row['sku']})
                                 
@@ -253,7 +301,6 @@ def render_compras():
 
             st.divider()
 
-            # --- SECCIÓN: TABLA INDIVIDUAL ---
             st.markdown("### 📋 Detalle de Productos en Camino")
             df_transito["✅ Llegó?"] = False
             df_transito["Cant. Recibida"] = df_transito["pendiente"]
@@ -270,7 +317,7 @@ def render_compras():
                     "ultima_fecha": st.column_config.DateColumn("Fecha Pedido", disabled=True, format="DD/MM"),
                     "ultima_nota": st.column_config.TextColumn("Nota", disabled=True),
                     "nombre": st.column_config.TextColumn("Producto", disabled=True),
-                    "Cant. Recibida": st.column_config.NumberColumn("Recibido", min_value=0), # Modificado a 0
+                    "Cant. Recibida": st.column_config.NumberColumn("Recibido", min_value=0),
                     "pendiente": st.column_config.NumberColumn("Esperado", disabled=True),
                     "stock_actual": st.column_config.NumberColumn("Stock Hoy", disabled=True),
                     "ubicacion": st.column_config.TextColumn("Ubicación")
@@ -280,7 +327,6 @@ def render_compras():
                 key="editor_recepcion"
             )
 
-            # Lógica para procesar selección manual...
             filas_ok = cambios[cambios["✅ Llegó?"] == True]
             if not filas_ok.empty:
                 if st.button(f"📥 Procesar {len(filas_ok)} items marcados"):
@@ -290,7 +336,6 @@ def render_compras():
                             for _, row in filas_ok.iterrows():
                                 n_stk = row['stock_actual'] + row['Cant. Recibida']
                                 
-                                # Si pone 0, cancelamos el saldo pendiente
                                 if row['Cant. Recibida'] == 0:
                                     n_trans = 0
                                     nota_mov = f"Cancelado/No llegó - Ref: {row['ultima_nota']}"
@@ -299,26 +344,20 @@ def render_compras():
                                     nota_mov = f"Manual - Ref: {row['ultima_nota']}"
                                 
                                 conn.execute(text("UPDATE Variantes SET stock_interno=:nm, stock_transito=:nt, ubicacion=:u WHERE sku=:s"),
-                                            {"nm": n_stk, "nt": n_trans, "u": row['ubicacion'], "s": row['sku']})
+                                             {"nm": n_stk, "nt": n_trans, "u": row['ubicacion'], "s": row['sku']})
                                 conn.execute(text("INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota) VALUES (:s,'RECEPCION_IMPORT',:c,:ant,:nue,:n)"),
-                                            {"s": row['sku'], "c": row['Cant. Recibida'], "ant": row['stock_actual'], "nue": n_stk, "n": nota_mov})
+                                             {"s": row['sku'], "c": row['Cant. Recibida'], "ant": row['stock_actual'], "nue": n_stk, "n": nota_mov})
                             
                             trans.commit()
 
-                            # --- NUEVO: Disparar el francotirador ---
-                            # Buscamos en el dataframe que usaste arriba (probablemente df_editado o similar)
                             skus_a_sincronizar = []
-                            # Revisa el "for idx, row in ..." que está unas líneas más arriba. 
-                            # Si ahí dice df_editado.iterrows(), cambia la variable en la siguiente línea:
                             try:
                                 skus_a_sincronizar = [row['sku'] for idx, row in filas_ok.iterrows() if row['Cant. Recibida'] > 0]
                                 if skus_a_sincronizar:
                                     threading.Thread(target=sync_woo_background, args=(skus_a_sincronizar,)).start()
                             except Exception as e:
                                 print(f"Error al sincronizar: {e}")
-                            # ----------------------------------------
 
-                            st.rerun()
                             st.success("✅ Items actualizados.")
                             time.sleep(1.2)
                             st.rerun()
@@ -327,4 +366,3 @@ def render_compras():
                             st.error(f"Error: {e}")
         else:
             st.info("🎉 No hay mercadería pendiente de llegada.")
-            
