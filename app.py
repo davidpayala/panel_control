@@ -109,7 +109,7 @@ def main():
 
     texto_dinamico_chat = f"💬 Chat ({n_no_leidos})" if n_no_leidos > 0 else "💬 Chat"
 
-    # 4. BARRA LATERAL Y MENÚ
+# 4. BARRA LATERAL Y MENÚ
     with st.sidebar:
         st.write(f"👤 Bienvenido, **{st.session_state['usuario']}** ({st.session_state['rol']})")
         if st.button("🚪 Cerrar Sesión"):
@@ -117,12 +117,37 @@ def main():
             st.rerun()
             
         st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
+        
+        # ==========================================
+        # 🚨 LECTOR DE ALERTAS CRÍTICAS (NUEVO)
+        # ==========================================
+        try:
+            with engine.connect() as conn:
+                # Busca alertas críticas registradas en los últimos 30 minutos
+                alerta = conn.execute(text("""
+                    SELECT payload FROM webhook_logs 
+                    WHERE event_type = 'ALERTA_CRITICA' 
+                    AND fecha > (NOW() - INTERVAL '30 minutes') 
+                    ORDER BY id DESC LIMIT 1
+                """)).scalar()
+                
+                if alerta:
+                    data_alerta = json.loads(alerta)
+                    st.error(f"🚨 **ALERTA CRÍTICA**\n\n{data_alerta.get('mensaje')}")
+                    if data_alerta.get('sesion'):
+                        st.caption(f"**Sesión afectada:** `{data_alerta.get('sesion')}`")
+                    if data_alerta.get('estado'):
+                        st.caption(f"**Estado actual:** `{data_alerta.get('estado')}`")
+        except Exception:
+            pass
+        # ==========================================
+
         st.title("Menú K&M")
         
         OPCIONES_BASE = [
             "VENTA", "COMPRAS", "PRODUCTOS", "CLIENTES",
-            "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO", "ESTADISTICAS" # <--- AGREGADO
-            ]
+            "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO", "ESTADISTICAS"
+        ]
 
         # Lógica de Roles (¡CAMBIAMOS USUARIOS POR OPCIONES!)
         if st.session_state['rol'] == 'Admin':

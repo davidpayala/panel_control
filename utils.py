@@ -724,14 +724,12 @@ def buscar_producto_aleatorio_en_stock(conn, macro_categoria, subcategorias_perm
 
     return None
 
-
 def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
     """
     Genera copys persuasivos con IA local (Ollama) unificando Estados y Mensajes Directos (DM).
     Inyecta promoción cruzada (cross-selling) y enlaces de compra dinámicos según la macro-categoría.
+    Usa 'JSON Mode' para evitar texto conversacional basura ("Claro, aquí tienes...").
     """
-    import os
-    import requests
     
     ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     modelo_ia = os.getenv("OLLAMA_MODEL", "llama3.1")
@@ -784,10 +782,11 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
     if cliente_info and cliente_info.get('etiquetas'):
         notas_crm = f"\n    INTERESES REGISTRADOS DEL CLIENTE: '{cliente_info['etiquetas']}' (Haz una mención muy natural a esto si guarda relación)."
 
-    # 5. Bifurcación del Prompt: Estado vs Mensaje Directo
+    # 5. Bifurcación del Prompt: Estado vs Mensaje Directo (CON JSON)
     if es_estado:
-        prompt = f"""Eres un copywriter experto en marketing digital para {tienda_actual}.
-        Escribe un texto publicitario corto para un ESTADO DE WHATSAPP:
+        prompt = f"""Eres un copywriter experto en marketing digital para {tienda_actual}. 
+        Tienda que atiende a clientes de todo el Perú, contamos con más de 10 años de experiencia.
+        Escribe un texto publicitario corto para un ESTADO DE WHATSAPP listo para publicar.
         
         ARTÍCULO: {titulo_prod}
         ATRACTIVO: {desc_grupo}
@@ -797,40 +796,65 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         REGLAS ESTRICTAS:
         1. Usa 2 o 3 emojis llamativos.
         2. Máximo 35 palabras en total.
-        3. Invita a que respondan el estado por mensaje privado para pedir el catálogo.
-        4. Devuelve ÚNICAMENTE el texto listo para publicar.
+        3. Invita a que respondan el estado por mensaje privado.
+        4. RESPONDE OBLIGATORIAMENTE SÓLO EN FORMATO JSON. La clave debe ser "estado".
+        Ejemplo de salida exacta que debes dar:
+        {{"estado": "Tu texto redactado aquí..."}}
         """
         texto_reserva = f"✨ ¡Reingresó stock de {titulo_prod}! Adquiérelo directo en https://{tienda_actual} 📲\n\n{cross_selling}"
     else:
         enlace_compra = f"https://{tienda_actual}/producto/{sku}"
         txt_precio = f"a solo S/ {precio}" if precio else ""
         
-        prompt = f"""Eres un experto en cierres de ventas por WhatsApp para la marca {tienda_actual}.
-        Redacta un MENSAJE DIRECTO (1 a 1) cálido, magnético y tentador ofreciendo {tipo_articulo}:
+        prompt = f"""Eres un experto en cierres de ventas por WhatsApp para la marca {tienda_actual}. 
+        Tienda Virtual que atiende a clientes de todo el Perú, con más de 10 años de experiencia.
+        Redacta un MENSAJE DIRECTO (1 a 1) cálido, magnético y tentador ofreciendo {tipo_articulo}. 
         
         PRODUCTO: {titulo_prod} {txt_precio}
         ENLACE DE COMPRA DIRECTO: {enlace_compra}
         ESTRATEGIA DE PERSUASIÓN: {enfoque}{notas_crm}
         
         REGLAS ESTRICTAS:
-        1. Máximo 3 párrafos cortos (optimizado para lectura rápida en celulares).
+        1. NO incluyas saludos iniciales ni despedidas.
         2. Usa emojis elegantes.
-        3. NO saludes al principio (el sistema pondrá 'Hola [Nombre] 👋' arriba automáticamente).
-        4. NO pongas despedidas genéricas.
-        5. Pide con un fuerte Llamado a la Acción (CTA) que hagan clic en el enlace para pedirlo.
-        6. Añade obligatoriamente la promoción cruzada al final del mensaje:\n{cross_selling}
-        7. Devuelve ÚNICAMENTE el cuerpo del mensaje redactado.
+        3. RESPONDE OBLIGATORIAMENTE SÓLO EN FORMATO JSON. La clave debe ser "mensaje" y debe contener un ARRAY (lista) con 4 párrafos:
+            - Párrafo 1: Presentación del producto y su atractivo.
+            - Párrafo 2: Beneficios y razones para comprarlo ahora.
+            - Párrafo 3: Llamado a la acción (CTA) para hacer clic en el enlace.
+            - Párrafo 4: Promoción cruzada: {cross_selling}
+            
+        Ejemplo de salida exacta que debes dar:
+        {{"mensaje": ["Párrafo 1...", "Párrafo 2...", "Párrafo 3...", "Párrafo 4..."]}}
         """
         texto_reserva = f"¡Mira el hermoso modelo que acaba de reingresar a nuestro almacén!\n\n⭐ **{titulo_prod}** {txt_precio}.\n\nPuedes revisar fotos reales y pedirlo directo aquí:\n👉 {enlace_compra}\n\n{cross_selling}"
 
     try:
-        response = requests.post(url_ia, json={"model": modelo_ia, "prompt": prompt, "stream": False}, timeout=30)
+        # Se añade el parámetro "format": "json" para forzar la salida estructurada en Ollama
+        response = requests.post(url_ia, json={"model": modelo_ia, "prompt": prompt, "stream": False, "format": "json"}, timeout=30)
+        
         if response.status_code == 200:
-            respuesta_ia = response.json().get("response", "").strip()
-            if len(respuesta_ia) > 12:
-                return respuesta_ia
+            respuesta_cruda = response.json().get("response", "").strip()
+            
+            # Convertimos la respuesta JSON en un diccionario de Python
+            datos_json = json.loads(respuesta_cruda)
+            
+            # Extraemos y reconstruimos el texto según sea un estado o un DM
+            if es_estado:
+                texto_final = datos_json.get("estado", "")
+            else:
+                parrafos = datos_json.get("mensaje", [])
+                if isinstance(parrafos, list):
+                    # Unimos los párrafos de tu array con un doble salto de línea
+                    texto_final = "\n\n".join(parrafos)
+                else:
+                    texto_final = str(parrafos)
+                    
+            if len(texto_final) > 12:
+                return texto_final.strip()
         else:
             print(f"   ⚠️ [Aviso IA] Ollama respondió HTTP {response.status_code} para {titulo_prod}.")
+    except json.JSONDecodeError:
+        print(f"   ⚠️ [Aviso IA] La IA no devolvió un JSON válido. Usando variante de rescate.")
     except Exception as e:
         print(f"   ⚠️ [Aviso IA] No se pudo generar copy con Ollama ({e}). Usando variante de rescate.")
 

@@ -228,6 +228,28 @@ def obtener_nombre_waha(contact_id, session):
 @app.route('/', methods=['GET'])
 def home():
     return "Webhook V54 (Smart Sync & Name Fix) ✅", 200
+# ==============================================================================
+# 🚨 NUEVO ENDPOINT PARA RECIBIR ALERTAS DEL SCRIPT DE MONITORIZACIÓN
+# ==============================================================================
+@app.route('/api/alertas', methods=['POST'])
+def recibir_alerta():
+    try:
+        data = request.json
+        if not data: return jsonify({"status": "empty"}), 200
+        
+        log_error(f"🚨 ALERTA CRÍTICA RECIBIDA: {data}")
+        
+        with engine.begin() as conn:
+            p_str = json.dumps(data, ensure_ascii=False)
+            session_name = data.get('sesion', 'SISTEMA')
+            # Guardamos la alerta en los logs con un tipo especial "ALERTA_CRITICA"
+            conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
+                        {"s": session_name, "e": "ALERTA_CRITICA", "p": p_str})
+            
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        log_error(f"🔥 Error procesando alerta: {e}")
+        return jsonify({"status": "error"}), 500
 
 @app.route('/webhook', methods=['POST'])
 def recibir_mensaje():
