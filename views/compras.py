@@ -242,8 +242,7 @@ def render_compras():
                                 st.error(f"Error al registrar: {e}")
             else:
                 st.warning(f"⚠️ El SKU '{sku_pedido}' no existe.")
-
-    # -------------------------------------------------------------------------
+# -------------------------------------------------------------------------
     # C) RECEPCIONAR MERCADERÍA
     # -------------------------------------------------------------------------
     with tab_recepcionar:
@@ -254,7 +253,11 @@ def render_compras():
                     p.modelo || ' - ' || COALESCE(p.nombre, '') as nombre,
                     v.stock_transito as pendiente,
                     v.stock_interno as stock_actual,
-                    v.ubicacion,
+                    v.ubicacion as ubicacion_antigua,
+                    (SELECT STRING_AGG(u.nombre || ' (' || su.cantidad || ' un.)', ' | ') 
+                     FROM Stock_Ubicaciones su 
+                     JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion 
+                     WHERE su.sku = v.sku AND su.cantidad > 0) as ubicacion_nueva,
                     (SELECT nota FROM Movimientos m WHERE m.sku = v.sku AND m.tipo_movimiento = 'PEDIDO_IMPORT' ORDER BY m.fecha DESC LIMIT 1) as ultima_nota,
                     (SELECT date(fecha) FROM Movimientos m WHERE m.sku = v.sku AND m.tipo_movimiento = 'PEDIDO_IMPORT' ORDER BY m.fecha DESC LIMIT 1) as ultima_fecha
                 FROM Variantes v
@@ -263,27 +266,50 @@ def render_compras():
                 ORDER BY ultima_fecha ASC, ultima_nota ASC
             """)
             df_transito = pd.read_sql(query, conn)
+            
+            # Obtener estantes reales de la base de datos para los selectores
+            df_ubis = pd.read_sql("SELECT nombre FROM Ubicaciones_Estandar ORDER BY nombre", conn)
+            opciones_estantes = ["Sin asignar"] + df_ubis['nombre'].tolist()
 
         if not df_transito.empty:
             st.markdown("### ⚡ Recepción por Grupo")
             notas_unicas = df_transito["ultima_nota"].unique().tolist()
-            col_sel, col_btn = st.columns([2, 1])
+            
+            # --- NUEVO: Agregamos columna para selector de estante grupal ---
+            col_sel, col_ubi, col_btn = st.columns([2, 1.5, 1.5])
             
             nota_seleccionada = col_sel.selectbox("Seleccionar Pedido por Nota:", ["---"] + notas_unicas)
             
             if nota_seleccionada != "---":
+                ubi_grupo = col_ubi.selectbox("📦 Almacenar todo en:", opciones_estantes, help="Opcional. Si lo dejas 'Sin asignar', sumará al stock general para distribuirlo luego.")
                 items_grupo = df_transito[df_transito["ultima_nota"] == nota_seleccionada]
-                if col_btn.button(f"✅ Aceptar todo el pedido ({len(items_grupo)} items)", type="primary"):
+                
+                # Espacio para alinear el botón
+                col_btn.write("")
+                if col_btn.button(f"✅ Aceptar todo ({len(items_grupo)} items)", type="primary", use_container_width=True):
                     with engine.connect() as conn:
                         trans = conn.begin()
                         try:
                             for _, row in items_grupo.iterrows():
+                                # 1. Sumar al Stock Global Físico
                                 conn.execute(text("""
                                     UPDATE Variantes
                                     SET stock_interno = stock_interno + stock_transito, stock_transito = 0
                                     WHERE sku = :s
                                 """), {"s": row['sku']})
                                 
+                                # 2. Asignar al nuevo estante físico (si el usuario eligió uno)
+                                if ubi_grupo != "Sin asignar" and row['pendiente'] > 0:
+                                    conn.execute(text("""
+                                        INSERT INTO Stock_Ubicaciones (sku, id_ubicacion, cantidad, fecha_actualizacion) 
+                                        VALUES (:sku, (SELECT id_ubicacion FROM Ubicaciones_Estandar WHERE nombre = :n), :cant, CURRENT_TIMESTAMP)
+                                        ON CONFLICT (sku, id_ubicacion) 
+                                        DO UPDATE SET 
+                                            cantidad = Stock_Ubicaciones.cantidad + :cant,
+                                            fecha_actualizacion = CURRENT_TIMESTAMP
+                                    """), {"sku": row['sku'], "n": ubi_grupo, "cant": row['pendiente']})
+                                
+                                # 3. Historial de Movimientos
                                 conn.execute(text("""
                                     INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota)
                                     VALUES (:s, 'RECEPCION_IMPORT', :c, :ant, :nue, :nota)
@@ -304,9 +330,11 @@ def render_compras():
             st.markdown("### 📋 Detalle de Productos en Camino")
             df_transito["✅ Llegó?"] = False
             df_transito["Cant. Recibida"] = df_transito["pendiente"]
+            df_transito["estante_destino"] = "Sin asignar"
+            df_transito["ubicacion_nueva"] = df_transito["ubicacion_nueva"].fillna("-")
             
             df_editor = df_transito[[
-                "✅ Llegó?", "sku", "ultima_fecha", "ultima_nota", "nombre", "Cant. Recibida", "pendiente", "stock_actual", "ubicacion"
+                "✅ Llegó?", "sku", "ultima_fecha", "ultima_nota", "nombre", "Cant. Recibida", "pendiente", "stock_actual", "ubicacion_antigua", "ubicacion_nueva", "estante_destino"
             ]]
 
             cambios = st.data_editor(
@@ -316,11 +344,13 @@ def render_compras():
                     "sku": st.column_config.TextColumn("SKU", disabled=True),
                     "ultima_fecha": st.column_config.DateColumn("Fecha Pedido", disabled=True, format="DD/MM"),
                     "ultima_nota": st.column_config.TextColumn("Nota", disabled=True),
-                    "nombre": st.column_config.TextColumn("Producto", disabled=True),
-                    "Cant. Recibida": st.column_config.NumberColumn("Recibido", min_value=0),
-                    "pendiente": st.column_config.NumberColumn("Esperado", disabled=True),
-                    "stock_actual": st.column_config.NumberColumn("Stock Hoy", disabled=True),
-                    "ubicacion": st.column_config.TextColumn("Ubicación")
+                    "nombre": st.column_config.TextColumn("Producto", disabled=True, width="medium"),
+                    "Cant. Recibida": st.column_config.NumberColumn("Recibido", min_value=0, width="small"),
+                    "pendiente": st.column_config.NumberColumn("Esperado", disabled=True, width="small"),
+                    "stock_actual": st.column_config.NumberColumn("Stock Hoy", disabled=True, width="small"),
+                    "ubicacion_antigua": st.column_config.TextColumn("Ubi. Ant. 📍", width="small"),
+                    "ubicacion_nueva": st.column_config.TextColumn("Ubi. Nueva 🗄️", disabled=True, width="medium"),
+                    "estante_destino": st.column_config.SelectboxColumn("Almacenar en 📥", options=opciones_estantes, width="medium")
                 },
                 hide_index=True,
                 use_container_width=True,
@@ -329,7 +359,7 @@ def render_compras():
 
             filas_ok = cambios[cambios["✅ Llegó?"] == True]
             if not filas_ok.empty:
-                if st.button(f"📥 Procesar {len(filas_ok)} items marcados"):
+                if st.button(f"📥 Procesar {len(filas_ok)} items marcados", type="primary"):
                     with engine.connect() as conn:
                         trans = conn.begin()
                         try:
@@ -343,10 +373,24 @@ def render_compras():
                                     n_trans = max(0, row['pendiente'] - row['Cant. Recibida'])
                                     nota_mov = f"Manual - Ref: {row['ultima_nota']}"
                                 
+                                # 1. Actualizar global y la ubi antigua
                                 conn.execute(text("UPDATE Variantes SET stock_interno=:nm, stock_transito=:nt, ubicacion=:u WHERE sku=:s"),
-                                             {"nm": n_stk, "nt": n_trans, "u": row['ubicacion'], "s": row['sku']})
+                                             {"nm": n_stk, "nt": n_trans, "u": row['ubicacion_antigua'], "s": row['sku']})
+                                
+                                # 2. Insertar en el nuevo estante si se eligió
+                                if row['estante_destino'] != "Sin asignar" and row['Cant. Recibida'] > 0:
+                                    conn.execute(text("""
+                                        INSERT INTO Stock_Ubicaciones (sku, id_ubicacion, cantidad, fecha_actualizacion) 
+                                        VALUES (:sku, (SELECT id_ubicacion FROM Ubicaciones_Estandar WHERE nombre = :n), :cant, CURRENT_TIMESTAMP)
+                                        ON CONFLICT (sku, id_ubicacion) 
+                                        DO UPDATE SET 
+                                            cantidad = Stock_Ubicaciones.cantidad + :cant,
+                                            fecha_actualizacion = CURRENT_TIMESTAMP
+                                    """), {"sku": row['sku'], "n": row['estante_destino'], "cant": int(row['Cant. Recibida'])})
+                                
+                                # 3. Historial
                                 conn.execute(text("INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota) VALUES (:s,'RECEPCION_IMPORT',:c,:ant,:nue,:n)"),
-                                             {"s": row['sku'], "c": row['Cant. Recibida'], "ant": row['stock_actual'], "nue": n_stk, "n": nota_mov})
+                                             {"s": row['sku'], "c": int(row['Cant. Recibida']), "ant": row['stock_actual'], "nue": n_stk, "n": nota_mov})
                             
                             trans.commit()
 
@@ -358,7 +402,7 @@ def render_compras():
                             except Exception as e:
                                 print(f"Error al sincronizar: {e}")
 
-                            st.success("✅ Items actualizados.")
+                            st.success("✅ Items actualizados e ingresados a sus ubicaciones.")
                             time.sleep(1.2)
                             st.rerun()
                         except Exception as e:

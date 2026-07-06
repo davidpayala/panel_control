@@ -14,6 +14,8 @@ try:
         conn.execute(text("ALTER TABLE Ventas ADD COLUMN IF NOT EXISTS anulado BOOLEAN DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS id_etapa INTEGER"))
         conn.execute(text("ALTER TABLE DetalleVenta ADD COLUMN IF NOT EXISTS macro_categoria VARCHAR(50)"))
+        # --- NUEVA COLUMNA PARA RASTREAR EL ESTANTE EXACTO ---
+        conn.execute(text("ALTER TABLE DetalleVenta ADD COLUMN IF NOT EXISTS id_ubicacion INTEGER"))
 except:
     pass
 
@@ -28,11 +30,12 @@ def render_ventas():
 
 def render_nueva_venta():
     # --- FUNCIÓN AUXILIAR LOCAL ---
-    def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None, macro_cat="Otros"):
+    def agregar_al_carrito(sku, nombre, cantidad, precio, es_inventario, stock_max=None, macro_cat="Otros", id_ubi=None, nombre_ubi=""):
         for item in st.session_state.carrito:
-            if item['sku'] == sku and sku is not None:
+            # Agrupar si es el mismo SKU y el mismo estante
+            if item['sku'] == sku and sku is not None and item.get('id_ubicacion') == id_ubi:
                 if es_inventario and (item['cantidad'] + cantidad) > stock_max:
-                    st.error(f"❌ Stock insuficiente. Disponibles: {stock_max}, En carrito: {item['cantidad']}")
+                    st.error(f"❌ Stock insuficiente en el estante {nombre_ubi or 'General'}. Disponibles: {stock_max}, En carrito: {item['cantidad']}")
                     return
                 item['cantidad'] += int(cantidad)
                 item['subtotal'] = item['cantidad'] * item['precio']
@@ -40,17 +43,19 @@ def render_nueva_venta():
                 return
 
         if es_inventario and cantidad > stock_max:
-            st.error(f"❌ Stock insuficiente. Disponibles: {stock_max}")
+            st.error(f"❌ Stock insuficiente en el estante {nombre_ubi or 'General'}. Disponibles: {stock_max}")
             return
 
         st.session_state.carrito.append({
             "sku": sku,
-            "descripcion": nombre,
+            "descripcion": nombre + (f" (Ubi: {nombre_ubi})" if nombre_ubi else ""),
             "cantidad": int(cantidad),
             "precio": float(precio),
             "subtotal": float(precio * cantidad),
             "es_inventario": es_inventario,
-            "macro_categoria": macro_cat
+            "macro_categoria": macro_cat,
+            "id_ubicacion": id_ubi,
+            "nombre_ubicacion": nombre_ubi
         })
         st.success(f"Añadido: {nombre}")
 
@@ -80,7 +85,7 @@ def render_nueva_venta():
             if sku_input:
                 with engine.connect() as conn:
                     res = pd.read_sql(text("""
-                        SELECT v.sku, p.modelo, p.nombre as color, v.medida, v.stock_interno, v.precio, v.ubicacion, COALESCE(p.macro_categoria, 'Lentes') as macro_categoria
+                        SELECT v.sku, p.modelo, p.nombre as color, v.medida, v.stock_interno, v.precio, COALESCE(p.macro_categoria, 'Lentes') as macro_categoria
                         FROM Variantes v JOIN Productos p ON v.id_producto = p.id_producto
                         WHERE v.sku = :sku
                     """), conn, params={"sku": sku_input})
@@ -90,28 +95,49 @@ def render_nueva_venta():
                     nombre_full = f"{prod['modelo']} {prod['color']} ({prod['medida']})"
                     
                     if prod['stock_interno'] <= 0:
-                        st.error(f"❌ Sin Stock ({prod['stock_interno']})")
+                        st.error(f"❌ Sin Stock Físico ({prod['stock_interno']})")
                     else:
-                        st.success(f"✅ Stock: {prod['stock_interno']} | 📍 {prod['ubicacion']}")
+                        st.success(f"✅ Stock Físico Total: {prod['stock_interno']}")
 
                     st.markdown(f"**{nombre_full}**")
                     
+                    # =======================================================
+                    # NUEVO: LÓGICA DE DETECCIÓN DE UBICACIONES MÚLTIPLES
+                    # =======================================================
+                    with engine.connect() as conn:
+                        df_ubis = pd.read_sql(text("""
+                            SELECT su.id_ubicacion, u.nombre, su.cantidad
+                            FROM Stock_Ubicaciones su
+                            JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion
+                            WHERE su.sku = :sku AND su.cantidad > 0
+                        """), conn, params={"sku": prod['sku']})
+                    
+                    ubi_selec_id = None
+                    ubi_selec_nombre = ""
+                    max_disp = prod['stock_interno']
+
+                    if df_ubis.empty and prod['stock_interno'] > 0:
+                        st.warning("⚠️ Este producto no ha sido distribuido en el 'Módulo de Inventario'. Se descontará del stock general sin ubicación.")
+                    elif not df_ubis.empty:
+                        st.markdown("📍 **Selecciona el estante de retiro:**")
+                        mapa_ubis = {f"🗄️ {row['nombre']} (Disp: {row['cantidad']} un.)": (row['id_ubicacion'], row['nombre'], row['cantidad']) for _, row in df_ubis.iterrows()}
+                        sel_ubi = st.selectbox("Extraer de:", list(mapa_ubis.keys()), label_visibility="collapsed")
+                        ubi_selec_id, ubi_selec_nombre, max_disp = mapa_ubis[sel_ubi]
+
                     c1, c2 = st.columns(2)
-                    cantidad = c1.number_input("Cant.", min_value=1, value=1)
+                    cantidad = c1.number_input("Cant.", min_value=1, max_value=int(max_disp) if max_disp > 0 else 1, value=1)
                     precio_sugerido = float(prod['precio']) if modo_operacion == "💰 Venta" else 0.0
                     precio_final = c2.number_input("Precio Unit.", value=precio_sugerido, disabled=(modo_operacion != "💰 Venta"))
                     
-                    if st.button("➕ Agregar al Carrito"):
-                        agregar_al_carrito(prod['sku'], nombre_full, cantidad, precio_final, True, prod['stock_interno'], prod['macro_categoria'])
+                    if st.button("➕ Agregar al Carrito", disabled=(max_disp <= 0)):
+                        agregar_al_carrito(prod['sku'], nombre_full, cantidad, precio_final, True, max_disp, prod['macro_categoria'], ubi_selec_id, ubi_selec_nombre)
                 else:
                     st.warning("SKU no encontrado en inventario.")
         
         else: 
             st.info("📦 Ítem Manual / Extra (Sin SKU en Base de Datos)")
-            
-            # --- NUEVO SELECTOR DE MACROCATEGORÍA ---
             macro_manual = st.selectbox("Macrocategoría:", ["Pelucas", "Lentes", "Otros"], key="macro_man")
-            desc_manual = st.text_input("Detalle / Descripción del producto o servicio:", placeholder="Ej: Peinado especial, redecilla extra, servicio...")
+            desc_manual = st.text_input("Detalle / Descripción del producto o servicio:", placeholder="Ej: Peinado especial, redecilla extra...")
             
             c1, c2 = st.columns(2)
             cant_manual = c1.number_input("Cant.", min_value=1, value=1, key="cm")
@@ -119,7 +145,6 @@ def render_nueva_venta():
             
             if st.button("➕ Agregar Ítem Manual"):
                 if desc_manual and desc_manual.strip():
-                    # Formateamos anteponiendo la macrocategoría para que sea legible en cualquier reporte o Excel
                     nombre_formateado = f"[{macro_manual}] {desc_manual.strip()}"
                     agregar_al_carrito(None, nombre_formateado, cant_manual, precio_manual, False, None, macro_manual)
                 else:
@@ -143,6 +168,8 @@ def render_nueva_venta():
                     "subtotal": st.column_config.NumberColumn("Subtotal", disabled=True, width="small"),
                     "descripcion": st.column_config.TextColumn("Descripción", width="medium"),
                     "sku": st.column_config.TextColumn("SKU", disabled=True),
+                    "nombre_ubicacion": st.column_config.TextColumn("Estante", disabled=True, width="small"),
+                    "id_ubicacion": None,
                     "es_inventario": None
                 },
                 num_rows="dynamic",
@@ -168,7 +195,6 @@ def render_nueva_venta():
             if modo_operacion == "💰 Venta":
                 st.markdown(f"**Subtotal Items:** S/ {suma_subtotal:.2f}")
 
-                # --- FILTRO POR GRUPO DE ETAPA ---
                 with engine.connect() as conn:
                     grupos_df = pd.read_sql(text("SELECT DISTINCT grupo FROM EtapasCliente WHERE activo = TRUE ORDER BY grupo"), conn)
                 
@@ -200,7 +226,6 @@ def render_nueva_venta():
 
                 nombre_cli = col_c.selectbox("Cliente:", options=list(lista_cli.keys()))
                 id_cliente = lista_cli[nombre_cli]
-                # ---------------------------------
 
                 col_e1, col_e2 = st.columns(2)
                 tipo_envio_ui = col_e1.selectbox("Método Envío", ["Motorizado", "Agencia", "Otros"])
@@ -223,12 +248,12 @@ def render_nueva_venta():
                         t_db = row.get('tipo_envio', 'OTROS')
                         
                         if t_db == 'MOTO':
-                            lbl = f"🏠 [Motorizado] {row.get('direccion_texto', '')} - {row.get('distrito', '')}"
+                            lbl = f"🏠 [Moto] {row.get('direccion_texto', '')} - {row.get('distrito', '')}"
                             if row.get('referencia') and pd.notna(row['referencia']): lbl += f" (Ref: {row['referencia']})"
                         elif t_db == 'AGENCIA':
-                            lbl = f"🏢 [Agencia] {row.get('agencia_nombre', '')} - {row.get('sede_entrega', '')}"
+                            lbl = f"🏢 [Age] {row.get('agencia_nombre', '')} - {row.get('sede_entrega', '')}"
                         else:
-                            lbl = f"📦 [Otros] {str(row.get('observacion', ''))[:30]}"
+                            lbl = f"📦 [Otro] {str(row.get('observacion', ''))[:30]}"
                         
                         if row.get('es_principal'): lbl = "⭐ " + lbl
                         lbl += f" [ID:{row['id_direccion']}]"
@@ -270,7 +295,7 @@ def render_nueva_venta():
                             c_dist, c_ref = st.columns(2)
                             dist = c_dist.text_input("Distrito:")
                             ref = c_ref.text_input("Referencia:")
-                            gps_link = st.text_input("📍 Link GPS (Google Maps):")
+                            gps_link = st.text_input("📍 Link GPS:")
                             obs_extra = st.text_input("Observación:")
                             texto_direccion_final = f"{direcc} - {dist} (Ref: {ref})"
                             
@@ -313,11 +338,16 @@ def render_nueva_venta():
                         with engine.connect() as conn:
                             trans = conn.begin()
                             
-                            # Verificamos de forma segura si la columna macro_categoria se alteró correctamente en DetalleVenta
                             has_macro_col = False
                             try:
                                 conn.execute(text("SELECT macro_categoria FROM DetalleVenta LIMIT 1"))
                                 has_macro_col = True
+                            except: pass
+
+                            has_ubi_col = False
+                            try:
+                                conn.execute(text("SELECT id_ubicacion FROM DetalleVenta LIMIT 1"))
+                                has_ubi_col = True
                             except: pass
 
                             if not usar_guardada and datos_nuevos:
@@ -336,7 +366,14 @@ def render_nueva_venta():
 
                             for item in st.session_state.carrito:
                                 mac_val = item.get('macro_categoria', 'Otros')
-                                if has_macro_col:
+                                id_ubi = item.get('id_ubicacion')
+                                
+                                if has_macro_col and has_ubi_col:
+                                    conn.execute(text("""
+                                        INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario, macro_categoria, id_ubicacion)
+                                        VALUES (:idv, :sku, :desc, :cant, :pu, :sub, :inv, :mac, :idu)
+                                    """), {"idv": id_venta, "sku": item['sku'], "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario'], "mac": mac_val, "idu": id_ubi})
+                                elif has_macro_col:
                                     conn.execute(text("""
                                         INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario, macro_categoria)
                                         VALUES (:idv, :sku, :desc, :cant, :pu, :sub, :inv, :mac)
@@ -348,20 +385,27 @@ def render_nueva_venta():
                                     """), {"idv": id_venta, "sku": item['sku'], "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario']})
                                 
                                 if item['es_inventario']:
+                                    # 1. Descontar Físico Total
                                     res_s = conn.execute(text("UPDATE Variantes SET stock_interno = stock_interno - :c WHERE sku=:s RETURNING stock_interno"),
                                                          {"c": int(item['cantidad']), "s": item['sku']})
                                     nuevo_s = res_s.scalar()
-                                    if nuevo_s <= 0: 
+                                    
+                                    # 2. Descontar Físico de Estante
+                                    if id_ubi is not None:
+                                        conn.execute(text("UPDATE Stock_Ubicaciones SET cantidad = cantidad - :c WHERE sku = :s AND id_ubicacion = :idu"),
+                                                     {"c": int(item['cantidad']), "s": item['sku'], "idu": id_ubi})
+                                    elif nuevo_s <= 0: 
                                         conn.execute(text("UPDATE Variantes SET ubicacion = '' WHERE sku=:s"), {"s": item['sku']})
                                     
+                                    # 3. Guardar Movimiento Histórico
+                                    nota_mov = f"Venta #{id_venta}" + (f" ({item['nombre_ubicacion']})" if item.get('nombre_ubicacion') else "")
                                     conn.execute(text("""
                                         INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota, id_cliente) 
                                         VALUES (:sku, 'VENTA', :c, (SELECT stock_interno + :c FROM Variantes WHERE sku=:sku), :nue, :nota, :idc)
-                                    """), {"sku": item['sku'], "c": int(item['cantidad']), "nue": nuevo_s, "nota": f"Venta #{id_venta}", "idc": id_cliente})
+                                    """), {"sku": item['sku'], "c": int(item['cantidad']), "nue": nuevo_s, "nota": nota_mov, "idc": id_cliente})
                             
                             trans.commit()
                         
-                        # Filtramos los ítems manuales (sku is not None) antes de llamar a WooCommerce
                         skus_vendidos = [item["sku"] for item in st.session_state.carrito if item["sku"] is not None]
                         if skus_vendidos:
                             threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
@@ -381,7 +425,7 @@ def render_nueva_venta():
             else:
                 st.warning("⚠️ Estás registrando una salida de stock (Sin cobro).")
                 motivo_salida = st.selectbox("Motivo:", ["Merma / Dañado", "Regalo / Marketing", "Uso Personal", "Ajuste Inventario"])
-                detalle_motivo = st.text_input("Detalle (Opcional):", placeholder="Ej: Se rompió una luna, obsequio por reclamo...")
+                detalle_motivo = st.text_input("Detalle (Opcional):", placeholder="Ej: Se rompió una luna...")
                 
                 if st.button("📉 CONFIRMAR SALIDA", type="primary"):
                     try:
@@ -390,12 +434,18 @@ def render_nueva_venta():
                             items_procesados = 0
                             for item in st.session_state.carrito:
                                 if item['es_inventario']:
+                                    id_ubi = item.get('id_ubicacion')
                                     res_s = conn.execute(text("UPDATE Variantes SET stock_interno = stock_interno - :c WHERE sku=:s RETURNING stock_interno"),
                                         {"c": int(item['cantidad']), "s": item['sku']})
                                     nuevo_s = res_s.scalar()
-                                    if nuevo_s <= 0: 
+                                    
+                                    if id_ubi is not None:
+                                        conn.execute(text("UPDATE Stock_Ubicaciones SET cantidad = cantidad - :c WHERE sku = :sku AND id_ubicacion = :idu"),
+                                                     {"c": int(item['cantidad']), "sku": item['sku'], "idu": id_ubi})
+                                    elif nuevo_s <= 0: 
                                         conn.execute(text("UPDATE Variantes SET ubicacion = '' WHERE sku=:s"), {"s": item['sku']})
-                                    nota_completa = f"{motivo_salida}" + (f" - {detalle_motivo}" if detalle_motivo else "")
+                                        
+                                    nota_completa = f"{motivo_salida}" + (f" - {detalle_motivo}" if detalle_motivo else "") + (f" (Estante: {item['nombre_ubicacion']})" if item.get('nombre_ubicacion') else "")
                                     conn.execute(text("""
                                             INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota)
                                             VALUES (:sku, 'SALIDA', :c, :ant, :nue, :nota)
@@ -408,9 +458,9 @@ def render_nueva_venta():
                             threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
 
                         if items_procesados > 0:
-                            st.success(f"✅ ¡Salida registrada! ({items_procesados} productos en inventario actualizados)")
+                            st.success(f"✅ ¡Salida registrada! ({items_procesados} productos actualizados)")
                         else:
-                            st.warning("⚠️ El carrito solo tenía ítems manuales/extra; no se descontó inventario físico.")
+                            st.warning("⚠️ El carrito solo tenía ítems manuales; no se descontó inventario físico.")
                             
                         st.session_state.carrito = []
                         time.sleep(1.5)
@@ -449,14 +499,21 @@ def render_gestion_ventas():
     with engine.connect() as conn:
         venta_info = conn.execute(text("SELECT * FROM Ventas WHERE id_venta = :id"), {"id": int(id_venta_sel)}).fetchone()
         
-        # Verificamos si DetalleVenta tiene macro_categoria para renderizarla
         has_mac = False
         try:
             conn.execute(text("SELECT macro_categoria FROM DetalleVenta LIMIT 1"))
             has_mac = True
         except: pass
 
-        if has_mac:
+        has_ubi_col = False
+        try:
+            conn.execute(text("SELECT id_ubicacion FROM DetalleVenta LIMIT 1"))
+            has_ubi_col = True
+        except: pass
+
+        if has_mac and has_ubi_col:
+            detalles = pd.read_sql(text("SELECT sku, macro_categoria as linea, descripcion, cantidad, precio_unitario, subtotal, es_inventario, id_ubicacion FROM DetalleVenta WHERE id_venta = :id"), conn, params={"id": int(id_venta_sel)})
+        elif has_mac:
             detalles = pd.read_sql(text("SELECT sku, macro_categoria as linea, descripcion, cantidad, precio_unitario, subtotal, es_inventario FROM DetalleVenta WHERE id_venta = :id"), conn, params={"id": int(id_venta_sel)})
         else:
             detalles = pd.read_sql(text("SELECT sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario FROM DetalleVenta WHERE id_venta = :id"), conn, params={"id": int(id_venta_sel)})
@@ -465,11 +522,11 @@ def render_gestion_ventas():
     if venta_info.anulado:
         st.error("⚠️ ESTA VENTA SE ENCUENTRA ANULADA.")
     
-    st.dataframe(detalles, use_container_width=True, hide_index=True)
+    st.dataframe(detalles.drop(columns=['id_ubicacion'], errors='ignore'), use_container_width=True, hide_index=True)
     st.caption(f"**Nota de Venta:** {venta_info.nota}")
     
     if not venta_info.anulado:
-        st.warning("Al anular, se devolverá el stock al inventario automáticamente.")
+        st.warning("Al anular, se devolverá el stock a la ubicación física de origen automáticamente.")
         if st.button("🚫 Anular Venta y Devolver Stock", type="primary"):
             with engine.connect() as conn:
                 trans = conn.begin()
@@ -478,9 +535,18 @@ def render_gestion_ventas():
                     
                     for idx, item in detalles.iterrows():
                         if item['es_inventario']:
+                            # Restaurar Stock Global
                             res = conn.execute(text("UPDATE Variantes SET stock_interno = stock_interno + :c WHERE sku = :s RETURNING stock_interno"), 
                                                {"c": int(item['cantidad']), "s": item['sku']})
                             nuevo_stock = res.scalar()
+                            
+                            # Restaurar en el Estante Exacto
+                            if has_ubi_col and pd.notna(item.get('id_ubicacion')):
+                                conn.execute(text("""
+                                    UPDATE Stock_Ubicaciones 
+                                    SET cantidad = cantidad + :c 
+                                    WHERE sku = :sku AND id_ubicacion = :idu
+                                """), {"c": int(item['cantidad']), "sku": item['sku'], "idu": int(item['id_ubicacion'])})
                             
                             conn.execute(text("""
                                 INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota)
@@ -496,7 +562,7 @@ def render_gestion_ventas():
                     if skus_anulados:
                         threading.Thread(target=sync_woo_background, args=(skus_anulados,)).start()
 
-                    st.success("✅ Venta anulada y stock restaurado correctamente.")
+                    st.success("✅ Venta anulada y stock restaurado en su ubicación original.")
                     time.sleep(2)
                     st.rerun()
                 except Exception as e:

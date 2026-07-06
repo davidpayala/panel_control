@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 ruta_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
 load_dotenv(ruta_env)
 
-# 2. AHORA SÍ importamos los módulos de la infraestructura
+# 2. Importamos los módulos de la infraestructura
 import requests
 import random
 import time
@@ -18,35 +18,83 @@ from utils import (
     normalizar_telefono_maestro, 
     verificar_numero_waha, 
     enviar_mensaje_whatsapp, 
-    seleccionar_producto_para_estado, 
     subir_estado_whatsapp,
-    generar_texto_producto_ia, # <-- IMPORT CENTRALIZADO ACTUALIZADO
-    buscar_producto_aleatorio_en_stock
+    generar_texto_producto_ia
 )
 
-def obtener_subcarpetas_activas(config, macro_categoria):
-    activos = []
-    if macro_categoria == 'Lentes':
-        if getattr(config, 'cat_len_nat', True): activos.append('Estilo Natural')
-        if getattr(config, 'cat_len_fan', True): activos.append('Estilo Fantasía')
-        if getattr(config, 'cat_len_acc', True): activos.append('Accesorios')
-    else:
-        if getattr(config, 'cat_pel_nat', True): activos.append('Peluca Natural')
-        if getattr(config, 'cat_pel_fan', True): activos.append('Peluca Fantasía')
-        if getattr(config, 'cat_pel_acc', True): activos.append('Accesorios Pelucas')
-    return activos
+# ==============================================================================
+# 🧠 MOTOR DINÁMICO DE SELECCIÓN DE PRODUCTOS POR NÚMERO DE WHATSAPP
+# ==============================================================================
+
+def buscar_producto_dinamico(conn, col_probabilidad):
+    """
+    Selecciona un producto con stock real basándose 100% en los pesos de probabilidad
+    configurados en el panel para ese número específico (ej. 'prob_msg_principal').
+    """
+    # 1. Buscar qué subcategorías tienen stock Y tienen probabilidad > 0 en este terminal
+    query_pesos = text(f"""
+        SELECT p.categoria, MAX(s.{col_probabilidad}) as prob
+        FROM Variantes v
+        JOIN Productos p ON v.id_producto = p.id_producto
+        JOIN Subcategorias_Sistema s ON p.categoria = s.subcategoria
+        WHERE COALESCE(v.stock_interno, 0) > 0
+          AND p.url_imagen IS NOT NULL AND TRIM(p.url_imagen) != ''
+        GROUP BY p.categoria
+        HAVING COALESCE(MAX(s.{col_probabilidad}), 0) > 0
+    """)
+    
+    categorias_validas = conn.execute(query_pesos).fetchall()
+    
+    if not categorias_validas:
+        return None # No hay stock o todas las probabilidades están en 0% para esta cuenta
+        
+    nombres_cat = [row.categoria for row in categorias_validas]
+    pesos_cat = [row.prob for row in categorias_validas]
+    
+    # 2. Ruleta estadística: elegir subcategoría respetando los porcentajes
+    cat_elegida = random.choices(nombres_cat, weights=pesos_cat, k=1)[0]
+    
+    # 3. Evitar repeticiones en estados de los últimos 14 días
+    condicion_historial = ""
+    if 'est_' in col_probabilidad:
+        condicion_historial = "AND v.sku NOT IN (SELECT sku FROM Historial_Estados WHERE fecha_publicacion > NOW() - INTERVAL '14 days')"
+        
+    query_prod = text(f"""
+        SELECT 
+            p.id_producto, p.marca, p.modelo, p.nombre, p.categoria, p.color_principal,
+            p.url_imagen, v.sku, v.precio, p.macro_categoria
+        FROM Variantes v
+        JOIN Productos p ON v.id_producto = p.id_producto
+        WHERE p.categoria = :cat
+          AND COALESCE(v.stock_interno, 0) > 0
+          AND p.url_imagen IS NOT NULL AND TRIM(p.url_imagen) != ''
+          {condicion_historial}
+        ORDER BY RANDOM()
+        LIMIT 1
+    """)
+    
+    prod = conn.execute(query_prod, {"cat": cat_elegida}).fetchone()
+    
+    # Rescate de emergencia si el historial bloqueó todas las opciones de esa categoría
+    if not prod and 'est_' in col_probabilidad:
+        query_rescate = query_prod.text.replace(condicion_historial, "")
+        prod = conn.execute(text(query_rescate), {"cat": cat_elegida}).fetchone()
+        
+    if prod:
+        return dict(prod._mapping)
+    return None
 
 # ==============================================================================
 # 🚀 MOTOR ORQUESTADOR PRINCIPAL
 # ==============================================================================
 def ejecutar_francotirador():
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Despertando Motor de Marketing Omni-Canal...")
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Despertando Motor de Marketing Multi-Terminal...")
 
     es_modo_test = "--test" in sys.argv or "--now" in sys.argv
 
     if not es_modo_test:
         retraso_minutos = random.randint(1, 55)
-        print(f"⏳ Modo orgánico: Esperando {retraso_minutos} minutos antes de actuar... (Tip: Ejecuta con '--test' para saltar)")
+        print(f"⏳ Modo orgánico: Esperando {retraso_minutos} minutos antes de actuar... (Tip: '--test' para saltar)")
         time.sleep(retraso_minutos * 60)
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⏰ Tiempo de espera terminado. Iniciando evaluación...")
     else:
@@ -65,24 +113,23 @@ def ejecutar_francotirador():
         dentro_de_horario = (config.hora_inicio <= ahora <= config.hora_fin)
 
         # ==================================================================
-        # 🎯 TAREA 1: BOT FRANCOTIRADOR (MENSAJES DIRECTOS)
+        # 🎯 TAREA 1: BOT FRANCOTIRADOR (MENSAJES DIRECTOS POR SESIÓN)
         # ==================================================================
         if config.bot_activo:
             print("\n▶️ INICIANDO TAREA 1: Mensajes Directos (Sniper Bot)")
             if not dentro_de_horario:
                 print(f"⏰ Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
             else:
+                # Orden exacto: 1. Principal, 2. Lentes
                 obreros = [
-                    {"sesion": "default", "macro": "Lentes", "prob": 100},
-                    {"sesion": "principal", "macro": random.choice(["Pelucas", "Lentes"]), "prob": 100}
+                    {"sesion": "principal", "col_prob": "prob_msg_principal", "nombre_vis": "Principal"},
+                    {"sesion": "default", "col_prob": "prob_msg_default", "nombre_vis": "Lentes"}
                 ]
 
                 for obrero in obreros:
                     print(f"\n--------------------------------------------------")
-                    print(f"🤖 Evaluando Obrero de Sesión: '{obrero['sesion']}' ({obrero['macro']})")
+                    print(f"🤖 Evaluando Cuenta: '{obrero['nombre_vis']}'")
                     print(f"--------------------------------------------------")
-
-                    if random.randint(1, 100) > obrero["prob"]: continue
 
                     with engine.connect() as conn:
                         query_conteo = text("""
@@ -94,17 +141,13 @@ def ejecutar_francotirador():
                         enviados_por_mi = conn.execute(query_conteo, {"sess": obrero["sesion"]}).scalar() or 0
 
                         if enviados_por_mi >= config.max_mensajes_dia:
-                            print(f"📈 [Presupuesto Lleno]: Esta línea ya disparó su tope hoy.")
+                            print(f"📈 [Presupuesto Lleno]: {obrero['nombre_vis']} ya alcanzó su tope diario ({config.max_mensajes_dia}).")
                             continue
 
-                        carpetas_ok = obtener_subcarpetas_activas(config, obrero['macro'])
-                        if not carpetas_ok:
-                            print(f"⚠️ Omitido: Todas las subcarpetas de {obrero['macro']} están apagadas.")
-                            continue
-
-                        prod_elegido = buscar_producto_aleatorio_en_stock(conn, obrero['macro'], carpetas_ok)
+                        # --- SELECCIÓN 100% DINÁMICA SEGÚN PROBABILIDADES ---
+                        prod_elegido = buscar_producto_dinamico(conn, obrero['col_prob'])
                         if not prod_elegido:
-                            print(f"⚠️ Omitido: No hay stock físico disponible para la línea '{obrero['macro']}'.")
+                            print(f"⚠️ Omitido: No hay stock o las categorías tienen 0% de probabilidad para {obrero['nombre_vis']}.")
                             continue
 
                         query_clientes = text("""
@@ -125,7 +168,7 @@ def ejecutar_francotirador():
                         clientes_validos = conn.execute(query_clientes).fetchall()
 
                     if not clientes_validos:
-                        print(f"🛡️ Omitido: No quedan clientes en estado 'Sin empezar' elegibles.")
+                        print(f"🛡️ Omitido: No quedan clientes pendientes en estado 'Sin empezar'.")
                         continue
 
                     prospectos = list(clientes_validos)
@@ -147,13 +190,10 @@ def ejecutar_francotirador():
                             nom_ia = cliente.nombre_ia.strip() if cliente.nombre_ia else ""
                             cabecera = f"{saludo} {nom_ia} 👋" if nom_ia else "¡Hola! 👋"
 
-                            print(f"🧠 Redactando copy magnético dinámico (IA) para: {prod_elegido.get('nombre', '')[:25]}...")
-                            
+                            print(f"🧠 Redactando copy magnético (IA) para: {prod_elegido.get('nombre', '')[:25]}...")
                             info_prospecto = {"etiquetas": cliente.etiquetas if cliente.etiquetas else ""}
                             
-                            # <-- LLAMADA REFACTORIZADA PARA MENSAJE DIRECTO (es_estado=False)
                             cuerpo_ia = generar_texto_producto_ia(prod_elegido, es_estado=False, cliente_info=info_prospecto)
-
                             mensaje_completo = f"{cabecera}\n\n{cuerpo_ia}"
 
                             if enviar_mensaje_whatsapp(telefono_final, mensaje_completo, prod_elegido['url_imagen'], session=obrero['sesion']):
@@ -163,7 +203,7 @@ def ejecutar_francotirador():
                                         VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW() - INTERVAL '5 hours', TRUE, :sess)
                                     """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
                                 
-                                print(f"✅ ¡Disparo de {obrero['macro']} enviado a {telefono_final} (Vía: {obrero['sesion']})!")
+                                print(f"✅ ¡Disparo exitoso enviado a {telefono_final} (Vía: {obrero['nombre_vis']})!")
                                 disparo_exitoso = True
                                 break 
                             else:
@@ -175,46 +215,36 @@ def ejecutar_francotirador():
                                 conn_purge.execute(text("UPDATE telefonoscliente SET activo=FALSE WHERE telefono=:t"), {"t": telefono_final})
 
                     if not disparo_exitoso:
-                        print(f"🛑 [Obrero '{obrero['sesion']}'] Fallaron los {prospectos_evaluados} prospectos evaluados.")
+                        print(f"🛑 [{obrero['nombre_vis']}] Fallaron los {prospectos_evaluados} prospectos evaluados.")
         else:
             print("\n⏸️ TAREA 1 OMITIDA: El Sniper Bot está apagado en el Panel.")
 
         # ==================================================================
-        # 📱 TAREA 2: ESTADOS DE WHATSAPP
+        # 📱 TAREA 2: ESTADOS DE WHATSAPP POR NÚMERO (Orden: Principal -> Lentes)
         # ==================================================================
-        if getattr(config, 'estados_activo', False):
-            print("\n▶️ INICIANDO TAREA 2: Publicación de Estados en WhatsApp")
-            if not dentro_de_horario:
-                print(f"⏰ Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
-            else:
-                prob_nat = getattr(config, 'prob_natural', 34)
-                prob_fan = getattr(config, 'prob_fantasia', 33)
-                prob_acc = getattr(config, 'prob_accesorios', 33)
-
-                prob_lentes_roll = getattr(config, 'prob_sesion_lentes', 100)
-                if random.randint(1, 100) <= prob_lentes_roll:
-                    producto_lentes = seleccionar_producto_para_estado(prob_nat, prob_fan, prob_acc, macro_objetivo='Lentes')
-                    if producto_lentes:
-                        # <-- LLAMADA REFACTORIZADA PARA ESTADO (es_estado=True)
-                        texto_ia_lentes = generar_texto_producto_ia(producto_lentes, es_estado=True)
-                        exito, msg_resp = subir_estado_whatsapp("default", texto_ia_lentes, producto_lentes['imagen'])
-                        if exito:
-                            with engine.begin() as conn_est:
-                                conn_est.execute(text("INSERT INTO Historial_Estados (sku) VALUES (:sku)"), {"sku": producto_lentes['sku']})
-                            print(f"  ✅ ¡Estado de Lentes publicado en 'default'!")
-
-                prob_master_roll = getattr(config, 'prob_sesion_principal', 100)
-                if random.randint(1, 100) <= prob_master_roll:
-                    macro_elegida_master = random.choices(['Pelucas', 'Lentes'], weights=[60, 40], k=1)[0]
-                    producto_master = seleccionar_producto_para_estado(prob_nat, prob_fan, prob_acc, macro_objetivo=macro_elegida_master)
-                    if producto_master:
-                        # <-- LLAMADA REFACTORIZADA PARA ESTADO (es_estado=True)
-                        texto_ia_master = generar_texto_producto_ia(producto_master, es_estado=True)
-                        exito, msg_resp = subir_estado_whatsapp("principal", texto_ia_master, producto_master['imagen'])
-                        if exito:
-                            with engine.begin() as conn_est2:
-                                conn_est2.execute(text("INSERT INTO Historial_Estados (sku) VALUES (:sku)"), {"sku": producto_master['sku']})
-                            print(f"  ✅ ¡Estado de {macro_elegida_master} publicado en 'principal'!")
+        print("\n▶️ INICIANDO TAREA 2: Publicación de Estados en WhatsApp")
+        if not dentro_de_horario:
+            print(f"⏰ Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
+        else:
+            cuentas_estados = [
+                {"sesion": "principal", "col_prob": "prob_est_principal", "nombre_vis": "Principal"},
+                {"sesion": "default", "col_prob": "prob_est_default", "nombre_vis": "Lentes"}
+            ]
+            
+            for cuenta in cuentas_estados:
+                print(f"📡 Evaluando Estados para cuenta: '{cuenta['nombre_vis']}'...")
+                with engine.connect() as conn:
+                    prod_est = buscar_producto_dinamico(conn, cuenta['col_prob'])
+                    
+                if prod_est:
+                    texto_ia = generar_texto_producto_ia(prod_est, es_estado=True)
+                    exito, _ = subir_estado_whatsapp(cuenta['sesion'], texto_ia, prod_est['url_imagen'])
+                    if exito:
+                        with engine.begin() as conn_est:
+                            conn_est.execute(text("INSERT INTO Historial_Estados (sku) VALUES (:sku)"), {"sku": prod_est['sku']})
+                        print(f"  ✅ ¡Estado publicado exitosamente en {cuenta['nombre_vis']}!")
+                else:
+                    print(f"  ⚠️ Omitido: No hay stock o todas las probabilidades están en 0% para {cuenta['nombre_vis']}.")
 
     except Exception as e:
         print(f"🔥 Error catastrófico en la ejecución de marketing: {e}")
