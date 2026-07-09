@@ -23,49 +23,51 @@ from utils import (
 )
 
 # ==============================================================================
-# 🧠 MOTOR DINÁMICO DE SELECCIÓN DE PRODUCTOS POR NÚMERO DE WHATSAPP
+# 🧠 MOTOR BLINDADO DE SELECCIÓN DE PRODUCTOS (Aislamiento de Categorías)
 # ==============================================================================
 
 def buscar_producto_dinamico(conn, col_probabilidad):
     """
-    Selecciona un producto con stock real basándose 100% en los pesos de probabilidad
-    configurados en el panel para ese número específico (ej. 'prob_msg_principal').
+    Selecciona un producto con stock asegurando un doble candado:
+    Coincidencia exacta de Macro-Categoría + Sub-Categoría con probabilidad > 0.
     """
-    # 1. Buscar qué subcategorías tienen stock Y tienen probabilidad > 0 en este terminal
+    # 1. Extraer macro_categoria, subcategoria y probabilidad > 0 (Ignorando mayúsculas/espacios)
     query_pesos = text(f"""
-        SELECT p.categoria, MAX(s.{col_probabilidad}) as prob
+        SELECT TRIM(s.macro_categoria) as macro, TRIM(s.subcategoria) as subcat, MAX(s.{col_probabilidad}) as prob
         FROM Variantes v
         JOIN Productos p ON v.id_producto = p.id_producto
-        JOIN Subcategorias_Sistema s ON p.categoria = s.subcategoria
+        JOIN Subcategorias_Sistema s ON TRIM(p.categoria) ILIKE TRIM(s.subcategoria) 
+                                    AND TRIM(p.macro_categoria) ILIKE TRIM(s.macro_categoria)
         WHERE COALESCE(v.stock_interno, 0) > 0
           AND p.url_imagen IS NOT NULL AND TRIM(p.url_imagen) != ''
-        GROUP BY p.categoria
+        GROUP BY TRIM(s.macro_categoria), TRIM(s.subcategoria)
         HAVING COALESCE(MAX(s.{col_probabilidad}), 0) > 0
     """)
     
     categorias_validas = conn.execute(query_pesos).fetchall()
     
     if not categorias_validas:
-        return None # No hay stock o todas las probabilidades están en 0% para esta cuenta
+        return None 
         
-    nombres_cat = [row.categoria for row in categorias_validas]
-    pesos_cat = [row.prob for row in categorias_validas]
+    opciones = [(row.macro, row.subcat) for row in categorias_validas]
+    pesos = [row.prob for row in categorias_validas]
     
-    # 2. Ruleta estadística: elegir subcategoría respetando los porcentajes
-    cat_elegida = random.choices(nombres_cat, weights=pesos_cat, k=1)[0]
+    eleccion = random.choices(opciones, weights=pesos, k=1)[0]
+    macro_elegida, cat_elegida = eleccion
     
-    # 3. Evitar repeticiones en estados de los últimos 14 días
     condicion_historial = ""
     if 'est_' in col_probabilidad:
         condicion_historial = "AND v.sku NOT IN (SELECT sku FROM Historial_Estados WHERE fecha_publicacion > NOW() - INTERVAL '14 days')"
         
+    # --- INYECCIÓN DE LA COLUMNA URL_TIENDA EN EL SELECT ---
     query_prod = text(f"""
         SELECT 
             p.id_producto, p.marca, p.modelo, p.nombre, p.categoria, p.color_principal,
-            p.url_imagen, v.sku, v.precio, p.macro_categoria
+            p.url_imagen, p.url_tienda, v.sku, v.precio, p.macro_categoria
         FROM Variantes v
         JOIN Productos p ON v.id_producto = p.id_producto
-        WHERE p.categoria = :cat
+        WHERE TRIM(p.categoria) ILIKE :cat
+          AND TRIM(p.macro_categoria) ILIKE :macro
           AND COALESCE(v.stock_interno, 0) > 0
           AND p.url_imagen IS NOT NULL AND TRIM(p.url_imagen) != ''
           {condicion_historial}
@@ -73,17 +75,15 @@ def buscar_producto_dinamico(conn, col_probabilidad):
         LIMIT 1
     """)
     
-    prod = conn.execute(query_prod, {"cat": cat_elegida}).fetchone()
+    prod = conn.execute(query_prod, {"cat": cat_elegida, "macro": macro_elegida}).fetchone()
     
-    # Rescate de emergencia si el historial bloqueó todas las opciones de esa categoría
     if not prod and 'est_' in col_probabilidad:
         query_rescate = query_prod.text.replace(condicion_historial, "")
-        prod = conn.execute(text(query_rescate), {"cat": cat_elegida}).fetchone()
+        prod = conn.execute(text(query_rescate), {"cat": cat_elegida, "macro": macro_elegida}).fetchone()
         
     if prod:
         return dict(prod._mapping)
     return None
-
 # ==============================================================================
 # 🚀 MOTOR ORQUESTADOR PRINCIPAL
 # ==============================================================================
@@ -113,14 +113,13 @@ def ejecutar_francotirador():
         dentro_de_horario = (config.hora_inicio <= ahora <= config.hora_fin)
 
         # ==================================================================
-        # 🎯 TAREA 1: BOT FRANCOTIRADOR (MENSAJES DIRECTOS POR SESIÓN)
+        # 🎯 TAREA 1: MENSAJES DIRECTOS (Orden: Principal -> Lentes)
         # ==================================================================
         if config.bot_activo:
             print("\n▶️ INICIANDO TAREA 1: Mensajes Directos (Sniper Bot)")
             if not dentro_de_horario:
                 print(f"⏰ Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
             else:
-                # Orden exacto: 1. Principal, 2. Lentes
                 obreros = [
                     {"sesion": "principal", "col_prob": "prob_msg_principal", "nombre_vis": "Principal"},
                     {"sesion": "default", "col_prob": "prob_msg_default", "nombre_vis": "Lentes"}
@@ -144,10 +143,9 @@ def ejecutar_francotirador():
                             print(f"📈 [Presupuesto Lleno]: {obrero['nombre_vis']} ya alcanzó su tope diario ({config.max_mensajes_dia}).")
                             continue
 
-                        # --- SELECCIÓN 100% DINÁMICA SEGÚN PROBABILIDADES ---
                         prod_elegido = buscar_producto_dinamico(conn, obrero['col_prob'])
                         if not prod_elegido:
-                            print(f"⚠️ Omitido: No hay stock o las categorías tienen 0% de probabilidad para {obrero['nombre_vis']}.")
+                            print(f"⚠️ Omitido: No hay stock o todas las categorías tienen 0% de probabilidad en {obrero['nombre_vis']}.")
                             continue
 
                         query_clientes = text("""
@@ -220,7 +218,7 @@ def ejecutar_francotirador():
             print("\n⏸️ TAREA 1 OMITIDA: El Sniper Bot está apagado en el Panel.")
 
         # ==================================================================
-        # 📱 TAREA 2: ESTADOS DE WHATSAPP POR NÚMERO (Orden: Principal -> Lentes)
+        # 📱 TAREA 2: ESTADOS DE WHATSAPP (Orden: Principal -> Lentes)
         # ==================================================================
         print("\n▶️ INICIANDO TAREA 2: Publicación de Estados en WhatsApp")
         if not dentro_de_horario:

@@ -39,6 +39,24 @@ def inicializar_tabla_bot():
     except Exception:
         pass
 
+def mostrar_indicador_suma(df, col_pri, col_len):
+    """Muestra un indicador visual en vivo de la suma de porcentajes"""
+    suma_pri = df[col_pri].sum()
+    suma_len = df[col_len].sum()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if suma_pri == 100:
+            st.success(f"🟢 **Suma Principal: {suma_pri}%** (Perfecto)")
+        else:
+            st.warning(f"⚠️ **Suma Principal: {suma_pri}%** (Recomendado: 100%)")
+            
+    with col2:
+        if suma_len == 100:
+            st.success(f"🟢 **Suma Lentes: {suma_len}%** (Perfecto)")
+        else:
+            st.warning(f"⚠️ **Suma Lentes: {suma_len}%** (Recomendado: 100%)")
+
 def render_campanas():
     st.title("🎯 Gestión de Campañas y Automatizaciones")
     
@@ -135,7 +153,7 @@ def render_campanas():
     # ==========================================================================
     with tab_mensajes:
         st.subheader("💬 Probabilidad de Envío por Cuenta (Mensajes Directos)")
-        st.caption("Ajusta el peso (0 a 100%) para decidir qué tanto se enviará cada producto en cada número. Si le pones **0%**, ese número jamás enviará mensajes de esa categoría.")
+        st.caption("Ajusta el porcentaje (0 a 100%) de cada producto. Si pones **0%**, ese número jamás enviará mensajes de esa categoría.")
         
         with engine.connect() as conn:
             df_prob_msg = pd.read_sql(text("""
@@ -158,6 +176,10 @@ def render_campanas():
                 key="editor_prob_msg",
                 use_container_width=True
             )
+            
+            # --- INDICADOR EN VIVO DE SUMA ---
+            mostrar_indicador_suma(df_edit_msg, 'prob_msg_principal', 'prob_msg_default')
+            
             if st.button("💾 Guardar Probabilidades de Mensajes", type="primary"):
                 with engine.begin() as conn:
                     for idx, row in df_edit_msg.iterrows():
@@ -166,7 +188,7 @@ def render_campanas():
                             SET prob_msg_principal = :p1, prob_msg_default = :p2 
                             WHERE id = :id
                         """), {"p1": row['prob_msg_principal'], "p2": row['prob_msg_default'], "id": row['id']})
-                st.success("✅ Probabilidades de mensajes directos actualizadas.")
+                st.success("✅ Probabilidades de mensajes directos guardadas correctamente.")
         else:
             st.warning("No hay subcategorías registradas en el sistema.")
 
@@ -175,7 +197,7 @@ def render_campanas():
     # ==========================================================================
     with tab_estados:
         st.subheader("📱 Probabilidades de Contenido para Estados")
-        st.caption("Elige qué tipo de productos subirá cada número a sus historias de WhatsApp. Si pones **0%** en todas las categorías de un número, ese número no subirá estados.")
+        st.caption("Elige qué tipo de productos subirá cada número a sus historias. Si pones **0%** en todo, ese número no subirá estados.")
         
         with engine.connect() as conn:
             df_prob_est = pd.read_sql(text("""
@@ -198,6 +220,10 @@ def render_campanas():
                 key="editor_prob_est",
                 use_container_width=True
             )
+            
+            # --- INDICADOR EN VIVO DE SUMA ---
+            mostrar_indicador_suma(df_edit_est, 'prob_est_principal', 'prob_est_default')
+            
             if st.button("💾 Guardar Probabilidades de Estados", type="primary"):
                 with engine.begin() as conn:
                     for idx, row in df_edit_est.iterrows():
@@ -206,4 +232,4 @@ def render_campanas():
                             SET prob_est_principal = :p1, prob_est_default = :p2 
                             WHERE id = :id
                         """), {"p1": row['prob_est_principal'], "p2": row['prob_est_default'], "id": row['id']})
-                st.success("✅ Probabilidades de estados actualizadas.")
+                st.success("✅ Probabilidades de estados guardadas correctamente.")

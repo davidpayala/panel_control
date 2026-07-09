@@ -368,6 +368,12 @@ def render_nueva_venta():
                                 mac_val = item.get('macro_categoria', 'Otros')
                                 id_ubi = item.get('id_ubicacion')
                                 
+                                # --- CORRECCIÓN: Limpiar NaN generado por Pandas ---
+                                if pd.isna(id_ubi):
+                                    id_ubi = None
+                                else:
+                                    id_ubi = int(id_ubi)
+                                
                                 if has_macro_col and has_ubi_col:
                                     conn.execute(text("""
                                         INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario, macro_categoria, id_ubicacion)
@@ -435,6 +441,12 @@ def render_nueva_venta():
                             for item in st.session_state.carrito:
                                 if item['es_inventario']:
                                     id_ubi = item.get('id_ubicacion')
+                                    
+                                    # --- CORRECCIÓN: Limpiar NaN generado por Pandas ---
+                                    if pd.isna(id_ubi):
+                                        id_ubi = None
+                                    else:
+                                        id_ubi = int(id_ubi)
                                     res_s = conn.execute(text("UPDATE Variantes SET stock_interno = stock_interno - :c WHERE sku=:s RETURNING stock_interno"),
                                         {"c": int(item['cantidad']), "s": item['sku']})
                                     nuevo_s = res_s.scalar()

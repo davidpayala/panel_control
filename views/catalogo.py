@@ -29,6 +29,19 @@ def render_catalogo():
 
     st.divider()
 
+    # --- CARGAR JERARQUÍA DESDE LA BASE DE DATOS MAESTRA ---
+    with engine.connect() as conn:
+        try:
+            df_cat = pd.read_sql("SELECT DISTINCT macro_categoria, subcategoria FROM Subcategorias_Sistema", conn)
+            if not df_cat.empty:
+                mapa_cat = df_cat.groupby('macro_categoria')['subcategoria'].apply(list).to_dict()
+            else:
+                mapa_cat = {"Lentes": ["General"], "Pelucas": ["General"]}
+        except Exception:
+            mapa_cat = {"Lentes": ["Estilo Natural", "Estilo Fantasía", "Accesorios"], "Pelucas": ["Peluca Natural", "Peluca Fantasía", "Accesorios Pelucas"]}
+            
+    macros_disponibles = list(mapa_cat.keys())
+
     # TABS PARA ORGANIZAR MEJOR
     tab_gestion, tab_marketing = st.tabs(["🛠️ Gestión de Inventario", "📢 Marketing & Feed Meta"])
 
@@ -48,10 +61,13 @@ def render_catalogo():
         # MODO 1: CREAR NUEVO
         # ------------------------------------------------------------------------------
         if modo_catalogo == "🌱 Crear Nuevo":
-            tipo_creacion = st.selectbox("Tipo de Creación:", 
-                                            ["Medida Nueva (Hijo) para Producto Existente", 
-                                             "Producto Nuevo (Marca/Color Nuevo)"])
+            tipo_creacion = st.selectbox("Tipo de Creación:", [
+                "Medida Nueva (Hijo) para Producto Existente", 
+                "Producto Nuevo (Marca/Color Nuevo)",
+                "🐑 Duplicar Producto Existente (Clonar Padre e Hijos)"
+            ])
             
+            # --- OPCIÓN A: AGREGAR MEDIDA A PRODUCTO EXISTENTE ---
             if "Medida Nueva" in tipo_creacion:
                 with engine.connect() as conn:
                     df_prods = pd.read_sql(text("SELECT id_producto, macro_categoria, categoria, marca, modelo, nombre FROM Productos ORDER BY macro_categoria, marca, modelo, nombre"), conn)
@@ -90,32 +106,134 @@ def render_catalogo():
                                 except Exception as e:
                                     st.error(f"Error al guardar: {e}")
 
-            else:
-                with st.form("form_new_full"):
-                    st.markdown("**1. Definir Jerarquía y Producto**")
-                    col_mac, col_cat, col_col = st.columns(3)
-                    macro_sel = col_mac.selectbox("Línea de Negocio (Macro):", ["Lentes", "Pelucas"])
+            # --- OPCIÓN B: DUPLICAR PRODUCTO EXISTENTE ---
+            elif "Duplicar Producto" in tipo_creacion:
+                with engine.connect() as conn:
+                    # EXTRAEMOS url_tienda
+                    df_prods = pd.read_sql(text("SELECT id_producto, macro_categoria, categoria, marca, modelo, nombre, color_principal, diametro, url_imagen, url_compra, url_tienda FROM Productos ORDER BY macro_categoria, marca, modelo, nombre"), conn)
+                
+                if not df_prods.empty:
+                    st.markdown("### 1. Elige el producto plantilla a clonar")
+                    opciones_prod = df_prods.apply(lambda x: f"[{x['macro_categoria']}] {x['marca']} {x['modelo']} - {x['nombre']} (ID: {x['id_producto']})", axis=1).to_dict()
+                    idx_prod = st.selectbox("Selecciona el Producto Fuente:", options=list(opciones_prod.keys()), format_func=lambda x: opciones_prod[x])
+                    src_prod = df_prods.iloc[idx_prod]
+                    id_src = int(src_prod['id_producto'])
                     
-                    # --- CORRECCIÓN DE SUB-CATEGORÍAS EN CREACIÓN ---
-                    if macro_sel == "Lentes": 
-                        opciones_sub = ["Estilo Natural", "Estilo Fantasía", "Accesorios"]
-                    else: 
-                        opciones_sub = ["Estilo Natural", "Estilo Fantasía", "Accesorios Pelucas"]
+                    with engine.connect() as conn:
+                        df_vars_src = pd.read_sql(text("SELECT sku, medida, precio, precio_rebajado, ubicacion FROM Variantes WHERE id_producto = :id ORDER BY sku ASC"), conn, params={"id": id_src})
+                    
+                    st.info(f"💡 El producto original tiene **{len(df_vars_src)} variante(s)** registradas. Se clonarán automáticamente con sus precios y medidas.")
+                    
+                    col_mac_out, col_cat_out = st.columns(2)
+                    idx_mac = macros_disponibles.index(src_prod['macro_categoria']) if src_prod['macro_categoria'] in macros_disponibles else 0
+                    n_macro = col_mac_out.selectbox("Línea de Negocio (Macro):", macros_disponibles, index=idx_mac)
+                    
+                    opts_sub = mapa_cat.get(n_macro, ["General"])
+                    idx_cat = opts_sub.index(src_prod['categoria']) if src_prod['categoria'] in opts_sub else 0
+                    n_cat = col_cat_out.selectbox("Subcategoría:", opts_sub, index=idx_cat)
 
-                    cat_sel = col_cat.selectbox("Subcategoría:", opciones_sub)
+                    with st.form("form_duplicar_prod"):
+                        st.markdown("### 2. Modifica los datos que diferencian al nuevo hermano")
+                        col_col, c1, c2 = st.columns(3)
+                        idx_col = COLORES_OFICIALES.index(src_prod['color_principal']) if src_prod['color_principal'] in COLORES_OFICIALES else 0
+                        n_color = col_col.selectbox("Color Filtro (Base):", COLORES_OFICIALES, index=idx_col)
+                        n_marca = c1.text_input("Marca:", value=src_prod['marca'])
+                        n_modelo = c2.text_input("Modelo:", value=src_prod['modelo'])
+                        
+                        n_nombre = st.text_input("Nuevo Nombre/Tono (¡Es lo principal a cambiar!):", value=f"{src_prod['nombre']} (Copia)")
+
+                        c_dia, c_url1 = st.columns(2)
+                        val_dia = float(src_prod['diametro']) if src_prod['diametro'] else 0.0
+                        n_diametro = c_dia.number_input("Diámetro / Largo (mm/cm):", value=val_dia, step=0.1, format="%.1f")
+                        n_url_img = c_url1.text_input("URL Imagen del Nuevo Producto:", value=src_prod['url_imagen'] or "")
+                        
+                        c_ub1, c_ub2 = st.columns(2)
+                        n_url_buy = c_ub1.text_input("URL Compra (Proveedor):", value=src_prod['url_compra'] or "")
+                        n_url_tienda = c_ub2.text_input("URL WP (Tienda Web):", value=src_prod.get('url_tienda') or "", help="Enlace final en tu WordPress (dejar vacío si quieres que la IA arme uno genérico)")
+
+                        st.markdown("### 3. Asigna Nuevos SKUs a las Variantes Clonadas")
+                        
+                        new_vars_data = []
+                        for i, row_v in df_vars_src.iterrows():
+                            st.markdown(f"**🏷️ Variante #{i+1} (Medida original: `{row_v['medida']}` | SKU original: `{row_v['sku']}`)**")
+                            cv1, cv2, cv3, cv4 = st.columns(4)
+                            v_sku = cv1.text_input(f"Nuevo SKU #{i+1}:", value=f"{row_v['sku']}-CLON", key=f"dup_sku_{i}")
+                            v_med = cv2.text_input(f"Medida #{i+1}:", value=str(row_v['medida'] or "0.00"), key=f"dup_med_{i}")
+                            v_pre = cv3.number_input(f"Precio #{i+1}:", value=float(row_v['precio'] or 0.0), key=f"dup_pre_{i}")
+                            v_ubi = cv4.text_input(f"Ubicación #{i+1}:", value=str(row_v['ubicacion'] or ""), key=f"dup_ubi_{i}")
+                            
+                            new_vars_data.append({
+                                "sku": v_sku, "medida": v_med, "precio": v_pre, 
+                                "precio_rebajado": row_v['precio_rebajado'], "ubicacion": v_ubi
+                            })
+                            st.divider()
+
+                        if st.form_submit_button("🚀 Crear Producto Duplicado Completo", type="primary"):
+                            if not n_marca.strip() or not n_nombre.strip():
+                                st.error("⚠️ Marca y Nombre son obligatorios.")
+                            else:
+                                skus_list = [item['sku'].strip() for item in new_vars_data if item['sku'].strip()]
+                                if len(skus_list) != len(set(skus_list)):
+                                    st.error("⚠️ Los nuevos SKUs que escribiste están repetidos entre sí. Cada variante necesita uno único.")
+                                else:
+                                    try:
+                                        with engine.connect() as conn:
+                                            trans = conn.begin()
+                                            res_p = conn.execute(text("""
+                                                INSERT INTO Productos (marca, modelo, nombre, macro_categoria, categoria, color_principal, diametro, url_imagen, url_compra, url_tienda) 
+                                                VALUES (:m, :mod, :nom, :macro, :cat, :col, :dia, :uimg, :ubuy, :utienda) RETURNING id_producto
+                                            """), {
+                                                "m": n_marca.strip(), "mod": n_modelo.strip(), "nom": n_nombre.strip(), 
+                                                "macro": n_macro, "cat": n_cat, "col": n_color, "dia": str(n_diametro), 
+                                                "uimg": n_url_img.strip() if n_url_img.strip() else None, 
+                                                "ubuy": n_url_buy.strip() if n_url_buy.strip() else None,
+                                                "utienda": n_url_tienda.strip() if n_url_tienda.strip() else None
+                                            })
+                                            new_id = res_p.fetchone()[0]
+
+                                            for v_item in new_vars_data:
+                                                conn.execute(text("""
+                                                    INSERT INTO Variantes (sku, id_producto, nombre_variante, medida, stock_interno, precio, precio_rebajado, ubicacion)
+                                                    VALUES (:sku, :idp, '', :med, 0, :pr, :prr, :ub)
+                                                """), {
+                                                    "sku": v_item['sku'].strip(), "idp": new_id, 
+                                                    "med": v_item['medida'], "pr": v_item['precio'], 
+                                                    "prr": v_item['precio_rebajado'], "ub": v_item['ubicacion']
+                                                })
+                                            trans.commit()
+                                        st.success(f"✅ ¡Producto '{n_nombre}' y sus variante(s) clonados con éxito!")
+                                        time.sleep(1.5)
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error SQL al duplicar: {e}")
+
+            # --- OPCIÓN C: CREAR PRODUCTO TOTALMENTE NUEVO DESDE CERO ---
+            else:
+                st.markdown("**1. Definir Jerarquía Dinámica (Línea de Negocio)**")
+                col_mac, col_cat = st.columns(2)
+                macro_sel = col_mac.selectbox("Línea de Negocio (Macro):", macros_disponibles)
+                
+                opciones_sub = mapa_cat.get(macro_sel, ["General"])
+                cat_sel = col_cat.selectbox("Subcategoría:", opciones_sub)
+
+                with st.form("form_new_full"):
+                    st.markdown("**2. Datos del Producto**")
+                    col_col, c1, c2 = st.columns(3)
                     color_prin = col_col.selectbox("Color Filtro (Base):", COLORES_OFICIALES)
-
-                    c1, c2, c3 = st.columns(3)
                     marca = c1.text_input("Marca:", placeholder="Ej: Freshlady, Pelucat")
                     modelo = c2.text_input("Modelo:", placeholder="Ej: Sharingan, Bob")
-                    nombre_prod = c3.text_input("Nombre Tono/Estilo:", placeholder="Ej: Gris Intenso")
+                    
+                    nombre_prod = st.text_input("Nombre Tono/Estilo:", placeholder="Ej: Gris Intenso")
 
                     c_dia, c_url1 = st.columns(2)
                     diametro = c_dia.number_input("Diámetro / Largo (mm/cm):", min_value=0.0, step=0.1, format="%.1f")
                     url_img = c_url1.text_input("URL Imagen (Foto):")
-                    url_buy = st.text_input("URL Compra (Importación):")
+                    
+                    c_ub1, c_ub2 = st.columns(2)
+                    url_buy = c_ub1.text_input("URL Compra (Importación):")
+                    url_tienda = c_ub2.text_input("URL WP (Tienda Web):", help="Enlace final en tu WordPress (dejar vacío para auto-generar por SKU)")
 
-                    st.markdown("**2. Crear Primera Variante (Ej: Plano / Estándar)**")
+                    st.markdown("**3. Crear Primera Variante (Ej: Plano / Estándar)**")
                     c4, c5, c6 = st.columns(3)
                     sku_1 = c4.text_input("SKU Variante:")
                     medida_1 = c5.text_input("Medida / Talla:", value="0.00")
@@ -130,12 +248,12 @@ def render_catalogo():
                                 with engine.connect() as conn:
                                     trans = conn.begin()
                                     res_p = conn.execute(text("""
-                                        INSERT INTO Productos (marca, modelo, nombre, macro_categoria, categoria, color_principal, diametro, url_imagen, url_compra) 
-                                        VALUES (:m, :mod, :nom, :macro, :cat, :col, :dia, :uimg, :ubuy) RETURNING id_producto
+                                        INSERT INTO Productos (marca, modelo, nombre, macro_categoria, categoria, color_principal, diametro, url_imagen, url_compra, url_tienda) 
+                                        VALUES (:m, :mod, :nom, :macro, :cat, :col, :dia, :uimg, :ubuy, :utienda) RETURNING id_producto
                                     """), {
                                         "m": marca.strip(), "mod": modelo.strip(), "nom": nombre_prod.strip(), 
                                         "macro": macro_sel, "cat": cat_sel, "col": color_prin, "dia": str(diametro), 
-                                        "uimg": url_img, "ubuy": url_buy
+                                        "uimg": url_img, "ubuy": url_buy, "utienda": url_tienda.strip() if url_tienda.strip() else None
                                     })
                                     new_id = res_p.fetchone()[0]
 
@@ -148,7 +266,7 @@ def render_catalogo():
                             except Exception as e: st.error(f"Error: {e}")
 
         # ------------------------------------------------------------------------------
-        # MODO 2: EDITAR / RENOMBRAR / RECLASIFICAR (¡PERFECTAMENTE UNIFICADO!)
+        # MODO 2: EDITAR / RENOMBRAR / RECLASIFICAR
         # ------------------------------------------------------------------------------
         elif modo_catalogo == "✏️ Editar / Renombrar":
             st.markdown("#### ✏️ Modificar Producto y Reclasificar")
@@ -156,7 +274,7 @@ def render_catalogo():
             
             if sku_edit:
                 with engine.connect() as conn:
-                    # BLINDAJE SQL: Resuelve macro_categoria con CASE WHEN preventivo
+                    # EXTRAEMOS url_tienda EN LA QUERY
                     q_edit = text("""
                         SELECT 
                             v.sku, v.id_producto, v.medida, v.precio, v.precio_rebajado, 
@@ -167,7 +285,7 @@ def render_catalogo():
                                 WHEN p.macro_categoria ILIKE 'peluca%' OR v.sku ILIKE 'WB-%' OR v.sku ILIKE 'WIG-%' THEN 'Pelucas'
                                 ELSE 'Lentes'
                             END AS macro_categoria, 
-                            p.categoria, p.diametro, p.color_principal, p.url_compra,
+                            p.categoria, p.diametro, p.color_principal, p.url_compra, p.url_tienda,
                             p.url_imagen as url_imagen_padre
                         FROM Variantes v 
                         JOIN Productos p ON v.id_producto = p.id_producto 
@@ -190,21 +308,16 @@ def render_catalogo():
                             st.info("Sin foto")
 
                     with col_form:
+                        st.markdown("📦 **Jerarquía y Datos Generales**")
+                        c_mac, c_cat = st.columns(2)
+                        macro_act = curr['macro_categoria'] if curr['macro_categoria'] in macros_disponibles else macros_disponibles[0]
+                        new_macro = c_mac.selectbox("Línea (Macro):", macros_disponibles, index=macros_disponibles.index(macro_act))
+
+                        opts_sub = mapa_cat.get(new_macro, ["General"])
+                        cat_act = curr['categoria'] if curr['categoria'] in opts_sub else opts_sub[0]
+                        new_cat = c_cat.selectbox("Subcategoría:", opts_sub, index=opts_sub.index(cat_act))
+
                         with st.form("form_edit_sku"):
-                            st.markdown("📦 **Jerarquía y Datos Generales**")
-                            c_mac, c_cat = st.columns(2)
-                            macro_act = curr['macro_categoria'] if curr['macro_categoria'] else "Lentes"
-                            new_macro = c_mac.selectbox("Línea (Macro):", ["Lentes", "Pelucas"], index=["Lentes", "Pelucas"].index(macro_act))
-
-                            # --- CORRECCIÓN DE SUB-CATEGORÍAS EN EDICIÓN ---
-                            if new_macro == "Lentes": 
-                                opts_sub = ["Estilo Natural", "Estilo Fantasía", "Accesorios"]
-                            else: 
-                                opts_sub = ["Estilo Natural", "Estilo Fantasía", "Accesorios Pelucas"]
-
-                            cat_act = curr['categoria'] if curr['categoria'] in opts_sub else opts_sub[0]
-                            new_cat = c_cat.selectbox("Subcategoría:", opts_sub, index=opts_sub.index(cat_act))
-
                             c_p1, c_p2, c_p3 = st.columns(3)
                             new_marca = c_p1.text_input("Marca:", value=curr['marca'])
                             new_modelo = c_p2.text_input("Modelo:", value=curr['modelo'])
@@ -213,10 +326,17 @@ def render_catalogo():
                             c_p4, c_p5 = st.columns(2)
                             idx_col = COLORES_OFICIALES.index(curr['color_principal']) if curr['color_principal'] in COLORES_OFICIALES else 0
                             new_color_prin = c_p4.selectbox("Color Filtro:", COLORES_OFICIALES, index=idx_col)
-                            val_dia = float(curr['diametro']) if curr['diametro'] else 0.0
+                            
+                            try:
+                                val_dia = float(curr['diametro']) if curr['diametro'] else 0.0
+                            except ValueError:
+                                val_dia = 0.0
+                            
                             new_diametro = c_p5.number_input("Diámetro/Largo:", value=val_dia, step=0.1, format="%.1f")
-
-                            new_url_buy = st.text_input("URL Compra (Proveedor):", value=curr['url_compra'] or "")
+                            
+                            c_ub1, c_ub2 = st.columns(2)
+                            new_url_buy = c_ub1.text_input("URL Compra (Proveedor):", value=curr['url_compra'] or "")
+                            new_url_tienda = c_ub2.text_input("URL WP (Tienda Web):", value=curr.get('url_tienda') or "")
 
                             st.divider()
                             st.markdown(f"🏷️ **Datos de Variante ({curr['sku']})**")
@@ -252,16 +372,19 @@ def render_catalogo():
                                             "n_prer": final_rebajado, "uimg_v": new_url_img_v.strip() if new_url_img_v.strip() else None, 
                                             "old_sku": curr['sku']
                                         })
+                                        
+                                        # ACTUALIZACIÓN EN PRODUCTO PADRE CON url_tienda INCLUIDO
                                         conn.execute(text("""
                                             UPDATE Productos 
                                             SET marca=:mar, modelo=:mod, nombre=:nom, macro_categoria=:macro, categoria=:cat, 
-                                                color_principal=:col, diametro=:dia, url_imagen=:uimg_p, url_compra=:ubuy 
+                                                color_principal=:col, diametro=:dia, url_imagen=:uimg_p, url_compra=:ubuy, url_tienda=:utienda 
                                             WHERE id_producto=:idp
                                         """), {
                                             "mar": new_marca, "mod": new_modelo, "nom": new_nombre_prod, "macro": new_macro, 
                                             "cat": new_cat, "col": new_color_prin, "dia": str(new_diametro), 
                                             "uimg_p": new_url_img_p.strip() if new_url_img_p.strip() else None, 
-                                            "ubuy": new_url_buy, "idp": int(curr['id_producto'])
+                                            "ubuy": new_url_buy, "utienda": new_url_tienda.strip() if new_url_tienda.strip() else None, 
+                                            "idp": int(curr['id_producto'])
                                         })
                                         trans.commit()
                                     st.success("✅ ¡Actualizado correctamente!")
@@ -275,7 +398,7 @@ def render_catalogo():
                 sku_to_split = st.text_input("Ingresa el SKU a separar:", placeholder="Ej: NL-ERROR-01")
                 if sku_to_split:
                     with engine.connect() as conn:
-                        res_split = pd.read_sql(text("SELECT v.sku, v.id_producto, p.marca, p.modelo, p.nombre, p.macro_categoria, p.categoria, p.color_principal, p.diametro, p.url_imagen, p.url_compra FROM Variantes v JOIN Productos p ON v.id_producto = p.id_producto WHERE v.sku = :s"), conn, params={"s": sku_to_split})
+                        res_split = pd.read_sql(text("SELECT v.sku, v.id_producto, p.marca, p.modelo, p.nombre, p.macro_categoria, p.categoria, p.color_principal, p.diametro, p.url_imagen, p.url_compra, p.url_tienda FROM Variantes v JOIN Productos p ON v.id_producto = p.id_producto WHERE v.sku = :s"), conn, params={"s": sku_to_split})
                     
                     if not res_split.empty:
                         curr = res_split.iloc[0]
@@ -286,14 +409,24 @@ def render_catalogo():
                             n_modelo = c2.text_input("Nuevo Modelo", value=curr['modelo'])
                             n_nombre = c3.text_input("Nuevo Nombre (Color)", value=curr['nombre']) 
                             
+                            n_url_tienda_split = st.text_input("Nueva URL Tienda WP (Opcional):", value=curr.get('url_tienda') or "")
+
                             if st.form_submit_button("🚀 Separar y Crear Producto"):
                                 if not n_marca or not n_modelo or not n_nombre: st.error("Llenar Marca, Modelo y Nombre.")
                                 else:
                                     try:
                                         with engine.connect() as conn:
                                             trans = conn.begin()
-                                            res_insert = conn.execute(text("INSERT INTO Productos (marca, modelo, nombre, macro_categoria, categoria, color_principal, diametro, url_imagen, url_compra) VALUES (:m, :mod, :nom, :macro, :cat, :col, :dia, :uimg, :ubuy) RETURNING id_producto"), 
-                                                {"m": n_marca, "mod": n_modelo, "nom": n_nombre, "macro": curr['macro_categoria'], "cat": curr['categoria'], "col": curr['color_principal'], "dia": curr['diametro'], "uimg": curr['url_imagen'], "ubuy": curr['url_compra']})
+                                            res_insert = conn.execute(text("""
+                                                INSERT INTO Productos (marca, modelo, nombre, macro_categoria, categoria, color_principal, diametro, url_imagen, url_compra, url_tienda) 
+                                                VALUES (:m, :mod, :nom, :macro, :cat, :col, :dia, :uimg, :ubuy, :utienda) RETURNING id_producto
+                                            """), {
+                                                "m": n_marca, "mod": n_modelo, "nom": n_nombre, 
+                                                "macro": curr['macro_categoria'], "cat": curr['categoria'], 
+                                                "col": curr['color_principal'], "dia": curr['diametro'], 
+                                                "uimg": curr['url_imagen'], "ubuy": curr['url_compra'], 
+                                                "utienda": n_url_tienda_split.strip() if n_url_tienda_split.strip() else None
+                                            })
                                             new_id_producto = res_insert.fetchone()[0]
                                             conn.execute(text("UPDATE Variantes SET id_producto = :new_id WHERE sku = :sku"), {"new_id": new_id_producto, "sku": curr['sku']})
                                             trans.commit()

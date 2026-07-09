@@ -803,8 +803,18 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         """
         texto_reserva = f"✨ ¡Reingresó stock de {titulo_prod}! Adquiérelo directo en https://{tienda_actual} 📲\n\n{cross_selling}"
     else:
-        enlace_compra = f"https://{tienda_actual}/producto/{sku}"
+        # --- NUEVA LÓGICA DE CONDICIONAL PARA EL ENLACE ---
+        enlace_tienda = producto.get('url_tienda')
+        
+        if enlace_tienda and str(enlace_tienda).strip() != "":
+            # Si el campo en la base de datos tiene algo, usa esa URL exacta
+            enlace_compra = str(enlace_tienda).strip()
+        else:
+            # Si el campo está vacío (Null o ""), construye el enlace genérico
+            enlace_compra = f"https://{tienda_actual}/producto/{sku}"
+            
         txt_precio = f"a solo S/ {precio}" if precio else ""
+        # ---------------------------------------------------
         
         prompt = f"""Eres un experto en cierres de ventas por WhatsApp para la marca {tienda_actual}. 
         Tienda Virtual que atiende a clientes de todo el Perú, con más de 10 años de experiencia.
