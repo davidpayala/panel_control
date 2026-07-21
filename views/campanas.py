@@ -5,7 +5,7 @@ from database import engine
 import datetime
 
 def inicializar_tabla_bot():
-    """Asegura que la tabla base y las columnas de probabilidad por número existan en BD"""
+    """Asegura que la tabla base y las columnas existan en BD"""
     try:
         with engine.begin() as conn:
             conn.execute(text("""
@@ -17,16 +17,21 @@ def inicializar_tabla_bot():
                     hora_fin TIME DEFAULT '20:00:00',
                     estados_activo BOOLEAN DEFAULT FALSE,
                     prob_sesion_lentes INTEGER DEFAULT 100,
-                    prob_sesion_principal INTEGER DEFAULT 50
+                    prob_sesion_principal INTEGER DEFAULT 50,
+                    prompt_estado TEXT,
+                    prompt_dm TEXT
                 );
             """))
             conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS excluir_publicidad BOOLEAN DEFAULT FALSE"))
             
-            # --- COLUMNAS DE PROBABILIDAD INDEPENDIENTES POR NÚMERO ---
+            # --- COLUMNAS DE SUBCATEGORÍAS ---
             conn.execute(text("ALTER TABLE Subcategorias_Sistema ADD COLUMN IF NOT EXISTS prob_msg_default INTEGER DEFAULT 100"))
             conn.execute(text("ALTER TABLE Subcategorias_Sistema ADD COLUMN IF NOT EXISTS prob_msg_principal INTEGER DEFAULT 100"))
             conn.execute(text("ALTER TABLE Subcategorias_Sistema ADD COLUMN IF NOT EXISTS prob_est_default INTEGER DEFAULT 100"))
             conn.execute(text("ALTER TABLE Subcategorias_Sistema ADD COLUMN IF NOT EXISTS prob_est_principal INTEGER DEFAULT 100"))
+            
+            # --- NUEVA COLUMNA PARA LA IA ---
+            conn.execute(text("ALTER TABLE Subcategorias_Sistema ADD COLUMN IF NOT EXISTS descripcion_ia TEXT"))
             
             # Limpieza de nulos por seguridad
             conn.execute(text("""
@@ -36,8 +41,8 @@ def inicializar_tabla_bot():
                     prob_est_default = COALESCE(prob_est_default, 100),
                     prob_est_principal = COALESCE(prob_est_principal, 100)
             """))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error inicializando BD: {e}")
 
 def mostrar_indicador_suma(df, col_pri, col_len):
     """Muestra un indicador visual en vivo de la suma de porcentajes"""
@@ -62,13 +67,13 @@ def render_campanas():
     
     inicializar_tabla_bot()
     tab_general, tab_mensajes, tab_estados = st.tabs([
-        "📊 1. General y Avance", 
+        "📊 1. General y Subcategorías", 
         "💬 2. Opciones para Mensajes", 
         "📱 3. Opciones para Estados"
     ])
 
     # ==========================================================================
-    # PESTAÑA 1: GENERAL, AVANCE DE DISPARO Y COBERTURA
+    # PESTAÑA 1: GENERAL, AVANCE Y DESCRIPCIONES IA
     # ==========================================================================
     with tab_general:
         st.subheader("🤖 Centro de Mando General")
@@ -76,11 +81,9 @@ def render_campanas():
         with engine.connect() as conn:
             config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
             
-            # 1.1 Avance de disparo (Principal primero, Lentes segundo)
             env_principal = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND session_name = 'principal' AND fecha::date = CURRENT_DATE")).scalar() or 0
             env_lentes = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = 'default' AND fecha::date = CURRENT_DATE")).scalar() or 0
 
-            # 1.2 Avance de cobertura general
             query_avance = text("""
                 WITH enviados_recientes AS (
                     SELECT DISTINCT telefono 
@@ -105,7 +108,6 @@ def render_campanas():
         total_habilitados = a_enviados + b_pendientes
         c_porcentaje = (a_enviados / total_habilitados * 100.0) if total_habilitados > 0 else 0.0
 
-        # --- 1.1 MOSTRAR AVANCE DE DISPARO HOY ---
         col_estado, col_m1, col_m2 = st.columns([1.2, 1, 1])
         with col_estado:
             if config and config.bot_activo: st.success("🟢 **ESTADO: DISPARANDO**")
@@ -115,7 +117,6 @@ def render_campanas():
 
         st.divider()
 
-        # --- 1.2 MOSTRAR AVANCE DE COBERTURA ---
         st.subheader("📈 Avance de Cobertura de Base (Clientes 'Sin empezar')")
         c_rep1, c_rep2, c_rep3 = st.columns(3)
         c_rep1.metric("a) Impactados (Últimos 60 días)", f"{a_enviados} clientes")
@@ -125,14 +126,13 @@ def render_campanas():
         if total_habilitados > 0:
             st.progress(c_porcentaje / 100.0)
         else:
-            st.info("No hay clientes en estado 'Sin empezar' disponibles en la base de datos.")
+            st.info("No hay clientes en estado 'Sin empezar' disponibles.")
         
         st.divider()
 
-        # --- 1.3 PARÁMETROS DE DISPARO ---
         st.subheader("⚙️ Parámetros de Disparo y Horarios")
         with st.form("form_config_bot"):
-            nuevo_estado = st.toggle("Activar Francotirador Automático (Mensajes Directos)", value=config.bot_activo if config else False)
+            nuevo_estado = st.toggle("Activar Francotirador Automático", value=config.bot_activo if config else False)
             st.write("")
             c_max, c_hor1, c_hor2 = st.columns(3)
             nuevo_max = c_max.number_input("📈 Límite diario (Por cada cuenta WSP)", min_value=1, max_value=200, value=config.max_mensajes_dia if config else 10)
@@ -148,12 +148,50 @@ def render_campanas():
                 st.toast("✅ Parámetros guardados exitosamente.")
                 st.rerun()
 
+        st.divider()
+
+        # --- NUEVA SECCIÓN: DESCRIPCIONES PARA LA IA ---
+        st.subheader("📝 Descripciones de Subcategorías para la IA")
+        st.caption("Escribe los beneficios, el tono o el enfoque de ventas para cada subcategoría. La IA leerá esto al redactar.")
+        
+        with engine.connect() as conn:
+            df_desc = pd.read_sql(text("""
+                SELECT id, macro_categoria, subcategoria, descripcion_ia 
+                FROM Subcategorias_Sistema 
+                ORDER BY macro_categoria, subcategoria
+            """), conn)
+            
+        if not df_desc.empty:
+            df_edit_desc = st.data_editor(
+                df_desc,
+                column_config={
+                    "id": None,
+                    "macro_categoria": st.column_config.TextColumn("Línea Mayor", disabled=True),
+                    "subcategoria": st.column_config.TextColumn("Subcategoría", disabled=True),
+                    "descripcion_ia": st.column_config.TextColumn("Enfoque para la IA", help="Escribe los atractivos principales a destacar.")
+                },
+                hide_index=True,
+                key="editor_desc_ia",
+                use_container_width=True
+            )
+            
+            if st.button("💾 Guardar Descripciones de IA", type="primary"):
+                with engine.begin() as conn:
+                    for idx, row in df_edit_desc.iterrows():
+                        desc_val = row['descripcion_ia'] if pd.notna(row['descripcion_ia']) else ""
+                        conn.execute(text("""
+                            UPDATE Subcategorias_Sistema 
+                            SET descripcion_ia = :desc 
+                            WHERE id = :id
+                        """), {"desc": desc_val, "id": row['id']})
+                st.success("✅ Descripciones de IA guardadas correctamente.")
+
     # ==========================================================================
-    # PESTAÑA 2: OPCIONES Y PROBABILIDADES PARA MENSAJES DIRECTOS
+    # PESTAÑA 2: OPCIONES, PROBABILIDADES Y PROMPT PARA MENSAJES DIRECTOS
     # ==========================================================================
     with tab_mensajes:
         st.subheader("💬 Probabilidad de Envío por Cuenta (Mensajes Directos)")
-        st.caption("Ajusta el porcentaje (0 a 100%) de cada producto. Si pones **0%**, ese número jamás enviará mensajes de esa categoría.")
+        st.caption("Ajusta el porcentaje (0 a 100%). Si pones **0%**, ese número jamás enviará mensajes de esa categoría.")
         
         with engine.connect() as conn:
             df_prob_msg = pd.read_sql(text("""
@@ -176,8 +214,6 @@ def render_campanas():
                 key="editor_prob_msg",
                 use_container_width=True
             )
-            
-            # --- INDICADOR EN VIVO DE SUMA ---
             mostrar_indicador_suma(df_edit_msg, 'prob_msg_principal', 'prob_msg_default')
             
             if st.button("💾 Guardar Probabilidades de Mensajes", type="primary"):
@@ -188,16 +224,31 @@ def render_campanas():
                             SET prob_msg_principal = :p1, prob_msg_default = :p2 
                             WHERE id = :id
                         """), {"p1": row['prob_msg_principal'], "p2": row['prob_msg_default'], "id": row['id']})
-                st.success("✅ Probabilidades de mensajes directos guardadas correctamente.")
-        else:
-            st.warning("No hay subcategorías registradas en el sistema.")
+                st.success("✅ Probabilidades guardadas.")
+
+        st.divider()
+
+        # --- PROMPT MENSAJES DIRECTOS ---
+        st.subheader("🧠 Personalidad de IA para Mensajes")
+        val_dm = config.prompt_dm if config and hasattr(config, 'prompt_dm') and config.prompt_dm else "Eres un experto en cierres de ventas por WhatsApp.\nTienda Virtual que atiende a clientes de todo el Perú, con más de 10 años de experiencia."
+        
+        with st.form("form_prompt_dm"):
+            p_dm = st.text_area("Prompt Base para Mensajes Directos (DM):", value=val_dm, height=120)
+            if st.form_submit_button("💾 Guardar Personalidad DM", type="primary"):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE Configuracion_Campanas SET prompt_dm = :pdm"), {"pdm": p_dm})
+                    st.success("✅ ¡Personalidad de Mensajes actualizada!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error al guardar: {e}")
 
     # ==========================================================================
-    # PESTAÑA 3: OPCIONES Y PROBABILIDADES PARA ESTADOS (Limpio)
+    # PESTAÑA 3: OPCIONES, PROBABILIDADES Y PROMPT PARA ESTADOS
     # ==========================================================================
     with tab_estados:
         st.subheader("📱 Probabilidades de Contenido para Estados")
-        st.caption("Elige qué tipo de productos subirá cada número a sus historias. Si pones **0%** en todo, ese número no subirá estados.")
+        st.caption("Elige qué tipo de productos subirá cada número a sus historias.")
         
         with engine.connect() as conn:
             df_prob_est = pd.read_sql(text("""
@@ -220,8 +271,6 @@ def render_campanas():
                 key="editor_prob_est",
                 use_container_width=True
             )
-            
-            # --- INDICADOR EN VIVO DE SUMA ---
             mostrar_indicador_suma(df_edit_est, 'prob_est_principal', 'prob_est_default')
             
             if st.button("💾 Guardar Probabilidades de Estados", type="primary"):
@@ -232,4 +281,21 @@ def render_campanas():
                             SET prob_est_principal = :p1, prob_est_default = :p2 
                             WHERE id = :id
                         """), {"p1": row['prob_est_principal'], "p2": row['prob_est_default'], "id": row['id']})
-                st.success("✅ Probabilidades de estados guardadas correctamente.")
+                st.success("✅ Probabilidades de estados guardadas.")
+
+        st.divider()
+
+        # --- PROMPT ESTADOS ---
+        st.subheader("🧠 Personalidad de IA para Estados")
+        val_estado = config.prompt_estado if config and hasattr(config, 'prompt_estado') and config.prompt_estado else "Eres un copywriter experto en marketing digital.\nTienda que atiende a clientes de todo el Perú, contamos con más de 10 años de experiencia."
+        
+        with st.form("form_prompt_estado"):
+            p_estado = st.text_area("Prompt Base para Estados/Facebook:", value=val_estado, height=120)
+            if st.form_submit_button("💾 Guardar Personalidad Estados", type="primary"):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE Configuracion_Campanas SET prompt_estado = :pe"), {"pe": p_estado})
+                    st.success("✅ ¡Personalidad de Estados actualizada!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error al guardar: {e}")

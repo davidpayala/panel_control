@@ -63,9 +63,11 @@ def buscar_producto_dinamico(conn, col_probabilidad):
     query_prod = text(f"""
         SELECT 
             p.id_producto, p.marca, p.modelo, p.nombre, p.categoria, p.color_principal,
-            p.url_imagen, p.url_tienda, v.sku, v.precio, p.macro_categoria
+            p.url_imagen, p.url_tienda, v.sku, v.precio, p.macro_categoria,
+            s.descripcion_ia as enfoque_ia
         FROM Variantes v
         JOIN Productos p ON v.id_producto = p.id_producto
+        LEFT JOIN Subcategorias_Sistema s ON TRIM(p.categoria) ILIKE TRIM(s.subcategoria)
         WHERE TRIM(p.categoria) ILIKE :cat
           AND TRIM(p.macro_categoria) ILIKE :macro
           AND COALESCE(v.stock_interno, 0) > 0
@@ -84,6 +86,7 @@ def buscar_producto_dinamico(conn, col_probabilidad):
     if prod:
         return dict(prod._mapping)
     return None
+
 # ==============================================================================
 # 🚀 MOTOR ORQUESTADOR PRINCIPAL
 # ==============================================================================
@@ -235,8 +238,14 @@ def ejecutar_francotirador():
                     prod_est = buscar_producto_dinamico(conn, cuenta['col_prob'])
                     
                 if prod_est:
-                    texto_ia = generar_texto_producto_ia(prod_est, es_estado=True)
-                    exito, _ = subir_estado_whatsapp(cuenta['sesion'], texto_ia, prod_est['url_imagen'])
+                    # CORRECCIÓN: Usamos la variable iterativa 'prod_est', no 'producto_lentes'
+                    respuestas_ia = generar_texto_producto_ia(prod_est, es_estado=True)
+                    
+                    texto_wsp = respuestas_ia.get('estado_whatsapp', '')
+                    texto_fb = respuestas_ia.get('post_facebook', '') # ¡Guardado en memoria para usarlo luego en Meta!
+
+                    # CORRECCIÓN: Usamos la cuenta dinámica y el url dinámico
+                    exito, _ = subir_estado_whatsapp(cuenta['sesion'], texto_wsp, prod_est.get('url_imagen', ''))
                     if exito:
                         with engine.begin() as conn_est:
                             conn_est.execute(text("INSERT INTO Historial_Estados (sku) VALUES (:sku)"), {"sku": prod_est['sku']})

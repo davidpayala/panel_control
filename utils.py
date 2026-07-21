@@ -11,6 +11,7 @@ import base64
 from woocommerce import API
 import threading
 import random
+from datetime import datetime
 
 # ==============================================================================
 # CONFIGURACIÓN GENERAL
@@ -290,7 +291,7 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
             "caption": caption
         }
 
-        r = requests.post(url, json=payload, headers=headers, timeout=30)
+        r = requests.post(url, json=payload, headers=headers, timeout=15)
         return r.status_code in [200, 201]
     except Exception as e:
         print(f"Error media: {e}")
@@ -724,18 +725,50 @@ def buscar_producto_aleatorio_en_stock(conn, macro_categoria, subcategorias_perm
 
     return None
 
+def obtener_festividad_cercana():
+    """
+    Calcula si hay una festividad comercial importante en los próximos 20 días en Perú.
+    """
+    hoy = datetime.now().date()
+    
+    festividades = [
+        {"mes": 2, "dia": 14, "nombre": "San Valentín / Día del Amor"},
+        {"mes": 5, "dia": 10, "nombre": "Día de la Madre"}, # Fecha comercial aprox
+        {"mes": 6, "dia": 15, "nombre": "Día del Padre"},   # Fecha comercial aprox
+        {"mes": 7, "dia": 28, "nombre": "Fiestas Patrias de Perú"},
+        {"mes": 10, "dia": 31, "nombre": "Halloween y el Día de la Canción Criolla"},
+        {"mes": 12, "dia": 25, "nombre": "Navidad"},
+        {"mes": 12, "dia": 31, "nombre": "Año Nuevo"}
+    ]
+    
+    for fest in festividades:
+        # Asumimos el año actual para el cálculo
+        fecha_fest = datetime(hoy.year, fest["mes"], fest["dia"]).date()
+        diferencia = (fecha_fest - hoy).days
+        
+        # Si la festividad ya pasó este año, evaluamos el próximo
+        if diferencia < 0:
+            fecha_fest = datetime(hoy.year + 1, fest["mes"], fest["dia"]).date()
+            diferencia = (fecha_fest - hoy).days
+
+        # Si estamos a 20 días o menos de la fecha clave, alertamos a la IA
+        if 0 <= diferencia <= 20:
+            return f"🚨 CONTEXTO DE TEMPORADA OBLIGATORIO: Estamos a {diferencia} días de {fest['nombre']}. Adapta el tono de tu mensaje sutilmente a esta festividad para generar más deseo de compra."
+            
+    return "" # Días normales sin festividades
+
 def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
     """
-    Genera copys persuasivos con IA local (Ollama) unificando Estados y Mensajes Directos (DM).
-    Inyecta promoción cruzada (cross-selling) y enlaces de compra dinámicos según la macro-categoría.
-    Usa 'JSON Mode' para evitar texto conversacional basura ("Claro, aquí tienes...").
+    Genera copys persuasivos con IA local (Ollama).
+    Ahora incluye lectura de Prompts Dinámicos, Contexto de Festividades, 
+    Enfoques de Base de Datos y salida doble (WhatsApp + Meta).
     """
-    
+
     ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     modelo_ia = os.getenv("OLLAMA_MODEL", "llama3.1")
     url_ia = f"{ollama_url.rstrip('/')}/api/generate"
     
-    # 1. Resolución infalible de Línea de Negocio y Tienda
+    # 1. Resolución de Línea de Negocio y Tienda
     macro = producto.get('macro_categoria')
     sku = str(producto.get('sku', '')).strip()
     
@@ -753,123 +786,110 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         tipo_articulo = "estos hermosos lentes de contacto"
         cross_selling = f"✨ P.D.: ¡Complementa tu look descubriendo nuestra colección de pelucas importadas en 👉 https://{tienda_cruzada}!"
 
-    # 2. Construcción inteligente del nombre comercial
+    # 2. Construcción inteligente del nombre y enlace
     marca = producto.get('marca') or ''
     modelo = producto.get('modelo') or ''
     nom_color = producto.get('nombre') or 'Producto'
     precio = producto.get('precio', '')
     
-    if marca and modelo:
-        titulo_prod = f"{marca} {modelo} ({nom_color})".strip()
-    else:
-        titulo_prod = str(nom_color)
-
+    titulo_prod = f"{marca} {modelo} ({nom_color})".strip() if marca and modelo else str(nom_color)
     categoria = str(producto.get('categoria', 'General')).lower()
     desc_grupo = producto.get('descripcion_grupo') or ''
 
-    # 3. Enfoques psicológicos por subcategoría
-    if macro == 'Pelucas':
-        enfoque = "Destaca el cambio de look instantáneo, volumen natural de la fibra sedosa, realismo del lace frontal y confianza. Tono glamuroso."
-    elif 'natural' in str(categoria):
-        enfoque = "Habla sobre resaltar la belleza natural, mirada sutil e impactante ideal para el día a día en oficina o universidad."
-    elif 'fantas' in str(categoria) or 'cosplay' in str(categoria):
-        enfoque = "Habla sobre cosplay, eventos de cultura pop, disfraces, anime y transformaciones extremas. Tono vibrante y audaz."
-    else:
-        enfoque = f"Destaca la calidad indiscutible de {tipo_articulo} y su acabado exclusivo."
+    enlace_tienda = producto.get('url_tienda')
+    enlace_compra = str(enlace_tienda).strip() if enlace_tienda and str(enlace_tienda).strip() != "" else f"https://{tienda_actual}/producto/{sku}"
+    txt_precio = f"a solo S/ {precio}" if precio else ""
 
-    # 4. Contexto de intención de compra (CRM)
+    # 3. Contextos Adicionales (Festividades, CRM y Enfoque Psicológico DB)
+    contexto_festividad = obtener_festividad_cercana()
+    
     notas_crm = ""
     if cliente_info and cliente_info.get('etiquetas'):
-        notas_crm = f"\n    INTERESES REGISTRADOS DEL CLIENTE: '{cliente_info['etiquetas']}' (Haz una mención muy natural a esto si guarda relación)."
+        notas_crm = f"\n    INTERESES REGISTRADOS DEL CLIENTE: '{cliente_info['etiquetas']}' (Haz una mención muy natural a esto)."
 
-    # 5. Bifurcación del Prompt: Estado vs Mensaje Directo (CON JSON)
-    if es_estado:
-        prompt = f"""Eres un copywriter experto en marketing digital para {tienda_actual}. 
-        Tienda que atiende a clientes de todo el Perú, contamos con más de 10 años de experiencia.
-        Escribe un texto publicitario corto para un ESTADO DE WHATSAPP listo para publicar.
-        
-        ARTÍCULO: {titulo_prod}
-        ATRACTIVO: {desc_grupo}
-        ENFOQUE: {enfoque}
-        PROMOCIÓN CRUZADA AL FINAL: {cross_selling}
-        
-        REGLAS ESTRICTAS:
-        1. Usa 2 o 3 emojis llamativos.
-        2. Máximo 35 palabras en total.
-        3. Invita a que respondan el estado por mensaje privado.
-        4. RESPONDE OBLIGATORIAMENTE SÓLO EN FORMATO JSON. La clave debe ser "estado".
-        Ejemplo de salida exacta que debes dar:
-        {{"estado": "Tu texto redactado aquí..."}}
-        """
-        texto_reserva = f"✨ ¡Reingresó stock de {titulo_prod}! Adquiérelo directo en https://{tienda_actual} 📲\n\n{cross_selling}"
+    # --- NUEVA CONEXIÓN DINÁMICA: Leemos la descripción que pusiste en el Panel ---
+    enfoque_db = producto.get('enfoque_ia')
+    if enfoque_db and str(enfoque_db).strip() != "":
+        enfoque = f"ENFOQUE OBLIGATORIO: {str(enfoque_db).strip()}"
     else:
-        # --- NUEVA LÓGICA DE CONDICIONAL PARA EL ENLACE ---
-        enlace_tienda = producto.get('url_tienda')
+        enfoque = f"ENFOQUE OBLIGATORIO: Destaca la calidad indiscutible de {tipo_articulo} y su acabado exclusivo."
+    # -----------------------------------------------------------------------------
+
+    # 4. Obtener el Prompt Personalizado desde la Base de Datos
+    prompt_personalizado_estado = ""
+    prompt_personalizado_dm = ""
+    try:
+        with engine.connect() as conn:
+            config = conn.execute(text("SELECT prompt_estado, prompt_dm FROM Configuracion_Campanas LIMIT 1")).fetchone()
+            if config:
+                prompt_personalizado_estado = config.prompt_estado if 'prompt_estado' in config._mapping else ""
+                prompt_personalizado_dm = config.prompt_dm if 'prompt_dm' in config._mapping else ""
+    except Exception as e:
+        pass # Fallback silencioso si las columnas aún no existen
+
+    # 5. Bifurcación del Prompt (BLINDAJE JSON)
+    if es_estado:
+        base_instruct = prompt_personalizado_estado or f"Eres un copywriter experto en marketing digital para {tienda_actual}."
         
-        if enlace_tienda and str(enlace_tienda).strip() != "":
-            # Si el campo en la base de datos tiene algo, usa esa URL exacta
-            enlace_compra = str(enlace_tienda).strip()
-        else:
-            # Si el campo está vacío (Null o ""), construye el enlace genérico
-            enlace_compra = f"https://{tienda_actual}/producto/{sku}"
-            
-        txt_precio = f"a solo S/ {precio}" if precio else ""
-        # ---------------------------------------------------
+        prompt = f"""{base_instruct}
         
-        prompt = f"""Eres un experto en cierres de ventas por WhatsApp para la marca {tienda_actual}. 
-        Tienda Virtual que atiende a clientes de todo el Perú, con más de 10 años de experiencia.
-        Redacta un MENSAJE DIRECTO (1 a 1) cálido, magnético y tentador ofreciendo {tipo_articulo}. 
+        DATOS DEL ARTÍCULO: {titulo_prod}
+        ATRACTIVO DEL PRODUCTO: {desc_grupo}
+        {enfoque}
+        PROMOCIÓN CRUZADA A INCLUIR: {cross_selling}
+        {contexto_festividad}
+        
+        REGLA DE SEGURIDAD INQUEBRANTABLE:
+        NO escribas texto conversacional (como "Aquí tienes el texto").
+        DEBES responder ÚNICAMENTE con un objeto JSON válido que contenga estas DOS claves exactas:
+        1. "estado_whatsapp": Un texto corto (max 35 palabras) y explosivo con emojis diseñado para historias de WhatsApp invitando al mensaje directo.
+        2. "post_facebook": Un texto más elaborado y persuasivo (con hashtags y el enlace {enlace_compra}) listo para publicarse en el muro de Facebook/Instagram.
+        """
+        texto_reserva = {
+            "estado_whatsapp": f"✨ ¡Reingresó stock de {titulo_prod}! Adquiérelo directo en https://{tienda_actual} 📲\n\n{cross_selling}",
+            "post_facebook": f"¡Luce increíble con {titulo_prod}! 😍\nEncuéntralo aquí: {enlace_compra}"
+        }
+    else:
+        base_instruct = prompt_personalizado_dm or f"Eres un experto en cierres de ventas por WhatsApp para la marca {tienda_actual}."
+        
+        prompt = f"""{base_instruct}
         
         PRODUCTO: {titulo_prod} {txt_precio}
-        ENLACE DE COMPRA DIRECTO: {enlace_compra}
-        ESTRATEGIA DE PERSUASIÓN: {enfoque}{notas_crm}
+        ENLACE DE COMPRA: {enlace_compra}
+        {notas_crm}
+        {contexto_festividad}
+        ESTRATEGIA DE PERSUASIÓN: {enfoque}
         
-        REGLAS ESTRICTAS:
-        1. NO incluyas saludos iniciales ni despedidas.
-        2. Usa emojis elegantes.
-        3. RESPONDE OBLIGATORIAMENTE SÓLO EN FORMATO JSON. La clave debe ser "mensaje" y debe contener un ARRAY (lista) con 4 párrafos:
-            - Párrafo 1: Presentación del producto y su atractivo.
-            - Párrafo 2: Beneficios y razones para comprarlo ahora.
-            - Párrafo 3: Llamado a la acción (CTA) para hacer clic en el enlace.
-            - Párrafo 4: Promoción cruzada: {cross_selling}
-            
-        Ejemplo de salida exacta que debes dar:
-        {{"mensaje": ["Párrafo 1...", "Párrafo 2...", "Párrafo 3...", "Párrafo 4..."]}}
+        REGLA DE SEGURIDAD INQUEBRANTABLE:
+        NO saludes al principio ni incluyas despedidas. NO uses frases como "Claro, aquí está".
+        RESPONDE OBLIGATORIAMENTE SÓLO EN FORMATO JSON. La clave debe ser "mensaje" y contener un ARRAY de 4 párrafos cortos.
+        Ejemplo: {{"mensaje": ["Párrafo 1", "Párrafo 2", "Párrafo 3", "Párrafo 4 con {cross_selling}"]}}
         """
         texto_reserva = f"¡Mira el hermoso modelo que acaba de reingresar a nuestro almacén!\n\n⭐ **{titulo_prod}** {txt_precio}.\n\nPuedes revisar fotos reales y pedirlo directo aquí:\n👉 {enlace_compra}\n\n{cross_selling}"
 
+    # 6. Petición a Ollama
     try:
-        # Se añade el parámetro "format": "json" para forzar la salida estructurada en Ollama
-        response = requests.post(url_ia, json={"model": modelo_ia, "prompt": prompt, "stream": False, "format": "json"}, timeout=30)
+        response = requests.post(url_ia, json={"model": modelo_ia, "prompt": prompt, "stream": False, "format": "json"}, timeout=15)
         
         if response.status_code == 200:
-            respuesta_cruda = response.json().get("response", "").strip()
+            datos_json = json.loads(response.json().get("response", "").strip())
             
-            # Convertimos la respuesta JSON en un diccionario de Python
-            datos_json = json.loads(respuesta_cruda)
-            
-            # Extraemos y reconstruimos el texto según sea un estado o un DM
             if es_estado:
-                texto_final = datos_json.get("estado", "")
+                # Retornamos el diccionario completo (WhatsApp y Facebook)
+                return {
+                    "estado_whatsapp": datos_json.get("estado_whatsapp", texto_reserva["estado_whatsapp"]),
+                    "post_facebook": datos_json.get("post_facebook", texto_reserva["post_facebook"])
+                }
             else:
                 parrafos = datos_json.get("mensaje", [])
-                if isinstance(parrafos, list):
-                    # Unimos los párrafos de tu array con un doble salto de línea
-                    texto_final = "\n\n".join(parrafos)
-                else:
-                    texto_final = str(parrafos)
-                    
-            if len(texto_final) > 12:
-                return texto_final.strip()
+                texto_final = "\n\n".join(parrafos) if isinstance(parrafos, list) else str(parrafos)
+                return texto_final.strip() if len(texto_final) > 12 else texto_reserva
         else:
-            print(f"   ⚠️ [Aviso IA] Ollama respondió HTTP {response.status_code} para {titulo_prod}.")
-    except json.JSONDecodeError:
-        print(f"   ⚠️ [Aviso IA] La IA no devolvió un JSON válido. Usando variante de rescate.")
+            print(f"   ⚠️ [Aviso IA] Ollama respondió HTTP {response.status_code}.")
     except Exception as e:
-        print(f"   ⚠️ [Aviso IA] No se pudo generar copy con Ollama ({e}). Usando variante de rescate.")
+        print(f"   ⚠️ [Aviso IA] Usando rescate: {e}")
 
     return texto_reserva
-
 # ==============================================================================
 # HERRAMIENTA DE SINCRONIZACIÓN MASIVA GOOGLE
 # ==============================================================================
@@ -1009,7 +1029,7 @@ def subir_estado_whatsapp(session_name, texto, media_url=None):
             "X-Api-Key": WAHA_KEY  
         }
 
-        response = requests.post(endpoint, json=payload, headers=headers)
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=15)
         
         if response.status_code in [200, 201]:
             return True, "Estado subido correctamente a WhatsApp."
