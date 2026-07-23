@@ -1038,3 +1038,29 @@ def subir_estado_whatsapp(session_name, texto, media_url=None):
 
     except Exception as e:
         return False, f"Error interno al conectar con WAHA: {str(e)}"
+
+import requests
+
+def publicar_en_facebook_via_webhook(mensaje, url_imagen, webhook_url):
+    """Sube el post a Facebook delegando la tarea a un Webhook de Make.com"""
+    import requests
+    
+    if not webhook_url or "make.com" not in webhook_url:
+         return False, "La URL del Webhook no parece válida."
+
+    payload = {
+        "mensaje": mensaje,
+        "url_imagen": url_imagen
+    }
+    
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        
+        # Make.com devuelve 200 y el texto "Accepted" si todo va bien
+        if response.status_code == 200:
+            return True, response.text
+        else:
+            print(f"❌ Error enviando webhook: {response.text}")
+            return False, response.text
+    except Exception as e:
+        return False, str(e)
