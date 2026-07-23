@@ -53,31 +53,32 @@ def render_campanas():
     with engine.connect() as conn:
         config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
         
-        # Consultas de Reportes Diarios
+        # 1. Consultas de Mensajes DMs
         env_principal = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND session_name = 'principal' AND fecha::date = CURRENT_DATE")).scalar() or 0
         env_lentes = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = 'default' AND fecha::date = CURRENT_DATE")).scalar() or 0
 
-        # Conteo de Estados WSP publicados hoy
+        # 2. Conteo Desglosado de Estados WSP hoy
         query_est_hoy = text("""
-            SELECT COUNT(*) 
+            SELECT COALESCE(session_name, 'principal') as sesion, COUNT(*) as total
             FROM Historial_Estados 
-            WHERE COALESCE(fecha_publicacion, NOW())::date = CURRENT_DATE
+            WHERE fecha_publicacion::date = CURRENT_DATE
+            GROUP BY COALESCE(session_name, 'principal')
         """)
-        estados_hoy = conn.execute(query_est_hoy).scalar() or 0
+        est_counts = {row.sesion: row.total for row in conn.execute(query_est_hoy).fetchall()}
 
-        # Conteo de Publicaciones FB realizadas hoy
+        # 3. Conteo Desglosado de Posts Facebook hoy
         query_fb_hoy = text("""
-            SELECT COUNT(*) 
+            SELECT pagina, COUNT(*) as total
             FROM Historial_Facebook 
             WHERE fecha::date = CURRENT_DATE
+            GROUP BY pagina
         """)
-        fb_posts_hoy = conn.execute(query_fb_hoy).scalar() or 0
+        fb_counts = {row.pagina: row.total for row in conn.execute(query_fb_hoy).fetchall()}
 
-        # Avance de Cobertura Base Clientes
+        # 4. Avance de Cobertura Base Clientes
         query_avance = text("""
             WITH enviados_recientes AS (
-                SELECT DISTINCT telefono 
-                FROM mensajes 
+                SELECT DISTINCT telefono FROM mensajes 
                 WHERE tipo = 'SALIENTE_BOT' AND fecha > (NOW() - INTERVAL '60 days')
             )
             SELECT 
@@ -86,8 +87,7 @@ def render_campanas():
             FROM Clientes c
             JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
             LEFT JOIN enviados_recientes er ON t.telefono = er.telefono
-            WHERE c.activo = TRUE 
-              AND COALESCE(c.excluir_publicidad, FALSE) = FALSE
+            WHERE c.activo = TRUE AND COALESCE(c.excluir_publicidad, FALSE) = FALSE
               AND c.estado = 'Sin empezar'
               AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6;
         """)
@@ -103,22 +103,36 @@ def render_campanas():
     # ==========================================================================
     with tab_general:
         # --- 1.1 REPORTE ---
-        st.subheader("📊 1.1 Reporte")
+        st.subheader("📊 1.1 Reporte de Operaciones Diarias")
         
-        col_estado, col_e_hoy, col_fb_hoy = st.columns([1.2, 1, 1])
-        with col_estado:
-            if config and config.bot_activo: st.success("🟢 **BOT ACTIVO Y DISPARANDO**")
-            else: st.error("🔴 **BOT APAGADO**")
-        with col_e_hoy:
-            st.metric("📱 Estados WSP Hoy", f"{estados_hoy} historias")
-        with col_fb_hoy:
-            st.metric("📘 Posts Facebook Hoy", f"{fb_posts_hoy} publicaciones")
+        if config and config.bot_activo: 
+            st.success("🟢 **ESTADO GLOBAL: BOT ACTIVO Y DISPARANDO**")
+        else: 
+            st.error("🔴 **ESTADO GLOBAL: BOT APAGADO**")
 
+        st.write("")
+        st.markdown("**📱 Estados de WhatsApp Publicados Hoy**")
+        c_e1, c_e2, c_e3 = st.columns(3)
+        c_e1.metric("Cuenta Principal", est_counts.get('principal', 0))
+        c_e2.metric("Cuenta Lentes", est_counts.get('default', 0))
+        c_e3.metric("Total Estados", sum(est_counts.values()))
+
+        st.write("")
+        st.markdown("**📘 Publicaciones en Facebook Hoy**")
+        c_f1, c_f2, c_f3, c_f4 = st.columns(4)
+        c_f1.metric("Pág. General", fb_counts.get('General', 0))
+        c_f2.metric("Pág. Pelucas", fb_counts.get('Pelucas', 0))
+        c_f3.metric("Pág. Lentes", fb_counts.get('Lentes', 0))
+        c_f4.metric("Total FB", sum(fb_counts.values()))
+
+        st.write("")
+        st.markdown("**📨 Mensajes Directos (DMs) Enviados Hoy**")
         c_m1, c_m2 = st.columns(2)
-        with c_m1: st.metric("📨 Avance DMs (Principal)", f"{env_principal} / {config.max_mensajes_dia if config else 10}")
-        with c_m2: st.metric("📨 Avance DMs (Lentes)", f"{env_lentes} / {config.max_mensajes_dia if config else 10}")
+        c_m1.metric("Avance DMs (Principal)", f"{env_principal} / {config.max_mensajes_dia if config else 10}")
+        c_m2.metric("Avance DMs (Lentes)", f"{env_lentes} / {config.max_mensajes_dia if config else 10}")
 
-        st.caption("📈 Avance de Cobertura de Mensajes Directos (Clientes 'Sin empezar')")
+        st.write("")
+        st.caption("📈 Cobertura de la Base de Datos (Clientes en estado 'Sin empezar')")
         c_rep1, c_rep2, c_rep3 = st.columns(3)
         c_rep1.metric("Impactados (Últ. 60 días)", f"{a_enviados} clientes")
         c_rep2.metric("En Cola (Pendientes)", f"{b_pendientes} clientes")

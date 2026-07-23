@@ -280,8 +280,10 @@ def ejecutar_francotirador():
                     exito, _ = subir_estado_whatsapp(cuenta['sesion'], texto_wsp, prod_est.get('url_imagen', ''))
                     if exito:
                         with engine.begin() as conn_est:
-                            conn_est.execute(text("INSERT INTO Historial_Estados (sku) VALUES (:sku)"), {"sku": prod_est['sku']})
-                        print(f"  ✅ ¡Estado publicado exitosamente en {cuenta['nombre_vis']}!")
+                            conn_est.execute(text("""
+                                INSERT INTO Historial_Estados (sku, session_name, fecha_publicacion) 
+                                VALUES (:sku, :sess, NOW())
+                            """), {"sku": prod_est['sku'], "sess": cuenta['sesion']})
                 else:
                     print(f"  ⚠️ Omitido: No hay stock o todas las probabilidades están en 0% para {cuenta['nombre_vis']}.")
 
@@ -299,11 +301,17 @@ def ejecutar_francotirador():
         if not getattr(config, 'fb_activo', False):
             print("\n⏸️ TAREA 3 OMITIDA: Auto-Publicación Facebook está apagada en el Panel.")
         elif not toca_ejecutar_fb:
-            print(f"\n⏳ [TAREA 3 OMITIDA]: Frecuencia de Facebook configurada '{getattr(config, 'intervalo_fb', 'cada 6 horas')}'. (Solo han pasado {int(min_pasados_fb)} min).")
+            print(f"\n⏳ [TAREA 3 OMITIDA]: Frecuencia de FB configurada '{getattr(config, 'intervalo_fb', 'cada 6 horas')}'. (Han pasado {int(min_pasados_fb)} min).")
+        
+        # 👇 ESTA ES LA LÍNEA NUEVA QUE BLOQUEA PUBLICACIONES DE MADRUGADA 👇
+        elif not dentro_de_horario:
+            print(f"\n⏰ TAREA 3 OMITIDA: Fuera de horario comercial para Facebook ({config.hora_inicio} - {config.hora_fin}).")
+        
         else:
             print("\n▶️ INICIANDO TAREA 3: Publicaciones Automáticas Multi-Página de Facebook")
             
             paginas_fb = [
+                {"nombre": "General", "col_prob": "prob_fb_general", "webhook": getattr(config, 'webhook_fb_general', '')},
                 {"nombre": "General", "col_prob": "prob_fb_general", "webhook": getattr(config, 'webhook_fb_general', '')},
                 {"nombre": "Pelucas", "col_prob": "prob_fb_pelucas", "webhook": getattr(config, 'webhook_fb_pelucas', '')},
                 {"nombre": "Lentes", "col_prob": "prob_fb_lentes", "webhook": getattr(config, 'webhook_fb_lentes', '')}
