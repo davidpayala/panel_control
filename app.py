@@ -119,27 +119,111 @@ def main():
         st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100)
         
         # ==========================================
-        # 🚨 LECTOR DE ALERTAS CRÍTICAS (NUEVO)
+        # 🚨 MONITOREO DE WHATSAPP EN TIEMPO REAL
+        # ==========================================
+        try:
+            import requests
+            waha_url = os.getenv("WAHA_URL", "http://localhost:3000")
+            waha_key = os.getenv("WAHA_KEY", "")
+            
+            headers = {"Accept": "application/json"}
+            if waha_key:
+                headers["X-Api-Key"] = waha_key
+                
+            # Hacemos ping directo a WAHA con un timeout corto de 2 segundos
+            res = requests.get(f"{waha_url}/api/sessions?all=true", headers=headers, timeout=2)
+            
+            if res.status_code == 200:
+                sesiones = res.json()
+                for sesion in sesiones:
+                    estado = sesion.get('status')
+                    nombre_sesion = sesion.get('name')
+                    
+                    if estado == "SCAN_QR_CODE":
+                        st.error(f"🚨 **¡WHATSAPP DESVINCULADO!**\n\nLa sesión **{nombre_sesion}** pide código QR. Ve al menú Opciones o a WAHA para escanearlo y reconectar.")
+                    elif estado in ["FAILED", "STOPPED"]:
+                        st.error(f"⚠️ **FALLO DE SESIÓN**\n\nLa sesión **{nombre_sesion}** está colapsada ({estado}). El motor intentará reiniciarla en breve.")
+            else:
+                 st.error("🚨 **ALERTA CRÍTICA**\n\nLa API de WAHA no responde. Revisa el contenedor.")
+        except requests.exceptions.RequestException:
+            # Si lanza excepción, el contenedor de Docker está apagado
+            st.error("🚨 **SISTEMA CAÍDO**\n\nEl contenedor WAHA está apagado o inaccesible.")
+            
+        # ==========================================
+        # 🔔 BANDEJA DE AVISOS DEL SERVIDOR (INBOX)
         # ==========================================
         try:
             with engine.connect() as conn:
-                # Busca alertas críticas registradas en los últimos 30 minutos
-                alerta = conn.execute(text("""
-                    SELECT payload FROM webhook_logs 
+                # Buscamos TODAS las alertas críticas de las últimas 24 horas
+                alertas = conn.execute(text("""
+                    SELECT id, fecha, payload FROM webhook_logs 
                     WHERE event_type = 'ALERTA_CRITICA' 
-                    AND fecha > (NOW() - INTERVAL '30 minutes') 
-                    ORDER BY id DESC LIMIT 1
-                """)).scalar()
+                    AND fecha > (NOW() - INTERVAL '24 hours') 
+                    ORDER BY id DESC
+                """)).fetchall()
                 
-                if alerta:
-                    data_alerta = json.loads(alerta)
-                    st.error(f"🚨 **ALERTA CRÍTICA**\n\n{data_alerta.get('mensaje')}")
-                    if data_alerta.get('sesion'):
-                        st.caption(f"**Sesión afectada:** `{data_alerta.get('sesion')}`")
-                    if data_alerta.get('estado'):
-                        st.caption(f"**Estado actual:** `{data_alerta.get('estado')}`")
+                if alertas:
+                    # Usamos un expander para no saturar visualmente si hay muchas
+                    with st.expander(f"🚨 Alertas del Servidor ({len(alertas)})", expanded=True):
+                        import json
+                        for alerta in alertas:
+                            try:
+                                data_alerta = json.loads(alerta.payload)
+                                mensaje = data_alerta.get('mensaje', 'Aviso del sistema')
+                            except:
+                                mensaje = "Fallo reportado"
+                                
+                            # Formatear la hora (Ej: 24/10 - 03:15 AM)
+                            fecha_f = alerta.fecha.strftime("%d/%m - %I:%M %p") if alerta.fecha else ""
+                            
+                            st.markdown(f"**🗓️ {fecha_f}**")
+                            st.warning(mensaje)
+                            
+                            # Botón de descarte (con Key única usando el ID de la base de datos)
+                            if st.button("✔️ Descartar", key=f"ok_{alerta.id}", use_container_width=True):
+                                with engine.begin() as tx:
+                                    # Al actualizar a 'ALERTA_RESUELTA', desaparece automáticamente del SELECT de arriba
+                                    tx.execute(text(
+                                        "UPDATE webhook_logs SET event_type = 'ALERTA_RESUELTA' WHERE id = :id"
+                                    ), {"id": alerta.id})
+                                st.rerun()
+                                
+                            st.divider() # Línea separadora entre alertas
         except Exception:
             pass
+
+        # ==========================================
+        # 🔄 RADAR DE ACTUALIZACIONES DE WAHA
+        # ==========================================
+        @st.cache_data(ttl=43200) # Revisa silenciosamente solo 1 vez cada 12 horas
+        def verificar_actualizacion_waha(url, key):
+            import requests
+            try:
+                # 1. Consultar la última versión oficial en GitHub
+                gh_res = requests.get("https://api.github.com/repos/devlikeapro/waha/releases/latest", timeout=3)
+                if gh_res.status_code != 200:
+                    return None
+                ultima_version = gh_res.json().get("tag_name", "").replace("v", "")
+                
+                # 2. Consultar la versión instalada en tu servidor
+                headers = {"Accept": "application/json"}
+                if key: headers["X-Api-Key"] = key
+                
+                loc_res = requests.get(f"{url}/api/environment", headers=headers, timeout=2)
+                if loc_res.status_code == 200:
+                    version_local = loc_res.json().get("version", "").replace("v", "")
+                    
+                    # 3. Comparar versiones
+                    if version_local and ultima_version and version_local != ultima_version:
+                        return f"⚠️ **Actualización Disponible**\n\nTienes WAHA `{version_local}` y la última es `{ultima_version}`.\n\nPara actualizar, lanza en tu terminal SSH:\n`sudo docker-compose pull`\n`sudo docker-compose up -d`"
+                
+                return None
+            except:
+                return None # Si no hay internet o falla, ignorar silenciosamente
+
+        alerta_update = verificar_actualizacion_waha(waha_url, waha_key)
+        if alerta_update:
+            st.warning(alerta_update)
         # ==========================================
 
         st.title("Menú K&M")

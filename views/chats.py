@@ -9,6 +9,8 @@ import zipfile
 import io
 import requests
 from datetime import datetime, timedelta
+
+from streamlit.config import cat
 from database import engine 
 import re # Asegurar la importación al inicio del bucle o del archivo
 
@@ -26,14 +28,60 @@ except ImportError:
 def mostrar_resumen_compras_chat(telefono_activo):
     st.markdown("##### 🛍️ Historial de Compras")
     
-    # Llamamos al motor de utils
-    df_compras = obtener_historial_compras(telefono_activo)
-    
-    # Si nos devolvió datos, mostramos la tabla
-    if df_compras is not None:
-        st.dataframe(df_compras, use_container_width=True, hide_index=True)
-    else:
-        st.info("Sin compras previas.")
+    # --- NUEVA CONSULTA DE HISTORIAL ---
+    query = """
+        SELECT v.fecha_venta, d.descripcion as producto, 
+               COALESCE(p.categoria, d.macro_categoria, 'Otros') as categoria, 
+               d.precio_unitario, d.cantidad, d.subtotal
+        FROM Ventas v
+        JOIN DetalleVenta d ON v.id_venta = d.id_venta
+        LEFT JOIN Variantes var ON d.sku = var.sku
+        LEFT JOIN Productos p ON var.id_producto = p.id_producto
+        JOIN Clientes c ON v.id_cliente = c.id_cliente
+        WHERE (c.telefono = :t OR EXISTS (SELECT 1 FROM telefonoscliente tc WHERE tc.id_cliente = c.id_cliente AND tc.telefono = :t))
+          AND v.anulado = FALSE
+        ORDER BY v.fecha_venta DESC
+    """
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text(query), conn, params={"t": str(telefono_activo)})
+            
+        if df.empty:
+            st.info("Sin compras previas.")
+            return
+
+        # Convertir a datetime
+        df['fecha_venta'] = pd.to_datetime(df['fecha_venta'])
+        current_year = datetime.now().year
+        
+        # Separar en año actual y años anteriores
+        df_current = df[df['fecha_venta'].dt.year == current_year]
+        df_past = df[df['fecha_venta'].dt.year < current_year]
+        
+        if not df_current.empty:
+            st.markdown(f"**Detalle del Año Actual ({current_year})**")
+            df_show = df_current[['fecha_venta', 'producto', 'categoria', 'precio_unitario', 'cantidad', 'subtotal']].copy()
+            df_show['fecha_venta'] = df_show['fecha_venta'].dt.strftime('%d/%m/%Y')
+            df_show.rename(columns={
+                'fecha_venta': 'Fecha', 
+                'producto': 'Producto', 
+                'categoria': 'Categoría', 
+                'precio_unitario': 'Precio Unit.', 
+                'cantidad': 'Cant.', 
+                'subtotal': 'Subtotal'
+            }, inplace=True)
+            st.dataframe(df_show, use_container_width=True, hide_index=True)
+            
+        if not df_past.empty:
+            st.markdown("**Resumen de Años Anteriores**")
+            df_past['Año'] = df_past['fecha_venta'].dt.year
+            df_summary = df_past.groupby(['Año', 'categoria'])['subtotal'].sum().reset_index()
+            df_summary.rename(columns={'categoria': 'Categoría', 'subtotal': 'Total Ventas (S/)'}, inplace=True)
+            df_summary = df_summary.sort_values(by=['Año'], ascending=False)
+            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+            
+    except Exception as e:
+        st.error(f"Error al obtener historial: {e}")
 
 # ==========================================
 # 📡 RESOLUTOR API PARA LIDs
@@ -111,9 +159,18 @@ def render_boton_chat(row, cat, chat_actual, cambiar_chat_func):
     icono = "🔴" if c_leidos > 0 else "👤"
     texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
     
+    # --- NUEVO: Indicador visual por tipo de envío ---
+    indicador_envio = ""
+    if 'tipo_envio' in row and pd.notna(row['tipo_envio']):
+        te = str(row['tipo_envio']).upper()
+        if te == 'MOTO': indicador_envio = " 🟢(Moto)"
+        elif te == 'AGENCIA': indicador_envio = " 🔵(Age)"
+        else: indicador_envio = " 🟣(Otro)"
+        
     extra = f" [{row['estado']}]" if cat in ["📁 Otros Estados", "🔴 Mensajes Nuevos"] and pd.notna(row['estado']) else ""
     
-    label = f"{icono} {row['nombre']}{extra}{texto_leidos}"
+    # Inyectamos el indicador_envio al nombre
+    label = f"{icono} {row['nombre']}{indicador_envio}{extra}{texto_leidos}"
     tipo = "primary" if str(chat_actual) == str(c_id) else "secondary"
     st.button(label, key=f"c_{c_id}", use_container_width=True, type=tipo, on_click=cambiar_chat_func, args=(c_id,))
 
@@ -235,6 +292,7 @@ def render_chat():
                         cl.ultima_interaccion,
                         COALESCE(cl.no_leidos, 0) as no_leidos,
                         c.nombre_corto, c.whatsapp_internal_id, c.estado, c.nivel_zombie, c.ultimo_msg_zombie,
+                        (SELECT tipo_envio FROM direcciones d WHERE d.id_cliente = COALESCE(cl.id_cliente, c.id_cliente) AND d.activo = TRUE ORDER BY es_principal DESC, id_direccion DESC LIMIT 1) as tipo_envio,
                         CASE 
                             WHEN c.nombre_corto IS NOT NULL AND c.nombre_corto != '' THEN c.nombre_corto
                             WHEN cl.telefono_contacto IS NOT NULL THEN cl.telefono_contacto
@@ -305,8 +363,10 @@ def render_chat():
                             expandido = (cat == "🔴 Mensajes Nuevos") or chat_activo_aqui or (cat == "💰 Venta realizada")
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
-                                if cat == "🗣️ Conversación":
-                                    for sub in estados_e1:
+                                # Agregamos "💰 Venta realizada" al condicional
+                                if cat in ["🗣️ Conversación", "💰 Venta realizada"]:
+                                    sub_estados = estados_e1 if cat == "🗣️ Conversación" else estados_e2
+                                    for sub in sub_estados:
                                         df_sub = df_cat[df_cat['estado'].str.lower().str.strip() == str(sub).strip().lower()]
                                         if not df_sub.empty:
                                             st.markdown(f"<div style='font-size: 11px; color: #777; margin-top: 10px; margin-bottom: 2px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;'>📌 {sub}</div>", unsafe_allow_html=True)

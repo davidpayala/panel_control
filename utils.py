@@ -827,11 +827,20 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
     except Exception as e:
         pass # Fallback silencioso si las columnas aún no existen
 
-    # 5. Bifurcación del Prompt (BLINDAJE JSON)
+# 5. Bifurcación del Prompt (BLINDAJE JSON Y ANTI-CONFUSIÓN)
+    regla_anti_confusion = f"""
+    REGLA DE ORO DE CATEGORÍA: 
+    Este producto pertenece estrictamente a la línea de: {macro.upper()}.
+    - Si es PELUCAS: Habla exclusivamente de cabello, peinados, cambios de look y volumen.
+    - Si es LENTES: Habla exclusivamente de ojos, miradas, color de iris y cosmética ocular.
+    BAJO NINGUNA CIRCUNSTANCIA hables de cabello si es un lente, ni de ojos si es una peluca.
+    """
+
     if es_estado:
         base_instruct = prompt_personalizado_estado or f"Eres un copywriter experto en marketing digital para {tienda_actual}."
         
         prompt = f"""{base_instruct}
+        {regla_anti_confusion}
         
         DATOS DEL ARTÍCULO: {titulo_prod}
         ATRACTIVO DEL PRODUCTO: {desc_grupo}
@@ -853,6 +862,7 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         base_instruct = prompt_personalizado_dm or f"Eres un experto en cierres de ventas por WhatsApp para la marca {tienda_actual}."
         
         prompt = f"""{base_instruct}
+        {regla_anti_confusion}
         
         PRODUCTO: {titulo_prod} {txt_precio}
         ENLACE DE COMPRA: {enlace_compra}
@@ -860,13 +870,15 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         {contexto_festividad}
         ESTRATEGIA DE PERSUASIÓN: {enfoque}
         
-        REGLA DE SEGURIDAD INQUEBRANTABLE:
-        NO saludes al principio ni incluyas despedidas. NO uses frases como "Claro, aquí está".
-        RESPONDE OBLIGATORIAMENTE SÓLO EN FORMATO JSON. La clave debe ser "mensaje" y contener un ARRAY de 4 párrafos cortos.
-        Ejemplo: {{"mensaje": ["Párrafo 1", "Párrafo 2", "Párrafo 3", "Párrafo 4 con {cross_selling}"]}}
+        REGLAS DE REDACCIÓN INQUEBRANTABLES:
+        1. PROHIBIDO SALUDAR O PRESENTARSE. El sistema ya inserta el saludo automáticamente. JAMÁS inicies diciendo "Hola", "Te envío información", "Qué tal", ni "Aquí tienes".
+        2. VE DIRECTO AL GANCHO. Tu primer párrafo debe atacar directo el deseo del cliente (ej: "¿Buscabas una mirada dramática y profunda?", "Este es el tono más exclusivo de la temporada...").
+        3. RESPONDE OBLIGATORIAMENTE SÓLO EN FORMATO JSON. La clave debe ser "mensaje" y contener un ARRAY de 4 párrafos cortos.
+        
+        Ejemplo EXACTO de la salida esperada:
+        {{"mensaje": ["¡Atrae todas las miradas con el tono más vibrante de la temporada!", "El acabado de {titulo_prod} te dará un nivel de realismo increíble...", "Consíguelo hoy {txt_precio} pidiéndolo directamente aquí: {enlace_compra}", "{cross_selling}"]}}
         """
         texto_reserva = f"¡Mira el hermoso modelo que acaba de reingresar a nuestro almacén!\n\n⭐ **{titulo_prod}** {txt_precio}.\n\nPuedes revisar fotos reales y pedirlo directo aquí:\n👉 {enlace_compra}\n\n{cross_selling}"
-
     # 6. Petición a Ollama
     try:
         response = requests.post(url_ia, json={"model": modelo_ia, "prompt": prompt, "stream": False, "format": "json"}, timeout=15)
@@ -875,7 +887,6 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
             datos_json = json.loads(response.json().get("response", "").strip())
             
             if es_estado:
-                # Retornamos el diccionario completo (WhatsApp y Facebook)
                 return {
                     "estado_whatsapp": datos_json.get("estado_whatsapp", texto_reserva["estado_whatsapp"]),
                     "post_facebook": datos_json.get("post_facebook", texto_reserva["post_facebook"])

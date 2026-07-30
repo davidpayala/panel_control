@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
+from streamlit import config
 from database import engine
 import datetime
 
@@ -226,7 +227,7 @@ def render_campanas():
 
     # ==========================================================================
     # PESTAÑA 2: MENSAJES DIRECTOS
-    # ==========================================================================
+    # ==========================================================================    
     with tab_mensajes:
         st.subheader("💬 Configuración de Mensajes Directos")
         
@@ -234,8 +235,11 @@ def render_campanas():
             col_max, col_freq = st.columns(2)
             nuevo_max = col_max.number_input("📈 Límite diario (Por cuenta)", min_value=1, max_value=200, value=config.max_mensajes_dia if config else 10)
             
-            idx_msg = opciones_frecuencia.index(config.intervalo_mensajes) if config and hasattr(config, 'intervalo_mensajes') and config.intervalo_mensajes in opciones_frecuencia else 0
-            nuevo_int_msg = col_freq.selectbox("⏱️ Control fino de tiempos:", opciones_frecuencia, index=idx_msg, help="Cada cuánto se envía un nuevo mensaje.")
+            # --- NUEVO SELECTOR DE PROBABILIDAD ---
+            val_actual_msg = int(config.intervalo_mensajes) if config and str(config.intervalo_mensajes).isdigit() else 100
+            nuevo_int_msg = col_freq.number_input("🎲 Probabilidad de Envío (Cada 30 min):", 
+                                                min_value=0, max_value=100, value=val_actual_msg, 
+                                                help="100 = Siempre enviará al cumplirse 30 min. 50 = Mandará la mitad de las veces.")
 
             if st.form_submit_button("💾 Guardar Parámetros de Mensajes", type="primary") and config:
                 with engine.begin() as conn_w:
@@ -243,7 +247,7 @@ def render_campanas():
                         UPDATE Configuracion_Campanas 
                         SET max_mensajes_dia = :maxm, intervalo_mensajes = :int_msg 
                         WHERE id = :id
-                    """), {"maxm": nuevo_max, "int_msg": nuevo_int_msg, "id": config.id})
+                    """), {"maxm": nuevo_max, "int_msg": str(nuevo_int_msg), "id": config.id})
                 st.toast("✅ Parámetros de mensajes actualizados.")
                 st.rerun()
 
@@ -290,14 +294,15 @@ def render_campanas():
         st.subheader("📱 Configuración de Estados")
         
         with st.form("form_config_estados"):
-            idx_est = opciones_frecuencia.index(config.intervalo_estados) if config and hasattr(config, 'intervalo_estados') and config.intervalo_estados in opciones_frecuencia else 1
-            nuevo_int_est = st.selectbox("⏱️ Control fino de tiempos para Estados:", opciones_frecuencia, index=idx_est, help="Cada cuánto subirá una nueva historia.")
+            val_actual_est = int(config.intervalo_estados) if config and str(config.intervalo_estados).isdigit() else 100
+            nuevo_int_est = st.number_input("🎲 Probabilidad de Subida (Cada 30 min):", 
+                                          min_value=0, max_value=100, value=val_actual_est,
+                                          help="100 = Sube estado fijo cada media hora. 30 = Poco frecuente.")
 
             if st.form_submit_button("💾 Guardar Tiempos de Estados", type="primary") and config:
                 with engine.begin() as conn_w:
-                    conn_w.execute(text("""
-                        UPDATE Configuracion_Campanas SET intervalo_estados = :int_est WHERE id = :id
-                    """), {"int_est": nuevo_int_est, "id": config.id})
+                    conn_w.execute(text("UPDATE Configuracion_Campanas SET intervalo_estados = :int_est WHERE id = :id"), 
+                                   {"int_est": str(nuevo_int_est), "id": config.id})
                 st.toast("✅ Frecuencia de estados actualizada.")
                 st.rerun()
 
@@ -337,38 +342,32 @@ def render_campanas():
                 st.success("✅ ¡Personalidad de Estados actualizada!")
                 st.rerun()
 
-    # ==========================================================================
-    # PESTAÑA 4: FACEBOOK (Multi-Página vía Make.com)
+# ==========================================================================
+    # PESTAÑA 4: FACEBOOK
     # ==========================================================================
     with tab_fb:
         st.subheader("📘 Configuración Multi-Página de Facebook")
-        
         with st.form("form_config_fb"):
-            st.info("Configura los Webhooks de Make.com para cada una de tus páginas de Facebook.")
             c_activo, c_freq = st.columns([1, 2])
             
             val_activo = config.fb_activo if config and hasattr(config, 'fb_activo') else False
             nuevo_fb_activo = c_activo.toggle("Activar Auto-Publicación FB", value=bool(val_activo))
             
-            idx_fb = opciones_frecuencia.index(config.intervalo_fb) if config and hasattr(config, 'intervalo_fb') and config.intervalo_fb in opciones_frecuencia else 2
-            nuevo_int_fb = c_freq.selectbox("⏱️ Frecuencia de Posteo FB:", opciones_frecuencia, index=idx_fb)
-
+            val_actual_fb = int(getattr(config, 'intervalo_fb', '100')) if str(getattr(config, 'intervalo_fb', '100')).isdigit() else 100
+            nuevo_int_fb = c_freq.number_input("🎲 Probabilidad de Posteo FB (Cada 30 min):", min_value=0, max_value=100, value=val_actual_fb)
+            
             st.markdown("**🔗 Conexiones Webhook (Make.com)**")
             wh_gen = st.text_input("Webhook para FB General:", value=getattr(config, 'webhook_fb_general', ''))
             wh_pel = st.text_input("Webhook para FB Pelucas:", value=getattr(config, 'webhook_fb_pelucas', ''))
             wh_len = st.text_input("Webhook para FB Lentes:", value=getattr(config, 'webhook_fb_lentes', ''))
 
-            if st.form_submit_button("💾 Guardar Configuración Webhooks", type="primary") and config:
+            if st.form_submit_button("💾 Guardar Configuración", type="primary") and config:
                 with engine.begin() as conn_w:
                     conn_w.execute(text("""
                         UPDATE Configuracion_Campanas 
-                        SET fb_activo = :act, intervalo_fb = :int_fb, 
-                            webhook_fb_general = :wg, webhook_fb_pelucas = :wp, webhook_fb_lentes = :wl
+                        SET fb_activo = :act, intervalo_fb = :int_fb
                         WHERE id = :id
-                    """), {
-                        "act": nuevo_fb_activo, "int_fb": nuevo_int_fb, 
-                        "wg": wh_gen, "wp": wh_pel, "wl": wh_len, "id": config.id
-                    })
+                    """), {"act": nuevo_fb_activo, "int_fb": str(nuevo_int_fb), "id": config.id})
                 st.toast("✅ Configuración de Facebook actualizada.")
                 st.rerun()
 
