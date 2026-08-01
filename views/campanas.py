@@ -41,6 +41,17 @@ def mostrar_indicador_suma_fb(df, col_gen, col_pel, col_len):
 def render_campanas():
     st.title("🎯 Gestión de Campañas y Automatizaciones")
     
+    # =====================================================================
+    # 🛠️ AUTO-SANACIÓN DE BASE DE DATOS
+    # Si falta la columna en tu BD, la creará sola para que el bot pueda guardar
+    # =====================================================================
+    try:
+        with engine.begin() as conn_heal:
+            conn_heal.execute(text("ALTER TABLE Historial_Estados ADD COLUMN IF NOT EXISTS session_name VARCHAR(50) DEFAULT 'principal'"))
+            conn_heal.execute(text("ALTER TABLE Historial_Facebook ADD COLUMN IF NOT EXISTS pagina VARCHAR(50) DEFAULT 'General'"))
+    except:
+        pass
+
     tab_general, tab_mensajes, tab_estados, tab_fb = st.tabs([
         "📊 1. General", 
         "💬 2. Mensajes", 
@@ -54,39 +65,39 @@ def render_campanas():
     with engine.connect() as conn:
         config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
         
-        # 1. Consultas de Mensajes DMs (Ajustado a Zona Horaria UTC-5)
+        # 1. Consultas de Mensajes DMs (⚠️ CORREGIDO: Sin doble resta de horas)
+        # Como los mensajes ya se guardan con hora peruana, solo pedimos "fecha::date"
         env_principal = conn.execute(text("""
             SELECT COUNT(*) FROM mensajes 
             WHERE tipo = 'SALIENTE_BOT' AND session_name = 'principal' 
-              AND (fecha - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
+              AND fecha::date = (NOW() - INTERVAL '5 hours')::date
         """)).scalar() or 0
         
         env_lentes = conn.execute(text("""
             SELECT COUNT(*) FROM mensajes 
             WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = 'default' 
-              AND (fecha - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
+              AND fecha::date = (NOW() - INTERVAL '5 hours')::date
         """)).scalar() or 0
 
-        # 2. Conteo Desglosado de Estados WSP hoy (Blindado contra espacios y mayúsculas)
+        # 2. Conteo Desglosado de Estados WSP hoy (Sí requiere resta porque se guardan en NOW() puro)
         query_est_hoy = text("""
             SELECT TRIM(LOWER(COALESCE(session_name, 'principal'))) as sesion, COUNT(*) as total
             FROM Historial_Estados 
             WHERE (fecha_publicacion - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
             GROUP BY 1
         """)
-        # Forzamos la conversión a String e Integer para que Streamlit no se confunda
         est_counts = {str(row[0]): int(row[1]) for row in conn.execute(query_est_hoy).fetchall()}
 
-        # 3. Conteo Desglosado de Posts Facebook hoy (Ajustado a Zona Horaria UTC-5)
+        # 3. Conteo Desglosado de Posts Facebook hoy 
         query_fb_hoy = text("""
-            SELECT pagina, COUNT(*) as total
+            SELECT TRIM(LOWER(COALESCE(pagina, 'general'))) as pagina, COUNT(*) as total
             FROM Historial_Facebook 
             WHERE (fecha - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
-            GROUP BY pagina
+            GROUP BY 1
         """)
-        fb_counts = {row[0]: row[1] for row in conn.execute(query_fb_hoy).fetchall()}
+        fb_counts = {str(row[0]): int(row[1]) for row in conn.execute(query_fb_hoy).fetchall()}
 
-        # 4. Avance de Cobertura Base Clientes (Sin cambios, ya contempla 60 días en general)
+        # 4. Avance de Cobertura Base Clientes
         query_avance = text("""
             WITH enviados_recientes AS (
                 SELECT DISTINCT telefono FROM mensajes 
@@ -113,7 +124,6 @@ def render_campanas():
     # PESTAÑA 1: GENERAL
     # ==========================================================================
     with tab_general:
-        # --- 1.1 REPORTE ---
         st.subheader("📊 1.1 Reporte de Operaciones Diarias")
         
         if config and config.bot_activo: 
@@ -131,11 +141,12 @@ def render_campanas():
         st.write("")
         st.markdown("**📘 Publicaciones en Facebook Hoy**")
         c_f1, c_f2, c_f3, c_f4 = st.columns(4)
-        c_f1.metric("Pág. General", fb_counts.get('General', 0))
-        c_f2.metric("Pág. Pelucas", fb_counts.get('Pelucas', 0))
-        c_f3.metric("Pág. Lentes", fb_counts.get('Lentes', 0))
+        # Usamos las llaves normalizadas en minúsculas (lentes, pelucas, general)
+        c_f1.metric("Pág. General", fb_counts.get('general', 0))
+        c_f2.metric("Pág. Pelucas", fb_counts.get('pelucas', 0))
+        c_f3.metric("Pág. Lentes", fb_counts.get('lentes', 0))
         c_f4.metric("Total FB", sum(fb_counts.values()))
-
+        
         st.write("")
         st.markdown("**📨 Mensajes Directos (DMs) Enviados Hoy**")
         c_m1, c_m2 = st.columns(2)

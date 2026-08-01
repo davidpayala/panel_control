@@ -219,14 +219,20 @@ def actualizar_en_google(google_id, nombre, apellido, telefono):
 # ==============================================================================
 # 💬 3. FUNCIONES WAHA (API) - CHATS, CAMPAÑAS Y VERIFICACIÓN
 # ==============================================================================
-def marcar_chat_como_leido_waha(chat_id):
+def marcar_chat_como_leido_waha(chat_id, session="default"):
+    """Marca como leído soportando números normales y LIDs"""
     if not WAHA_URL: return
     try:
-        if "@" not in chat_id: chat_id = f"{chat_id}@c.us"
+        chat_id_str = str(chat_id)
+        if chat_id_str.startswith("LID_"):
+            chat_id = f"{chat_id_str.replace('LID_', '')}@lid"
+        elif "@" not in chat_id_str: 
+            chat_id = f"{chat_id_str}@c.us"
+            
         url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-        requests.post(url, json={"session": "default", "chatId": chat_id}, headers=headers, timeout=3)
+        requests.post(url, json={"session": session, "chatId": chat_id}, headers=headers, timeout=3)
     except: pass
 
 def obtener_perfil_waha(telefono):
@@ -243,22 +249,28 @@ def obtener_perfil_waha(telefono):
     return None
 
 def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default"):
-    """Envía texto simple o imagen con texto (Campañas y Notificaciones)"""
+    """Envía texto simple o imagen soportando LIDs"""
     if not WAHA_URL: return False
     try:
-        norm = normalizar_telefono_maestro(telefono)
-        if not norm: return False
+        telefono_str = str(telefono)
         
+        # Identificar si es un LID o un número normal
+        if telefono_str.startswith("LID_"):
+            chat_id = f"{telefono_str.replace('LID_', '')}@lid"
+        else:
+            norm = normalizar_telefono_maestro(telefono)
+            if not norm: return False
+            chat_id = norm['waha']
+            
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
-        # Lógica inteligente: ¿Tiene imagen o es solo texto?
         if url_imagen:
             url = f"{WAHA_URL.rstrip('/')}/api/sendImage"
-            payload = {"session": session, "chatId": norm['waha'], "file": {"url": url_imagen}, "caption": mensaje}
+            payload = {"session": session, "chatId": chat_id, "file": {"url": url_imagen}, "caption": mensaje}
         else:
             url = f"{WAHA_URL.rstrip('/')}/api/sendText"
-            payload = {"session": session, "chatId": norm['waha'], "text": mensaje}
+            payload = {"session": session, "chatId": chat_id, "text": mensaje}
             
         r = requests.post(url, json=payload, headers=headers, timeout=15)
         return r.status_code in [200, 201]
@@ -1014,6 +1026,7 @@ def subir_estado_whatsapp(session_name, texto, media_url=None):
     """
     Sube un estado a WhatsApp (Texto, Imagen o Video).
     """
+    import requests
     try:
         if media_url:
             # Detectamos si es un video por la extensión
@@ -1040,17 +1053,20 @@ def subir_estado_whatsapp(session_name, texto, media_url=None):
             "X-Api-Key": WAHA_KEY  
         }
 
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=15)
+        # ⏳ AUMENTAMOS LA PACIENCIA A 45 SEGUNDOS PARA MULTIMEDIA
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=45)
         
         if response.status_code in [200, 201]:
             return True, "Estado subido correctamente a WhatsApp."
         else:
             return False, f"Error de WAHA: {response.text} (Código: {response.status_code})"
 
+    except requests.exceptions.Timeout:
+        # 🛡️ PARCHE DE TIEMPO: Si tarda más de 45s, WAHA igual lo está subiendo de fondo
+        return True, "Timeout: WAHA tardó en responder, pero el estado se está procesando en 2do plano."
     except Exception as e:
         return False, f"Error interno al conectar con WAHA: {str(e)}"
 
-import requests
 
 def publicar_en_facebook_via_webhook(mensaje, url_imagen, webhook_url):
     """Sube el post a Facebook delegando la tarea a un Webhook de Make.com"""

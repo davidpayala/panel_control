@@ -85,7 +85,6 @@ def render_clientes():
 
                         try:
                             with engine.begin() as conn:
-                                # --- CORRECCIÓN FILOSÓFICA 1: Usar NULL en vez de '' ---
                                 conn.execute(text("UPDATE clientes SET telefono = NULL WHERE telefono = :t"), {"t": tel_db})
                                 conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t"), {"t": tel_db})
 
@@ -111,7 +110,7 @@ def render_clientes():
 
     # --- BUSCADOR Y EDITOR MASIVO ---
     st.subheader("🔍 Buscador y Editor Masivo")
-    busqueda = st.text_input("Buscar registro...", placeholder="Nombre, Teléfono o Etiquetas")
+    busqueda = st.text_input("Buscar registro...", placeholder="Nombre, Teléfono, LID o Etiquetas")
 
     busqueda_limpia = "".join(filter(str.isdigit, busqueda))
     term_tel = f"%{busqueda_limpia}%" if busqueda_limpia else f"%{busqueda}%"
@@ -119,15 +118,15 @@ def render_clientes():
 
     query = """
         SELECT c.id_cliente, c.nombre_corto, c.estado, c.excluir_publicidad, c.nombre, c.apellido, c.etiquetas, c.google_id, c.whatsapp_internal_id, c.nombre_ia,
-               COALESCE((SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1), c.telefono) as tel_principal,
-               (SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE) as todos_telefonos
+               COALESCE((SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1), c.telefono, c.whatsapp_internal_id) as tel_principal,
+               COALESCE((SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE), c.telefono) as todos_telefonos
         FROM clientes c
         WHERE c.activo = TRUE
     """
     params = {}
     if busqueda:
         query += """ AND (
-            c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.apellido ILIKE :g OR c.etiquetas ILIKE :g OR c.nombre_ia ILIKE :g
+            c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.apellido ILIKE :g OR c.etiquetas ILIKE :g OR c.nombre_ia ILIKE :g OR c.telefono ILIKE :g OR c.whatsapp_internal_id ILIKE :g
             OR EXISTS (SELECT 1 FROM telefonoscliente t WHERE t.id_cliente = c.id_cliente AND t.telefono ILIKE :t AND t.activo = TRUE)
         )"""
         params = {"g": term_gen, "t": term_tel}
@@ -231,7 +230,6 @@ def render_clientes():
                             tel_clean = norm_t['db'] if norm_t else str(new_tel_principal).strip()
 
                             if tel_clean != str(row_full['tel_principal']).strip():
-                                # --- CORRECCIÓN FILOSÓFICA 2: Usar NULL en vez de '' ---
                                 conn.execute(text("UPDATE clientes SET telefono = NULL WHERE telefono = :t AND id_cliente != :id"), {"t": tel_clean, "id": id_cli_sel})
                                 conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t AND id_cliente != :id"), {"t": tel_clean, "id": id_cli_sel})
 
@@ -300,8 +298,6 @@ def render_clientes():
                         if col_t2.button("Hacer Principal", key=f"p_{t_row['id_telefono']}"):
                             with engine.begin() as tx:
                                 tel_obj = t_row['telefono']
-                                
-                                # --- CORRECCIÓN FILOSÓFICA 3: Usar NULL en vez de '' (Aquí explotaba tu botón) ---
                                 tx.execute(text("UPDATE clientes SET telefono = NULL WHERE telefono = :t AND id_cliente != :id"), {"t": tel_obj, "id": id_cli_sel})
                                 tx.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t AND id_cliente != :id"), {"t": tel_obj, "id": id_cli_sel})
                                 
@@ -513,12 +509,17 @@ def render_clientes():
     with st.expander("⚙️ Opciones Adicionales y Mantenimiento", expanded=False):
         
         st.markdown("#### 🔄 Fusionar Clientes Duplicados")
-        st.info("El número de teléfono del cliente que elimines se guardará como un **teléfono adicional** del cliente que decidas conservar.")
+        st.info("El número de teléfono o identificador LID del cliente que elimines se guardará como un **teléfono adicional** del cliente que decidas conservar.")
         try:
             with engine.connect() as conn:
                 df_fusion = pd.read_sql(text("""
-                    SELECT c.id_cliente, c.nombre_corto, c.whatsapp_internal_id,
-                           (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE LIMIT 1) as tel_prin
+                    SELECT c.id_cliente, c.nombre_corto, c.whatsapp_internal_id, c.telefono,
+                           COALESCE(
+                               (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                               c.telefono,
+                               c.whatsapp_internal_id,
+                               'Sin número'
+                           ) as tel_prin
                     FROM clientes c WHERE c.activo=TRUE ORDER BY c.nombre_corto
                 """), conn)
                 
@@ -526,6 +527,7 @@ def render_clientes():
                     opciones = df_fusion.apply(lambda x: f"{x['nombre_corto']} | {x['tel_prin']} (ID: {x['id_cliente']})", axis=1).tolist()
                     mapa_ids = dict(zip(opciones, df_fusion['id_cliente']))
                     mapa_wids = dict(zip(opciones, df_fusion['whatsapp_internal_id']))
+                    mapa_tels = dict(zip(opciones, df_fusion['telefono']))
 
                     c1, c2 = st.columns(2)
                     sel_keep = c1.selectbox("✅ Cliente a CONSERVAR (Destino)", opciones, key="fusion_keep")
@@ -535,8 +537,9 @@ def render_clientes():
                         if sel_keep and sel_del:
                             id_keep = mapa_ids[sel_keep]
                             id_del = mapa_ids[sel_del]
-                            wid_keep = mapa_wids[sel_keep]
-                            wid_del = mapa_wids[sel_del]
+                            wid_keep = mapa_wids.get(sel_keep)
+                            wid_del = mapa_wids.get(sel_del)
+                            tel_del = mapa_tels.get(sel_del)
 
                             if id_keep == id_del:
                                 st.error("Debes seleccionar dos clientes diferentes.")
@@ -544,14 +547,28 @@ def render_clientes():
                                 with st.spinner("Fusionando..."):
                                     try:
                                         with engine.begin() as tx:
+                                            # 1. Transferir números registrados en telefonoscliente
                                             tx.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
+                                            
+                                            # 2. Si el cliente origen tenía su LID/teléfono en c.telefono, insertarlo en telefonoscliente del conservado
+                                            if tel_del and str(tel_del).strip():
+                                                tel_clean = str(tel_del).strip()
+                                                existe_tel = tx.execute(text("SELECT 1 FROM telefonoscliente WHERE id_cliente = :id AND telefono = :t"), {"id": id_keep, "t": tel_clean}).fetchone()
+                                                if not existe_tel:
+                                                    tx.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal, activo) VALUES (:id, :t, FALSE, TRUE)"), {"id": id_keep, "t": tel_clean})
+
+                                            # 3. Transferir ventas y direcciones
                                             tx.execute(text("UPDATE ventas SET id_cliente = :new WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
                                             tx.execute(text("UPDATE direcciones SET id_cliente = :new WHERE id_cliente = :old"), {"new": id_keep, "old": id_del})
                                             
-                                            if wid_del and not wid_keep:
-                                                tx.execute(text("UPDATE clientes SET whatsapp_internal_id=:wid WHERE id_cliente=:id"), {"wid": wid_del, "id": id_keep})
+                                            # 4. Transferir whatsapp_internal_id (LID) al cliente conservado si el origen lo tenía
+                                            if wid_del and str(wid_del).strip():
+                                                tx.execute(text("UPDATE clientes SET whatsapp_internal_id = :wid WHERE id_cliente = :id"), {"wid": str(wid_del).strip(), "id": id_keep})
                                             
-                                            tx.execute(text("UPDATE clientes SET activo=FALSE WHERE id_cliente = :id"), {"id": id_del})
+                                            # 5. Desactivar cliente origen liberando su identificador
+                                            fake_wid = f"MERGED_{id_del}_{wid_del or 'NONE'}"[:140]
+                                            tx.execute(text("UPDATE clientes SET activo = FALSE, whatsapp_internal_id = :fake WHERE id_cliente = :id"), {"fake": fake_wid, "id": id_del})
+
                                         st.success("¡Fusión completada con éxito!")
                                         time.sleep(1)
                                         st.rerun()
@@ -599,7 +616,6 @@ def render_clientes():
                                 tel_db = norm['db']
                                 tel_google = norm.get('google', tel_db)
                                 
-                                # DOBLE BÚSQUEDA EN SINCRONIZACIÓN MASIVA
                                 res_g = buscar_contacto_google(tel_db)
                                 if not (res_g and res_g.get('encontrado')):
                                     res_g = buscar_contacto_google(tel_google)
@@ -637,8 +653,10 @@ def render_clientes():
         try:
             with engine.connect() as conn:
                 df_inactivos = pd.read_sql(text("""
-                    SELECT id_cliente, nombre_corto, telefono, estado, etiquetas 
-                    FROM clientes WHERE activo = FALSE ORDER BY id_cliente DESC
+                    SELECT c.id_cliente, c.nombre_corto, 
+                           COALESCE((SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE LIMIT 1), c.telefono) as telefono, 
+                           c.estado, c.etiquetas 
+                    FROM clientes c WHERE c.activo = FALSE ORDER BY c.id_cliente DESC
                 """), conn)
             
             if not df_inactivos.empty:
@@ -651,7 +669,7 @@ def render_clientes():
                         "Reactivar": st.column_config.CheckboxColumn("✅", width="small"),
                         "id_cliente": st.column_config.NumberColumn("ID", disabled=True, width="small"),
                         "nombre_corto": st.column_config.TextColumn("Alias", disabled=True),
-                        "telefono": st.column_config.TextColumn("Teléfono", disabled=True),
+                        "telefono": st.column_config.TextColumn("Teléfono / LID", disabled=True),
                         "estado": st.column_config.TextColumn("Estado", disabled=True),
                         "etiquetas": st.column_config.TextColumn("Etiquetas", disabled=True),
                     },

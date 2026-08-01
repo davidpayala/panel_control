@@ -333,106 +333,76 @@ def recibir_mensaje():
 
             try:
                 with engine.begin() as conn:
-                    # CASO A: WAHA envía LID + Teléfono Numérico
-                    if wspid_lid and telefono_num:
-                        cliente_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
-                        if cliente_tel:
-                            if cliente_tel.whatsapp_internal_id != wspid_lid:
-                                conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel.id_cliente})
-                            else:
-                                conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_tel.id_cliente})
-                            id_cliente_final = cliente_tel.id_cliente
-                        else:
-                            cliente_lid = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
-                            if cliente_lid:
-                                conn.execute(text("UPDATE Clientes SET telefono = :t, activo=TRUE WHERE id_cliente = :id"), {"t": telefono_num, "id": cliente_lid.id_cliente})
-                                id_cliente_final = cliente_lid.id_cliente
-                            else:
-                                try:
-                                    res = conn.execute(text("""
-                                        INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
-                                        VALUES (:lid, :t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
-                                        RETURNING id_cliente
-                                    """), {"lid": wspid_lid, "t": telefono_num, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
-                                    id_cliente_final = res.id_cliente
-                                    # 🛠️ CORRECCIÓN: Pasamos el ID del cliente al hilo de Google
-                                    threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, telefono_num)).start()
-                                except Exception as e:
-                                    if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
-                                    else: raise e
+                    # ===============================================================
+                    # 🚀 NUEVO MOTOR DE RESOLUCIÓN Y FUSIÓN AUTOMÁTICA EN WEBHOOK
+                    # ===============================================================
+                    
+                    # 1. Intentamos forzar la resolución del número si solo tenemos LID
+                    if wspid_lid and not telefono_num:
+                        tel_api = resolver_telefono_api(wspid_lid, session_name)
+                        if tel_api:
+                            norm_api = normalizar_telefono_maestro(tel_api)
+                            telefono_num = norm_api.get('db') if isinstance(norm_api, dict) else norm_api
 
-                    # CASO B: WAHA solo envía LID
-                    elif wspid_lid and not telefono_num:
-                        cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone()
-                        if cliente_lid:
-                            if cliente_lid.telefono and len(cliente_lid.telefono) > 5:
-                                id_cliente_final = cliente_lid.id_cliente
-                                conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
-                            else:
-                                tel_api = resolver_telefono_api(wspid_lid, session_name)
-                                if tel_api:
-                                    norm_api = normalizar_telefono_maestro(tel_api)
-                                    final_tel = norm_api.get('db') if isinstance(norm_api, dict) else norm_api
-                                    try:
-                                        conn.execute(text("UPDATE Clientes SET telefono = :t, activo=TRUE WHERE id_cliente = :id"), {"t": final_tel, "id": cliente_lid.id_cliente})
-                                    except Exception as e:
-                                        if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono=:t"), {"t": final_tel}).scalar()
-                                if not id_cliente_final: id_cliente_final = cliente_lid.id_cliente
-                        else:
-                            tel_api = resolver_telefono_api(wspid_lid, session_name)
-                            if tel_api:
-                                norm_api = normalizar_telefono_maestro(tel_api)
-                                final_tel = norm_api.get('db') if isinstance(norm_api, dict) else norm_api
-                                cliente_tel_api = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": final_tel}).fetchone()
-                                if cliente_tel_api:
-                                    conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel_api.id_cliente})
-                                    id_cliente_final = cliente_tel_api.id_cliente
-                                else:
-                                    try:
-                                        res = conn.execute(text("""
-                                            INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
-                                            VALUES (:lid, :t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
-                                            RETURNING id_cliente
-                                        """), {"lid": wspid_lid, "t": final_tel, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
-                                        id_cliente_final = res.id_cliente
-                                        # 🛠️ CORRECCIÓN: Pasamos el ID del cliente al hilo de Google
-                                        threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, final_tel)).start()
-                                    except Exception as e:
-                                        if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": final_tel}).scalar()
-                                        else: raise e
-                            else:
-                                    fake = f"LID_{wspid_lid.split('@')[0]}"
-                                    try:
-                                        res = conn.execute(text("""
-                                            INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
-                                            VALUES (:lid, :f, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
-                                            RETURNING id_cliente
-                                        """), {"lid": wspid_lid, "f": fake, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
-                                        id_cliente_final = res.id_cliente
-                                    except: id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE whatsapp_internal_id=:lid"), {"lid": wspid_lid}).scalar()
+                    # 2. Consultar existencia simultánea de ambos rastros
+                    cliente_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id, telefono FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone() if telefono_num else None
+                    cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone() if wspid_lid else None
 
-                    # CASO C: WAHA solo envía Teléfono Numérico
-                    elif telefono_num and not wspid_lid:
-                        cliente_tel = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone()
-                        if cliente_tel:
-                            id_cliente_final = cliente_tel.id_cliente
-                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
+                    # --- ESCENARIO 1: COLISIÓN (Existen ambos separados) -> FUSIÓN AUTOMÁTICA ---
+                    if cliente_tel and cliente_lid and cliente_tel.id_cliente != cliente_lid.id_cliente:
+                        viejo_tel = cliente_lid.telefono
+                        conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": telefono_num, "o": viejo_tel})
+                        conn.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": cliente_tel.id_cliente, "old": cliente_lid.id_cliente})
+                        conn.execute(text("UPDATE Clientes SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE id_cliente=:old"), {"fake": f"MERGED_{viejo_tel}", "old": cliente_lid.id_cliente})
+                        conn.execute(text("UPDATE Clientes SET whatsapp_internal_id=:lid, activo=TRUE WHERE id_cliente=:new"), {"lid": wspid_lid, "new": cliente_tel.id_cliente})
+                        id_cliente_final = cliente_tel.id_cliente
+
+                    # --- ESCENARIO 2: Solo existe el cliente por Teléfono ---
+                    elif cliente_tel:
+                        if wspid_lid and cliente_tel.whatsapp_internal_id != wspid_lid:
+                            conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel.id_cliente})
                         else:
-                            fallback_id = payload.get('from')
-                            try:
-                                res = conn.execute(text("""
-                                    INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
-                                    VALUES (:wid, :t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
-                                    RETURNING id_cliente
-                                """), {"wid": fallback_id, "t": telefono_num, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
-                                id_cliente_final = res.id_cliente
-                                # 🛠️ CORRECCIÓN: Pasamos el ID del cliente al hilo de Google
+                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_tel.id_cliente})
+                        id_cliente_final = cliente_tel.id_cliente
+
+                    # --- ESCENARIO 3: Solo existe el cliente por LID ---
+                    elif cliente_lid:
+                        viejo_tel = cliente_lid.telefono
+                        if telefono_num and viejo_tel != telefono_num:
+                            # Reemplazamos el LID temporal por el número real y transferimos chats
+                            conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": telefono_num, "o": viejo_tel})
+                            conn.execute(text("UPDATE telefonoscliente SET telefono=:n WHERE telefono=:o AND id_cliente=:id"), {"n": telefono_num, "o": viejo_tel, "id": cliente_lid.id_cliente})
+                            conn.execute(text("UPDATE Clientes SET telefono=:n, activo=TRUE WHERE id_cliente=:id"), {"n": telefono_num, "id": cliente_lid.id_cliente})
+                        else:
+                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": cliente_lid.id_cliente})
+                        id_cliente_final = cliente_lid.id_cliente
+
+                    # --- ESCENARIO 4: Prospecto 100% Nuevo ---
+                    else:
+                        t_final = telefono_num if telefono_num else (f"LID_{wspid_lid.split('@')[0]}" if wspid_lid else payload.get('from', 'DESCONOCIDO'))
+                        wid_final = wspid_lid if wspid_lid else payload.get('from')
+                        
+                        try:
+                            res = conn.execute(text("""
+                                INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
+                                VALUES (:lid, :t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                RETURNING id_cliente
+                            """), {"lid": wid_final, "t": t_final, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
+                            id_cliente_final = res.id_cliente
+                            
+                            # Sincronización en segundo plano con Google
+                            if telefono_num:
                                 threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, telefono_num)).start()
-                            except Exception as e:
-                                if "UniqueViolation" in str(e): id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
-                                else: raise e
+                        except Exception as e:
+                            # Fallback ultra-seguro por si hubo condición de carrera
+                            if "UniqueViolation" in str(e):
+                                id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": t_final}).scalar()
+                            else:
+                                raise e
 
+                    # ===============================================================
                     # GUARDADO Y SINCRONIZACIÓN CON TABLA SECUNDARIA
+                    # ===============================================================
                     if id_cliente_final:
                         t_msg = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente = :id"), {"id": int(id_cliente_final)}).scalar()
                         if not t_msg: t_msg = "DESCONOCIDO"
@@ -443,7 +413,6 @@ def recibir_mensaje():
                             if not tel_existe:
                                 conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                 conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :t, TRUE)"), {"id": int(id_cliente_final), "t": t_msg})
-                        # ----------------------------------------------------------------
 
                         existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                         if not existe:
@@ -455,7 +424,7 @@ def recibir_mensaje():
                                 "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
                             })
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
-                        
+                                                
                         # --- LÓGICA DE DETECCIÓN ZOMBIE ---
                         if tipo_msg == 'ENTRANTE':
                             texto_limpio = body.strip().lower()

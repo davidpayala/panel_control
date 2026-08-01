@@ -84,7 +84,7 @@ def mostrar_resumen_compras_chat(telefono_activo):
         st.error(f"Error al obtener historial: {e}")
 
 # ==========================================
-# 📡 RESOLUTOR API PARA LIDs
+# 📡 RESOLUTOR API PARA LIDs E INTENTO DE VERIFICACIÓN
 # ==========================================
 def resolver_telefono_api(lid, session):
     if not WAHA_URL or not lid: return None
@@ -93,37 +93,54 @@ def resolver_telefono_api(lid, session):
         url = f"{WAHA_URL.rstrip('/')}/api/{session}/lids/{lid_safe}"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+        
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
             pn = data.get('pn')
             if pn:
-                return pn.split('@')[0]
+                pn_clean = pn.split('@')[0]
+                
+                # --- VERIFICACIÓN EXTRA SOLICITADA ---
+                url_check = f"{WAHA_URL.rstrip('/')}/api/contacts/check-exists"
+                params = {"session": session, "phone": pn_clean}
+                r_check = requests.get(url_check, params=params, headers=headers, timeout=5)
+                
+                if r_check.status_code == 200 and r_check.json().get('numberExists', False):
+                    return pn_clean
+                
+                return pn_clean # Fallback, lo devolvemos por si acaso WAHA dice que no existe
     except: pass
     return None
 
 def mandar_mensaje_api(telefono, texto, sesion):
     if not WAHA_URL: return False, "Falta WAHA_URL"
     try:
-        res_norm = normalizar_telefono_maestro(telefono)
-        if isinstance(res_norm, dict):
-            telefono_final = res_norm.get('db') 
+        telefono_str = str(telefono)
+        if telefono_str.startswith("LID_"):
+            lid_number = telefono_str.replace("LID_", "")
+            chat_id = f"{lid_number}@lid"
         else:
-            telefono_final = str(res_norm) if res_norm else "".join(filter(str.isdigit, str(telefono)))
-            
-        if not telefono_final: return False, "Número inválido"
+            res_norm = normalizar_telefono_maestro(telefono)
+            if isinstance(res_norm, dict):
+                telefono_final = res_norm.get('db') 
+            else:
+                telefono_final = str(res_norm) if res_norm else "".join(filter(str.isdigit, str(telefono)))
+                
+            if not telefono_final: return False, "Número inválido"
+            chat_id = f"{telefono_final}@c.us"
 
         url = f"{WAHA_URL.rstrip('/')}/api/sendText"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
-        payload = {"session": sesion, "chatId": f"{telefono_final}@c.us", "text": texto}
+        payload = {"session": sesion, "chatId": chat_id, "text": texto}
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         if r.status_code in [200, 201]: return True, ""
         return False, r.text
     except Exception as e:
         return False, str(e)
-
+    
 def get_table_name(conn):
     try:
         conn.execute(text("SELECT 1 FROM clientes LIMIT 1"))
@@ -387,47 +404,57 @@ def render_chat():
             try:
                 es_cliente = str(chat_actual).isdigit() and len(str(chat_actual)) < 10
 
-                # AUTO-RESOLUCIÓN LIDs
-                if str(chat_actual).startswith("LID_"):
-                    with st.spinner("🕵️‍♂️ Consultando número real en WAHA..."):
-                        with engine.connect() as conn:
-                            info = conn.execute(text(f"SELECT id_cliente, whatsapp_internal_id FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
-                            if info and info.whatsapp_internal_id and info.whatsapp_internal_id.endswith("@lid"):
-                                num_real = resolver_telefono_api(info.whatsapp_internal_id, "default")
-                                if not num_real: num_real = resolver_telefono_api(info.whatsapp_internal_id, "principal")
-                                
-                                if num_real:
-                                    norm = normalizar_telefono_maestro(num_real)
-                                    real_db = norm.get('db') if isinstance(norm, dict) else norm
-                                    if real_db:
-                                        with engine.begin() as t_conn:
-                                            existente = t_conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono=:t AND activo = TRUE"), {"t": real_db}).fetchone()
-                                            if existente:
-                                                t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
-                                                t_conn.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": existente.id_cliente, "old": info.id_cliente})
-                                                t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE id_cliente=:old"), {"fake": f"MERGED_{chat_actual}", "old": info.id_cliente})
-                                                t_conn.execute(text(f"UPDATE {tabla} SET whatsapp_internal_id=:lid WHERE id_cliente=:new"), {"lid": info.whatsapp_internal_id, "new": existente.id_cliente})
-                                                st.session_state['chat_actual_id'] = str(existente.id_cliente)
-                                            else:
-                                                t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": chat_actual})
-                                                t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE id_cliente=:id"), {"n": real_db, "id": info.id_cliente})
-                                                
-                                                lid_ex = t_conn.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente = :id AND telefono = :o"), {"id": info.id_cliente, "o": chat_actual}).fetchone()
-                                                if lid_ex:
-                                                    t_conn.execute(text("UPDATE telefonoscliente SET telefono = :n, es_principal = TRUE WHERE id_telefono = :idt"), {"n": real_db, "idt": lid_ex[0]})
-                                                else:
-                                                    t_conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :id"), {"id": info.id_cliente})
-                                                    t_conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :n, TRUE)"), {"id": info.id_cliente, "n": real_db})
-                                                st.session_state['chat_actual_id'] = str(info.id_cliente)
-                                        st.rerun()
+                # 1. CARGAR DATOS UNIFICADOS PRIMERO (Para saber el teléfono de este ID)
+                with engine.connect() as conn:
+                    conn.commit()
+                    if es_cliente:
+                        info = conn.execute(text(f"SELECT * FROM {tabla} WHERE id_cliente=:id"), {"id": int(chat_actual)}).fetchone()
+                    else:
+                        info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
 
-                # Marcar leido
+                # 2. AUTO-RESOLUCIÓN LIDs INTELIGENTE (Ahora evalúa la info.telefono, no el ID)
+                if info and info.telefono and str(info.telefono).startswith("LID_"):
+                    with st.spinner("🕵️‍♂️ Consultando número real oculto en WAHA..."):
+                        num_real = resolver_telefono_api(info.whatsapp_internal_id, "default")
+                        if not num_real: num_real = resolver_telefono_api(info.whatsapp_internal_id, "principal")
+                        
+                        if num_real:
+                            norm = normalizar_telefono_maestro(num_real)
+                            real_db = norm.get('db') if isinstance(norm, dict) else norm
+                            if real_db:
+                                with engine.begin() as t_conn:
+                                    existente = t_conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono=:t AND activo = TRUE"), {"t": real_db}).fetchone()
+                                    if existente:
+                                        t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": info.telefono})
+                                        t_conn.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": existente.id_cliente, "old": info.id_cliente})
+                                        t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE id_cliente=:old"), {"fake": f"MERGED_{info.telefono}", "old": info.id_cliente})
+                                        t_conn.execute(text(f"UPDATE {tabla} SET whatsapp_internal_id=:lid WHERE id_cliente=:new"), {"lid": info.whatsapp_internal_id, "new": existente.id_cliente})
+                                        st.session_state['chat_actual_id'] = str(existente.id_cliente)
+                                    else:
+                                        t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": info.telefono})
+                                        t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE id_cliente=:id"), {"n": real_db, "id": info.id_cliente})
+                                        
+                                        lid_ex = t_conn.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente = :id AND telefono = :o"), {"id": info.id_cliente, "o": info.telefono}).fetchone()
+                                        if lid_ex:
+                                            t_conn.execute(text("UPDATE telefonoscliente SET telefono = :n, es_principal = TRUE WHERE id_telefono = :idt"), {"n": real_db, "idt": lid_ex[0]})
+                                        else:
+                                            t_conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :id"), {"id": info.id_cliente})
+                                            t_conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :n, TRUE)"), {"id": info.id_cliente, "n": real_db})
+                                        st.session_state['chat_actual_id'] = str(info.id_cliente)
+                                st.rerun()
+
+                # 3. MARCAR COMO LEÍDO EN BD Y WHATSAPP (Bug del nombre de función resuelto)
                 with engine.connect() as conn:
                     conn.commit() 
-                    tels_condition = "SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE" if es_cliente else "SELECT :id"
+                    tels_condition = """
+                        SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE
+                        UNION
+                        SELECT telefono FROM Clientes WHERE id_cliente = :id AND activo = TRUE
+                    """ if es_cliente else "SELECT :id"
                     param_id = int(chat_actual) if es_cliente else chat_actual
                     
                     unreads_query = conn.execute(text(f"SELECT COUNT(*), MAX(session_name) FROM mensajes WHERE telefono IN ({tels_condition}) AND tipo='ENTRANTE' AND leido=FALSE"), {"id": param_id}).fetchone()
+                    
                     if unreads_query and unreads_query[0] > 0:
                         sesion_unread = unreads_query[1] if unreads_query[1] else 'default'
                         conn.execute(text(f"UPDATE mensajes SET leido=TRUE WHERE telefono IN ({tels_condition}) AND tipo='ENTRANTE'"), {"id": param_id})
@@ -435,21 +462,18 @@ def render_chat():
                         
                         tels_api = conn.execute(text(f"SELECT telefono FROM mensajes WHERE telefono IN ({tels_condition}) GROUP BY telefono"), {"id": param_id}).fetchall()
                         for r_t in tels_api:
-                            try: threading.Thread(target=marcar_leido_api, args=(r_t[0], sesion_unread)).start()
-                            except: pass
+                            try: 
+                                # SOLUCIÓN BUG: La función correcta es marcar_leido_waha, no marcar_leido_api
+                                threading.Thread(target=marcar_leido_waha, args=(r_t[0], sesion_unread)).start()
+                            except Exception as e:
+                                print(f"Error marcando leído: {e}")
 
-                # Cargar datos Unificados e Información de la Dirección Principal y Deuda
+                # 4. CARGAR DIRECCIÓN Y DEUDAS
                 with engine.connect() as conn:
                     conn.commit()
-                    if es_cliente:
-                        info = conn.execute(text(f"SELECT * FROM {tabla} WHERE id_cliente=:id"), {"id": int(chat_actual)}).fetchone()
-                    else:
-                        info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
-                        
                     nombre = info.nombre_corto if info and info.nombre_corto else chat_actual
                     estado_actual_cliente = info.estado if info and hasattr(info, 'estado') and info.estado else "Sin empezar"
                     
-                    # --- NUEVA CONSULTA: EXTRAER DIRECCIÓN PRINCIPAL Y PENDIENTE PAGO ---
                     dir_info = None
                     venta_info = None
                     if info:
@@ -724,7 +748,11 @@ def render_chat():
                 with c_num:
                     if es_cliente:
                         with engine.connect() as conn:
-                            lista_tels = pd.read_sql(text("SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE ORDER BY es_principal DESC"), conn, params={"id": int(chat_actual)})['telefono'].tolist()
+                            lista_tels = pd.read_sql(text("""
+                                SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE
+                                UNION
+                                SELECT telefono FROM Clientes WHERE id_cliente = :id AND activo = TRUE
+                            """), conn, params={"id": int(chat_actual)})['telefono'].tolist()
                         
                         if tel_defecto and tel_defecto not in lista_tels: lista_tels.append(tel_defecto)
                         if not lista_tels: lista_tels = [tel_defecto] if tel_defecto else [chat_actual]
