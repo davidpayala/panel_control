@@ -54,29 +54,39 @@ def render_campanas():
     with engine.connect() as conn:
         config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
         
-        # 1. Consultas de Mensajes DMs
-        env_principal = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND session_name = 'principal' AND fecha::date = CURRENT_DATE")).scalar() or 0
-        env_lentes = conn.execute(text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = 'default' AND fecha::date = CURRENT_DATE")).scalar() or 0
+        # 1. Consultas de Mensajes DMs (Ajustado a Zona Horaria UTC-5)
+        env_principal = conn.execute(text("""
+            SELECT COUNT(*) FROM mensajes 
+            WHERE tipo = 'SALIENTE_BOT' AND session_name = 'principal' 
+              AND (fecha - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
+        """)).scalar() or 0
+        
+        env_lentes = conn.execute(text("""
+            SELECT COUNT(*) FROM mensajes 
+            WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = 'default' 
+              AND (fecha - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
+        """)).scalar() or 0
 
-        # 2. Conteo Desglosado de Estados WSP hoy
+        # 2. Conteo Desglosado de Estados WSP hoy (Blindado contra espacios y mayúsculas)
         query_est_hoy = text("""
-            SELECT COALESCE(session_name, 'principal') as sesion, COUNT(*) as total
+            SELECT TRIM(LOWER(COALESCE(session_name, 'principal'))) as sesion, COUNT(*) as total
             FROM Historial_Estados 
-            WHERE fecha_publicacion::date = CURRENT_DATE
-            GROUP BY COALESCE(session_name, 'principal')
+            WHERE (fecha_publicacion - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
+            GROUP BY 1
         """)
-        est_counts = {row.sesion: row.total for row in conn.execute(query_est_hoy).fetchall()}
+        # Forzamos la conversión a String e Integer para que Streamlit no se confunda
+        est_counts = {str(row[0]): int(row[1]) for row in conn.execute(query_est_hoy).fetchall()}
 
-        # 3. Conteo Desglosado de Posts Facebook hoy
+        # 3. Conteo Desglosado de Posts Facebook hoy (Ajustado a Zona Horaria UTC-5)
         query_fb_hoy = text("""
             SELECT pagina, COUNT(*) as total
             FROM Historial_Facebook 
-            WHERE fecha::date = CURRENT_DATE
+            WHERE (fecha - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
             GROUP BY pagina
         """)
-        fb_counts = {row.pagina: row.total for row in conn.execute(query_fb_hoy).fetchall()}
+        fb_counts = {row[0]: row[1] for row in conn.execute(query_fb_hoy).fetchall()}
 
-        # 4. Avance de Cobertura Base Clientes
+        # 4. Avance de Cobertura Base Clientes (Sin cambios, ya contempla 60 días en general)
         query_avance = text("""
             WITH enviados_recientes AS (
                 SELECT DISTINCT telefono FROM mensajes 
@@ -94,8 +104,8 @@ def render_campanas():
         """)
         row_avance = conn.execute(query_avance).fetchone()
         
-    a_enviados = int(row_avance.enviados_60d) if row_avance and row_avance.enviados_60d else 0
-    b_pendientes = int(row_avance.pendientes_60d) if row_avance and row_avance.pendientes_60d else 0
+    a_enviados = int(row_avance[0]) if row_avance and row_avance[0] else 0
+    b_pendientes = int(row_avance[1]) if row_avance and row_avance[1] else 0
     total_habilitados = a_enviados + b_pendientes
     c_porcentaje = (a_enviados / total_habilitados * 100.0) if total_habilitados > 0 else 0.0
 

@@ -238,20 +238,34 @@ def ejecutar_francotirador():
                         
                     if prod_est:
                         respuestas_ia = generar_texto_producto_ia(prod_est, es_estado=True)
-                        exito, _ = subir_estado_whatsapp(cuenta['sesion'], respuestas_ia.get('estado_whatsapp', ''), prod_est.get('url_imagen', ''))
-                        if exito:
+                        texto_estado = respuestas_ia.get('estado_whatsapp', '')
+                        
+                        print(f"  📡 Enviando estado a WAHA ({cuenta['sesion']})...")
+                        exito, msg_api = subir_estado_whatsapp(cuenta['sesion'], texto_estado, prod_est.get('url_imagen', ''))
+                        
+                        # PARCHE: WAHA devuelve HTTP 201 al crear estados. Si 'exito' es False 
+                        # pero no hay un error real, forzamos el registro en la Base de Datos.
+                        if exito or ("error" not in str(msg_api).lower() and "fail" not in str(msg_api).lower()):
+                            print(f"  ✅ ¡Estado publicado y registrado en la BD ({cuenta['sesion']})!")
                             with engine.begin() as conn_est:
                                 conn_est.execute(text("INSERT INTO Historial_Estados (sku, session_name, fecha_publicacion) VALUES (:sku, :sess, NOW())"), {"sku": prod_est['sku'], "sess": cuenta['sesion']})
+                        else:
+                            print(f"  ❌ Fallo real en la subida a WAHA: {msg_api}")
             else:
                 print(f"\n🎲 TAREA 2 SALTADA: El dado cayó en {dado_est} (Requerido: <= {prob_est}%).")
 
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_estados = NOW() WHERE id = :id"), {"id": config.id})
-
         # ==================================================================
         # 📘 TAREA 3: FACEBOOK
         # ==================================================================
-        if getattr(config, 'fb_activo', False) and tiempo_ok_fb and dentro_de_horario:
+        if not getattr(config, 'fb_activo', False):
+            print("\n⏸️ TAREA 3 OMITIDA: Auto-Publicación Facebook está apagada en el Panel.")
+        elif not tiempo_ok_fb:
+            print(f"\n⏳ TAREA 3: Aún no pasan los 30 min base (Han pasado {int(min_pasados_fb)} min).")
+        elif not dentro_de_horario:
+            print("\n⏰ TAREA 3 OMITIDA: Fuera de horario comercial para Facebook.")
+        else:
             dado_fb = random.randint(1, 100)
             if dado_fb <= prob_fb or es_modo_test:
                 print(f"\n▶️ INICIANDO TAREA 3 (Dado: {dado_fb} <= {prob_fb}%)")
@@ -261,23 +275,40 @@ def ejecutar_francotirador():
                     {"nombre": "Lentes", "col_prob": "prob_fb_lentes", "webhook": getattr(config, 'webhook_fb_lentes', '')}
                 ]
                 disparo_fb = False
+                
                 for pagina in paginas_fb:
-                    if not pagina["webhook"]: continue
+                    if not pagina["webhook"] or str(pagina["webhook"]).strip() == "":
+                        print(f"  ⚠️ Omitido: No hay URL de Webhook guardada para la página '{pagina['nombre']}'.")
+                        continue
+                    
                     with engine.connect() as conn:
                         prod_fb = buscar_producto_dinamico(conn, pagina['col_prob'])
+                        
                     if prod_fb:
+                        print(f"  🧠 Redactando copy (IA) para postear {prod_fb.get('nombre', '')} en {pagina['nombre']}...")
                         respuestas_ia = generar_texto_producto_ia(prod_fb, es_estado=True)
-                        exito_fb, _ = publicar_en_facebook_via_webhook(respuestas_ia.get('post_facebook', ''), prod_fb.get('url_imagen', ''), pagina["webhook"])
+                        texto_fb = respuestas_ia.get('post_facebook', '')
+                        
+                        exito_fb, mensaje_fb = publicar_en_facebook_via_webhook(texto_fb, prod_fb.get('url_imagen', ''), pagina["webhook"])
+                        
                         if exito_fb:
+                            print(f"  ✅ ¡Post inyectado exitosamente en Make.com ({pagina['nombre']})!")
                             with engine.begin() as conn_hist:
                                 conn_hist.execute(text("INSERT INTO Historial_Facebook (pagina, sku) VALUES (:pag, :sku)"), {"pag": pagina['nombre'], "sku": prod_fb.get('sku', '')})
                             disparo_fb = True
+                        else:
+                            print(f"  ❌ Make.com rechazó el envío para {pagina['nombre']}. Razón: {mensaje_fb}")
+                    else:
+                        print(f"  ⚠️ Omitido: Cero stock o probabilidad 0% para categorías en FB {pagina['nombre']}.")
+            else:
+                print(f"\n🎲 TAREA 3 SALTADA: El dado cayó en {dado_fb} (Requerido: <= {prob_fb}%).")
             
+            # Actualizamos el reloj SIEMPRE, haya disparado o saltado por el dado
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_fb = NOW() WHERE id = :id"), {"id": config.id})
 
     except Exception as e:
         print(f"🔥 Error catastrófico: {e}")
-    
+
 if __name__ == "__main__":
     ejecutar_francotirador()
