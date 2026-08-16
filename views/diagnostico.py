@@ -5,7 +5,11 @@ from database import engine
 import json
 import requests
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
+
+# IMPORTANTE: Importamos el motor lógico desde utils para la auditoría WOO
+from utils import ejecutar_auditoria_bidireccional_woo
 
 # Configuración API
 WAHA_URL = os.getenv("WAHA_URL")
@@ -21,10 +25,11 @@ def get_headers():
 def render_diagnostico():
     st.title("🛠️ Centro de Diagnóstico")
     
-# --- DECLARACIÓN ACTUALIZADA CON 5 TABS ---
-    tab_logs, tab_inspector, tab_simulador, tab_respuestas, tab_auditoria = st.tabs([
-        "📡 Logs Webhook", "🕵️ Inspector API", "🧪 Simulador (Test)", "🤖 Auto-Respuestas", "⚖️ Auditoría WOO"
+    # --- DECLARACIÓN ACTUALIZADA CON 7 TABS ---
+    tab_logs, tab_woo, tab_inspector, tab_simulador, tab_respuestas, tab_auditoria, tab_marketing = st.tabs([
+        "📡 Logs Webhook", "📡 Logs WOO", "🕵️ Inspector API", "🧪 Simulador (Test)", "🤖 Auto-Respuestas", "⚖️ Auditoría WOO", "📈 Logs Marketing"
     ])
+    
     # ==========================================================================
     # PESTAÑA 1: LOGS DE BASE DE DATOS
     # ==========================================================================
@@ -80,7 +85,70 @@ def render_diagnostico():
             st.error(f"Error leyendo logs: {e}")
 
     # ==========================================================================
-    # PESTAÑA 2: INSPECTOR API
+    # PESTAÑA 2: WOO (Sincronización Bidireccional)
+    # ==========================================================================
+    with tab_woo:
+        # Se ha corregido la indentación eliminando el "def render_sincronizacion_woo():" erróneo
+        st.subheader("🔄 Auditoría Espejo: Local vs WordPress")
+        st.write("Verifica discrepancias entre tu inventario físico y la tienda virtual.")
+
+        c1, c2 = st.columns([1, 2])
+        tienda_url = c1.selectbox("Tienda a auditar:", ["kmlentes.pe", "pelucat.pe"])
+        
+        if st.button("🚀 Iniciar Auditoría Bidireccional", type="primary"):
+            c_hora = st.empty()
+            c_progreso = st.progress(0)
+            c_estado = st.empty()
+            
+            wc_key = os.getenv("WC_KEY", "tu_ck_aqui") 
+            wc_secret = os.getenv("WC_SECRET", "tu_cs_aqui")
+            
+            for paso in ejecutar_auditoria_bidireccional_woo(tienda_url, wc_key, wc_secret):
+                if paso["estado"] == "inicio":
+                    c_hora.info(f"🕒 **Hora de inicio:** {paso['hora']}")
+                    c_estado.caption(paso["msg"])
+                elif paso["estado"] == "procesando":
+                    c_progreso.progress(paso["progreso"] / 100.0)
+                    c_estado.caption(paso["msg"])
+                elif paso["estado"] == "completado":
+                    c_progreso.progress(1.0)
+                    c_estado.success(f"✅ Sincronización Finalizada (Fin: {paso['hora_fin']})")
+                    st.markdown(f"**Resumen:** {paso['resumen']}")
+                    
+                    c_m1, c_m2 = st.columns(2)
+                    c_m1.metric("⚠️ Sobrantes en Local (Faltan en WP)", paso["err_wp"])
+                    c_m2.metric("🚨 Sobrantes en Web (Faltan en DB)", paso["err_db"])
+                elif paso["estado"] == "error":
+                    st.error(f"🔥 Ocurrió un error: {paso['msg']}")
+                    break
+
+        st.divider()
+        st.markdown("### 📋 Último Reporte de Discrepancias")
+        
+        try:
+            with engine.connect() as conn:
+                df_audit = pd.read_sql(text("SELECT tipo_error, sku, detalle, fecha_deteccion FROM auditoria_skus_woo WHERE tienda = :t ORDER BY fecha_deteccion DESC"), conn, params={"t": tienda_url})
+            
+            if df_audit.empty:
+                st.success(f"¡Excelente! No hay discrepancias registradas para {tienda_url}. Ambos catálogos están 100% sincronizados.")
+            else:
+                df_falta_wp = df_audit[df_audit['tipo_error'] == 'Falta en WP'].drop(columns=['tipo_error'])
+                df_falta_db = df_audit[df_audit['tipo_error'] == 'Falta en DB'].drop(columns=['tipo_error'])
+                
+                t1, t2 = st.tabs(["🛒 Faltan en WordPress (Subir a la web)", "📦 Faltan en Base de Datos (Bajar de la web)"])
+                
+                with t1:
+                    st.warning(f"Se encontraron {len(df_falta_wp)} SKUs en tu almacén físico que NO están a la venta en la web.")
+                    st.dataframe(df_falta_wp, use_container_width=True)
+                    
+                with t2:
+                    st.error(f"¡PELIGRO! Hay {len(df_falta_db)} SKUs activos en WordPress que NO existen en tu almacén físico. Podrían comprarte algo sin stock.")
+                    st.dataframe(df_falta_db, use_container_width=True)
+        except Exception:
+            st.info("Aún no se ha realizado ninguna auditoría para esta tienda.")
+
+    # ==========================================================================
+    # PESTAÑA 3: INSPECTOR API
     # ==========================================================================
     with tab_inspector:
         st.info("Consulta directa a WAHA para verificar cómo ve el sistema un chat.")
@@ -127,13 +195,12 @@ def render_diagnostico():
                 st.warning("No se especificó chat.")
 
     # ==========================================================================
-    # PESTAÑA 3: SIMULADOR (TEST DE INYECCIÓN)
+    # PESTAÑA 4: SIMULADOR (TEST DE INYECCIÓN)
     # ==========================================================================
     with tab_simulador:
         st.markdown("### 🧪 Inyección de Eventos (Mock)")
         st.info("Envía un JSON directamente a tu Webhook local para probar si la lógica de `remoteJidAlt` y `LID` funciona correctamente.")
 
-        # JSON de ejemplo conflictivo
         default_json = """{
   "id": "evt_simulado_001",
   "timestamp": 1770901602945,
@@ -158,15 +225,12 @@ def render_diagnostico():
 
         col_url, col_btn = st.columns([70, 30])
         target_url = col_url.text_input("URL del Webhook", value=WEBHOOK_INTERNAL_URL)
-        
         json_input = st.text_area("JSON Payload", value=default_json, height=350)
 
         if col_btn.button("🚀 Disparar Webhook", type="primary", use_container_width=True):
             try:
                 payload = json.loads(json_input)
-                
                 with st.spinner("Enviando petición POST..."):
-                    # Enviamos el POST al webhook (flask)
                     response = requests.post(target_url, json=payload, timeout=10)
                 
                 if response.status_code == 200:
@@ -176,7 +240,6 @@ def render_diagnostico():
                 else:
                     st.error(f"❌ Error del Servidor: {response.status_code}")
                     st.text(response.text)
-                    
             except json.JSONDecodeError:
                 st.error("❌ El texto no es un JSON válido.")
             except requests.exceptions.ConnectionError:
@@ -185,7 +248,7 @@ def render_diagnostico():
                 st.error(f"❌ Error inesperado: {str(e)}")
 
     # ==========================================================================
-    # PESTAÑA 4: GESTIÓN DE RESPUESTAS AUTOMÁTICAS (ZOMBIES)
+    # PESTAÑA 5: GESTIÓN DE RESPUESTAS AUTOMÁTICAS (ZOMBIES)
     # ==========================================================================
     with tab_respuestas:
         st.markdown("### 🤖 Gestión de Clientes Zombie")
@@ -195,10 +258,9 @@ def render_diagnostico():
             with engine.connect() as conn:
                 df_resp = pd.read_sql(text("SELECT id, frase_clave, respuesta_nivel_1, respuesta_nivel_2 FROM respuestas_automaticas ORDER BY id"), conn)
             
-            # El data_editor permite modificar como si fuera Excel
             editado = st.data_editor(
                 df_resp,
-                num_rows="dynamic", # Permite añadir filas nuevas
+                num_rows="dynamic",
                 use_container_width=True,
                 column_config={
                     "id": st.column_config.NumberColumn("ID", disabled=True),
@@ -211,7 +273,6 @@ def render_diagnostico():
             
             if st.button("💾 Guardar Cambios en Respuestas", type="primary"):
                 with engine.begin() as conn:
-                    # Limpiamos la tabla y la volvemos a llenar con lo que está en pantalla
                     conn.execute(text("DELETE FROM respuestas_automaticas"))
                     for _, row in editado.iterrows():
                         if pd.notna(row['frase_clave']) and str(row['frase_clave']).strip():
@@ -230,7 +291,7 @@ def render_diagnostico():
             st.error(f"❌ Error al cargar/guardar la tabla: {e}")
     
     # ==========================================================================
-    # PESTAÑA 5: INSPECTOR DE DESAJUSTES DE CATÁLOGO (SQL vs WordPress)
+    # PESTAÑA 6: INSPECTOR DE DESAJUSTES DE CATÁLOGO (SQL vs WordPress)
     # ==========================================================================
     with tab_auditoria:
         st.markdown("### ⚖️ Conciliación de Catálogo (PostgreSQL vs WordPress)")
@@ -244,7 +305,7 @@ def render_diagnostico():
             with engine.connect() as conn:
                 df_aud = pd.read_sql(text("SELECT tienda, tipo_error, sku, detalle, fecha_deteccion FROM auditoria_skus_woo ORDER BY tienda, tipo_error, sku"), conn)
         except Exception:
-            df_aud = pd.DataFrame() # Si la tabla aún no se crea
+            df_aud = pd.DataFrame() 
             
         if df_aud.empty:
             st.success("✨ **¡Catálogo Inmaculado!** No existen SKUs huérfanos ni discrepancias entre tu PostgreSQL local y WooCommerce en ninguna de tus tiendas.")
@@ -256,7 +317,6 @@ def render_diagnostico():
                 
                 c_db_woo, c_woo_db = st.columns(2)
                 
-                # COLUMNA IZQUIERDA: En BD pero no en la Web
                 with c_db_woo:
                     df_faltan_woo = df_t[df_t['tipo_error'] == 'FALTA_EN_WOO']
                     st.error(f"🔴 En tu BD pero NO en WordPress ({len(df_faltan_woo)})")
@@ -266,7 +326,6 @@ def render_diagnostico():
                     else:
                         st.write("Todo en orden aquí ✔️")
                         
-                # COLUMNA DERECHA: En la Web pero no en la BD
                 with c_woo_db:
                     df_faltan_db = df_t[df_t['tipo_error'] == 'FALTA_EN_DB']
                     st.warning(f"🟡 En WordPress pero NO en tu BD ({len(df_faltan_db)})")
@@ -276,3 +335,59 @@ def render_diagnostico():
                     else:
                         st.write("Todo en orden aquí ✔️")
                 st.divider()
+
+# ==========================================================================
+    # PESTAÑA 7: LOGS DE MARKETING (LECTURA SQL CLOUD-NATIVE)
+    # ==========================================================================
+    with tab_marketing:
+        st.markdown("### 📈 Auditoría del Motor de Marketing")
+        st.info("Visualiza en tiempo real las operaciones del bot. Ahora conectado de forma nativa a PostgreSQL (sin archivos de texto locales).")
+        
+        c_filtro, c_btn_log = st.columns([8, 2])
+        filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimas 2 horas", "Hoy", "Última semana"], horizontal=True)
+        
+        if c_btn_log.button("🔄 Refrescar Logs", key="btn_refresh_mkt"):
+            st.rerun()
+
+        # Condición SQL directa sin doble desfase
+        if filtro_tiempo == "Últimas 2 horas":
+            condicion_tiempo = "fecha >= (NOW() - INTERVAL '5 hours') - INTERVAL '2 hours'"
+        elif filtro_tiempo == "Hoy":
+            condicion_tiempo = "fecha::date = (NOW() - INTERVAL '5 hours')::date"
+        else:
+            condicion_tiempo = "fecha >= (NOW() - INTERVAL '5 hours') - INTERVAL '7 days'"
+        
+        try:
+            # Auto-creación de tabla de contingencia
+            with engine.begin() as conn_init:
+                conn_init.execute(text("""
+                    CREATE TABLE IF NOT EXISTS logs_marketing (
+                        id SERIAL PRIMARY KEY,
+                        fecha TIMESTAMP DEFAULT NOW(),
+                        mensaje TEXT
+                    )
+                """))
+
+            with engine.connect() as conn:
+                df_logs = pd.read_sql(text(f"""
+                    SELECT fecha, mensaje 
+                    FROM logs_marketing 
+                    WHERE {condicion_tiempo}
+                    ORDER BY id DESC
+                """), conn)
+            
+            if not df_logs.empty:
+                # Conversión explícita a formato datetime en caso de ser necesario
+                df_logs['fecha'] = pd.to_datetime(df_logs['fecha']) + pd.Timedelta(hours=5)
+                
+                lineas_log = []
+                for _, row in df_logs.iterrows():
+                    fecha_f = row['fecha'].strftime("%Y-%m-%d %H:%M:%S")
+                    lineas_log.append(f"[{fecha_f}] {row['mensaje']}")
+                
+                st.code("\n".join(lineas_log), language="log")
+            else:
+                st.warning(f"Aún no hay registros de marketing generados para el filtro: {filtro_tiempo}")
+
+        except Exception as e:
+            st.error(f"❌ Error leyendo la base de datos: {e}")

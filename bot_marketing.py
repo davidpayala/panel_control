@@ -24,6 +24,22 @@ from utils import (
 )
 
 # ==============================================================================
+# 🗄️ INICIALIZADOR DEL SISTEMA DE LOGS SQL
+# ==============================================================================
+def log_mkt(mensaje):
+    """Guarda el log en la Base de Datos y lo imprime en la terminal SSH"""
+    # Limpiamos los saltos de línea iniciales para que la base de datos quede ordenada
+    mensaje_limpio = str(mensaje).lstrip('\n')
+    print(mensaje_limpio, flush=True) 
+    try:
+        with engine.begin() as conn:
+            # Insertamos con el reloj de Perú
+            conn.execute(text("INSERT INTO logs_marketing (fecha, mensaje) VALUES (NOW() - INTERVAL '5 hours', :msg)"), {"msg": mensaje_limpio})
+    except Exception:
+        pass
+
+
+# ==============================================================================
 # 🧠 MOTOR BLINDADO DE SELECCIÓN DE PRODUCTOS
 # ==============================================================================
 def buscar_producto_dinamico(conn, col_probabilidad):
@@ -86,11 +102,12 @@ def buscar_producto_dinamico(conn, col_probabilidad):
         return producto_dict
     return None
 
+
 # ==============================================================================
 # 🚀 MOTOR ORQUESTADOR PRINCIPAL
 # ==============================================================================
 def ejecutar_francotirador():
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Despertando Motor de Marketing Multi-Terminal...", flush=True)
+    log_mkt("🤖 Despertando Motor de Marketing Multi-Terminal...")
     es_modo_test = "--test" in sys.argv or "--now" in sys.argv
 
     try:
@@ -98,7 +115,7 @@ def ejecutar_francotirador():
             config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
         
         if not config:
-            print("🛑 No hay configuración registrada en la base de datos.")
+            log_mkt("🛑 No hay configuración registrada en la base de datos.")
             return
 
         # --- LÓGICA DE PROBABILIDAD (Ciclo Base = 30 min) ---
@@ -106,7 +123,6 @@ def ejecutar_francotirador():
         
         def obtener_probabilidad(texto):
             try:
-                # Si el texto guardado es un número (ej. "75"), lo parsea. Si es el texto viejo, asume 100
                 if str(texto).isdigit(): return int(texto)
                 else: return 100
             except:
@@ -117,8 +133,8 @@ def ejecutar_francotirador():
         prob_fb  = obtener_probabilidad(getattr(config, 'intervalo_fb', '100'))
 
         if not es_modo_test:
-            retraso_minutos = random.randint(1, 15)
-            print(f"⏳ Esperando {retraso_minutos} minutos (Retraso orgánico)...")
+            retraso_minutos = random.randint(1, 25) 
+            log_mkt(f"⏳ Esperando {retraso_minutos} minutos (Retraso orgánico)...")
             time.sleep(retraso_minutos * 60)
 
         with engine.connect() as conn:
@@ -139,25 +155,23 @@ def ejecutar_francotirador():
         ahora = hora_peru.time()
         dentro_de_horario = (config.hora_inicio <= ahora <= config.hora_fin)
 
-        # ¿Ya pasaron los 30 min reglamentarios?
-        tiempo_ok_msg = es_modo_test or (min_pasados_msg >= (minutos_base - 2))
-        tiempo_ok_est = es_modo_test or (min_pasados_est >= (minutos_base - 2))
-        tiempo_ok_fb  = es_modo_test or (min_pasados_fb >= (minutos_base - 2))
+        tiempo_ok_msg = es_modo_test or (min_pasados_msg >= 10)
+        tiempo_ok_est = es_modo_test or (min_pasados_est >= 10)
+        tiempo_ok_fb  = es_modo_test or (min_pasados_fb >= 10)
 
         # ==================================================================
         # 🎯 TAREA 1: MENSAJES DIRECTOS
         # ==================================================================
         if not config.bot_activo:
-            print("\n⏸️ TAREA 1 OMITIDA: El Sniper Bot está apagado.")
+            log_mkt("⏸️ TAREA 1 OMITIDA: El Sniper Bot está apagado.")
         elif not tiempo_ok_msg:
-            print(f"\n⏳ TAREA 1: Aún no pasan los 30 min base (Han pasado {int(min_pasados_msg)} min).")
+            log_mkt(f"⏳ TAREA 1: Aún no pasan los 30 min base (Han pasado {int(min_pasados_msg)} min).")
         elif not dentro_de_horario:
-            print("\n⏰ TAREA 1 OMITIDA: Fuera de horario comercial.")
+            log_mkt("⏰ TAREA 1 OMITIDA: Fuera de horario comercial.")
         else:
-            # LANZAMIENTO DE DADOS PARA MENSAJES
             dado_msg = random.randint(1, 100)
             if dado_msg <= prob_msg or es_modo_test:
-                print(f"\n▶️ INICIANDO TAREA 1 (Dado: {dado_msg} <= {prob_msg}%)")
+                log_mkt(f"▶️ INICIANDO TAREA 1 (Dado: {dado_msg} <= {prob_msg}%)")
                 obreros = [
                     {"sesion": "principal", "col_prob": "prob_msg_principal", "nombre_vis": "Principal"},
                     {"sesion": "default", "col_prob": "prob_msg_default", "nombre_vis": "Lentes"}
@@ -166,7 +180,7 @@ def ejecutar_francotirador():
                 disparo_general_exitoso = False
                 for obrero in obreros:
                     with engine.connect() as conn:
-                        query_conteo = text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess AND fecha::date = CURRENT_DATE")
+                        query_conteo = text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess AND fecha::date = (NOW() - INTERVAL '5 hours')::date")
                         enviados_por_mi = conn.execute(query_conteo, {"sess": obrero["sesion"]}).scalar() or 0
 
                         if enviados_por_mi >= config.max_mensajes_dia:
@@ -182,13 +196,13 @@ def ejecutar_francotirador():
                             WHERE c.activo = TRUE AND c.estado = 'Sin empezar' AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
                               AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6
                               AND t.telefono NOT IN (SELECT telefono FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days')
+                            ORDER BY RANDOM()
                             LIMIT 50
                         """)
                         clientes_validos = conn.execute(query_clientes).fetchall()
 
                     if not clientes_validos: continue
                     prospectos = list(clientes_validos)
-                    random.shuffle(prospectos)
 
                     for cliente in prospectos[:5]:
                         norm = normalizar_telefono_maestro(cliente.telefono)
@@ -207,13 +221,16 @@ def ejecutar_francotirador():
                                 with engine.begin() as conn_save:
                                     conn_save.execute(text("INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW() - INTERVAL '5 hours', TRUE, :sess)"), 
                                                       {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
-                                print(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']})!")
+                                log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']})!")
                                 disparo_general_exitoso = True
                                 break 
+                        else:
+                            log_mkt(f"⚠️ El número {telefono_final} no tiene WhatsApp. Purgando del embudo para siempre...")
+                            with engine.begin() as conn_purge:
+                                conn_purge.execute(text("UPDATE clientes SET excluir_publicidad = TRUE WHERE id_cliente = :idc"), {"idc": cliente.id_cliente})
             else:
-                print(f"\n🎲 TAREA 1 SALTADA: El dado cayó en {dado_msg} (Requerido: <= {prob_msg}%).")
+                log_mkt(f"🎲 TAREA 1 SALTADA: El dado cayó en {dado_msg} (Requerido: <= {prob_msg}%).")
 
-            # Siempre actualizamos el reloj para que empiece a contar otros 30 min (se haya enviado o se haya perdido por probabilidad)
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_mensajes = NOW() WHERE id = :id"), {"id": config.id})
 
@@ -227,7 +244,7 @@ def ejecutar_francotirador():
         else:
             dado_est = random.randint(1, 100)
             if dado_est <= prob_est or es_modo_test:
-                print(f"\n▶️ INICIANDO TAREA 2 (Dado: {dado_est} <= {prob_est}%)")
+                log_mkt(f"▶️ INICIANDO TAREA 2 (Dado: {dado_est} <= {prob_est}%)")
                 cuentas_estados = [
                     {"sesion": "principal", "col_prob": "prob_est_principal"},
                     {"sesion": "default", "col_prob": "prob_est_default"}
@@ -240,35 +257,34 @@ def ejecutar_francotirador():
                         respuestas_ia = generar_texto_producto_ia(prod_est, es_estado=True)
                         texto_estado = respuestas_ia.get('estado_whatsapp', '')
                         
-                        print(f"  📡 Enviando estado a WAHA ({cuenta['sesion']})...")
+                        log_mkt(f" 📡 Enviando estado a WAHA ({cuenta['sesion']})...")
                         exito, msg_api = subir_estado_whatsapp(cuenta['sesion'], texto_estado, prod_est.get('url_imagen', ''))
                         
-                        # PARCHE: WAHA devuelve HTTP 201 al crear estados. Si 'exito' es False 
-                        # pero no hay un error real, forzamos el registro en la Base de Datos.
                         if exito or ("error" not in str(msg_api).lower() and "fail" not in str(msg_api).lower()):
-                            print(f"  ✅ ¡Estado publicado y registrado en la BD ({cuenta['sesion']})!")
+                            log_mkt(f" ✅ ¡Estado publicado y registrado en la BD ({cuenta['sesion']})!")
                             with engine.begin() as conn_est:
                                 conn_est.execute(text("INSERT INTO Historial_Estados (sku, session_name, fecha_publicacion) VALUES (:sku, :sess, NOW())"), {"sku": prod_est['sku'], "sess": cuenta['sesion']})
                         else:
-                            print(f"  ❌ Fallo real en la subida a WAHA: {msg_api}")
+                            log_mkt(f" ❌ Fallo real en la subida a WAHA: {msg_api}")
             else:
-                print(f"\n🎲 TAREA 2 SALTADA: El dado cayó en {dado_est} (Requerido: <= {prob_est}%).")
+                log_mkt(f"🎲 TAREA 2 SALTADA: El dado cayó en {dado_est} (Requerido: <= {prob_est}%).")
 
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_estados = NOW() WHERE id = :id"), {"id": config.id})
+
         # ==================================================================
         # 📘 TAREA 3: FACEBOOK
         # ==================================================================
         if not getattr(config, 'fb_activo', False):
-            print("\n⏸️ TAREA 3 OMITIDA: Auto-Publicación Facebook está apagada en el Panel.")
+            log_mkt("⏸️ TAREA 3 OMITIDA: Auto-Publicación Facebook está apagada en el Panel.")
         elif not tiempo_ok_fb:
-            print(f"\n⏳ TAREA 3: Aún no pasan los 30 min base (Han pasado {int(min_pasados_fb)} min).")
+            log_mkt(f"⏳ TAREA 3: Aún no pasan los 30 min base (Han pasado {int(min_pasados_fb)} min).")
         elif not dentro_de_horario:
-            print("\n⏰ TAREA 3 OMITIDA: Fuera de horario comercial para Facebook.")
+            log_mkt("⏰ TAREA 3 OMITIDA: Fuera de horario comercial para Facebook.")
         else:
             dado_fb = random.randint(1, 100)
             if dado_fb <= prob_fb or es_modo_test:
-                print(f"\n▶️ INICIANDO TAREA 3 (Dado: {dado_fb} <= {prob_fb}%)")
+                log_mkt(f"▶️ INICIANDO TAREA 3 (Dado: {dado_fb} <= {prob_fb}%)")
                 paginas_fb = [
                     {"nombre": "General", "col_prob": "prob_fb_general", "webhook": getattr(config, 'webhook_fb_general', '')},
                     {"nombre": "Pelucas", "col_prob": "prob_fb_pelucas", "webhook": getattr(config, 'webhook_fb_pelucas', '')},
@@ -278,37 +294,36 @@ def ejecutar_francotirador():
                 
                 for pagina in paginas_fb:
                     if not pagina["webhook"] or str(pagina["webhook"]).strip() == "":
-                        print(f"  ⚠️ Omitido: No hay URL de Webhook guardada para la página '{pagina['nombre']}'.")
+                        log_mkt(f" ⚠️ Omitido: No hay URL de Webhook guardada para la página '{pagina['nombre']}'.")
                         continue
                     
                     with engine.connect() as conn:
                         prod_fb = buscar_producto_dinamico(conn, pagina['col_prob'])
                         
                     if prod_fb:
-                        print(f"  🧠 Redactando copy (IA) para postear {prod_fb.get('nombre', '')} en {pagina['nombre']}...")
+                        log_mkt(f" 🧠 Redactando copy (IA) para postear {prod_fb.get('nombre', '')} en {pagina['nombre']}...")
                         respuestas_ia = generar_texto_producto_ia(prod_fb, es_estado=True)
                         texto_fb = respuestas_ia.get('post_facebook', '')
                         
                         exito_fb, mensaje_fb = publicar_en_facebook_via_webhook(texto_fb, prod_fb.get('url_imagen', ''), pagina["webhook"])
                         
                         if exito_fb:
-                            print(f"  ✅ ¡Post inyectado exitosamente en Make.com ({pagina['nombre']})!")
+                            log_mkt(f" ✅ ¡Post inyectado exitosamente en Make.com ({pagina['nombre']})!")
                             with engine.begin() as conn_hist:
                                 conn_hist.execute(text("INSERT INTO Historial_Facebook (pagina, sku) VALUES (:pag, :sku)"), {"pag": pagina['nombre'], "sku": prod_fb.get('sku', '')})
                             disparo_fb = True
                         else:
-                            print(f"  ❌ Make.com rechazó el envío para {pagina['nombre']}. Razón: {mensaje_fb}")
+                            log_mkt(f" ❌ Make.com rechazó el envío para {pagina['nombre']}. Razón: {mensaje_fb}")
                     else:
-                        print(f"  ⚠️ Omitido: Cero stock o probabilidad 0% para categorías en FB {pagina['nombre']}.")
+                        log_mkt(f" ⚠️ Omitido: Cero stock o probabilidad 0% para categorías en FB {pagina['nombre']}.")
             else:
-                print(f"\n🎲 TAREA 3 SALTADA: El dado cayó en {dado_fb} (Requerido: <= {prob_fb}%).")
+                log_mkt(f"🎲 TAREA 3 SALTADA: El dado cayó en {dado_fb} (Requerido: <= {prob_fb}%).")
             
-            # Actualizamos el reloj SIEMPRE, haya disparado o saltado por el dado
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_fb = NOW() WHERE id = :id"), {"id": config.id})
 
     except Exception as e:
-        print(f"🔥 Error catastrófico: {e}")
+        log_mkt(f"🔥 Error catastrófico: {e}")
 
 if __name__ == "__main__":
     ejecutar_francotirador()

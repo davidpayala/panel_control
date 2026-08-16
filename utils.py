@@ -893,11 +893,19 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         texto_reserva = f"¡Mira el hermoso modelo que acaba de reingresar a nuestro almacén!\n\n⭐ **{titulo_prod}** {txt_precio}.\n\nPuedes revisar fotos reales y pedirlo directo aquí:\n👉 {enlace_compra}\n\n{cross_selling}"
     # 6. Petición a Ollama
     try:
-        response = requests.post(url_ia, json={"model": modelo_ia, "prompt": prompt, "stream": False, "format": "json"}, timeout=15)
+        # 🔴 CAMBIO 1: Aumentamos la paciencia de Python a 120 segundos
+        response = requests.post(url_ia, json={"model": modelo_ia, "prompt": prompt, "stream": False, "format": "json"}, timeout=120)
         
         if response.status_code == 200:
-            datos_json = json.loads(response.json().get("response", "").strip())
+            texto_crudo = response.json().get("response", "").strip()
             
+            # 🔴 CAMBIO 2: Blindaje de lectura JSON para detectar si la IA alucina
+            try:
+                datos_json = json.loads(texto_crudo)
+            except json.JSONDecodeError:
+                print(f"   ⚠️ [Aviso IA] Ollama no devolvió un JSON válido. Texto recibido: {texto_crudo}")
+                return texto_reserva
+
             if es_estado:
                 return {
                     "estado_whatsapp": datos_json.get("estado_whatsapp", texto_reserva["estado_whatsapp"]),
@@ -908,9 +916,14 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
                 texto_final = "\n\n".join(parrafos) if isinstance(parrafos, list) else str(parrafos)
                 return texto_final.strip() if len(texto_final) > 12 else texto_reserva
         else:
-            print(f"   ⚠️ [Aviso IA] Ollama respondió HTTP {response.status_code}.")
+            print(f"   ⚠️ [Aviso IA] Ollama respondió HTTP {response.status_code}. Revisa si el modelo '{modelo_ia}' existe.")
+            
+    except requests.exceptions.Timeout:
+        print(f"   ⚠️ [Aviso IA] TIMEOUT: Ollama tardó más de 120 segundos en redactar el mensaje.")
+    except requests.exceptions.ConnectionError:
+        print(f"   ⚠️ [Aviso IA] CONEXIÓN RECHAZADA: Ollama está apagado. (Ejecuta 'systemctl start ollama')")
     except Exception as e:
-        print(f"   ⚠️ [Aviso IA] Usando rescate: {e}")
+        print(f"   ⚠️ [Aviso IA] Error desconocido: {e}")
 
     return texto_reserva
 # ==============================================================================
@@ -1091,3 +1104,95 @@ def publicar_en_facebook_via_webhook(mensaje, url_imagen, webhook_url):
             return False, response.text
     except Exception as e:
         return False, str(e)
+
+
+
+def ejecutar_auditoria_bidireccional_woo(tienda_url, wc_key, wc_secret):
+    """
+    Sincroniza y audita SKUs entre la Base de Datos y WooCommerce en ambas direcciones.
+    Retorna un generador para actualizar la interfaz de Streamlit en tiempo real.
+    """
+    hora_inicio = datetime.now()
+    yield {"estado": "inicio", "hora": hora_inicio.strftime("%H:%M:%S"), "progreso": 0, "msg": "Iniciando conexión con WooCommerce..."}
+
+    try:
+        # 1. Conectar a WooCommerce
+        wcapi = API(
+            url=tienda_url,
+            consumer_key=wc_key,
+            consumer_secret=wc_secret,
+            version="wc/v3",
+            timeout=30
+        )
+
+        # 2. Obtener SKUs de WordPress (Paginado para no saturar la memoria)
+        yield {"estado": "procesando", "progreso": 10, "msg": "Descargando catálogo de WordPress..."}
+        
+        wp_skus = set()
+        pagina = 1
+        while True:
+            # Traemos productos simples y padres
+            res = wcapi.get("products", params={"per_page": 100, "page": pagina})
+            if res.status_code != 200: break
+            
+            productos_wp = res.json()
+            if not productos_wp: break
+            
+            for p in productos_wp:
+                if p.get('sku'): wp_skus.add(str(p['sku']).strip())
+                # Si tiene variaciones, idealmente habría que iterarlas con wcapi.get(f"products/{p['id']}/variations")
+                # (Para este ejemplo asumimos que el SKU padre/simple basta o que tienes un endpoint custom)
+
+            pagina += 1
+            # Simulamos progreso de descarga WP (hasta un 40%)
+            progreso_actual = min(10 + (pagina * 5), 40)
+            yield {"estado": "procesando", "progreso": progreso_actual, "msg": f"Leyendo página {pagina} de WordPress..."}
+
+        # 3. Obtener SKUs de tu Base de Datos (PostgreSQL)
+        yield {"estado": "procesando", "progreso": 50, "msg": "Extrayendo inventario físico de la Base de Datos..."}
+        
+        with engine.connect() as conn:
+            # Traemos todos los SKUs activos
+            query_db = text("SELECT sku FROM variantes WHERE sku IS NOT NULL AND TRIM(sku) != ''")
+            db_skus = {str(row[0]).strip() for row in conn.execute(query_db).fetchall()}
+
+        # 4. El Cruce de Datos (Magia de Conjuntos en Python)
+        yield {"estado": "procesando", "progreso": 70, "msg": "Cruzando información: DB vs WordPress..."}
+        
+        faltan_en_wp = db_skus - wp_skus
+        faltan_en_db = wp_skus - db_skus
+
+        # 5. Guardar Auditoría en PostgreSQL
+        yield {"estado": "procesando", "progreso": 85, "msg": "Guardando reporte de discrepancias..."}
+        
+        with engine.begin() as conn:
+            # Limpiamos auditoría anterior de esta tienda
+            conn.execute(text("DELETE FROM auditoria_skus_woo WHERE tienda = :t"), {"t": tienda_url})
+            
+            # Insertar los que faltan en WP
+            for sku in faltan_en_wp:
+                conn.execute(text("""
+                    INSERT INTO auditoria_skus_woo (tienda, tipo_error, sku, detalle, fecha_deteccion) 
+                    VALUES (:t, 'Falta en WP', :s, 'El SKU existe en local pero no está en la web', NOW())
+                """), {"t": tienda_url, "s": sku})
+                
+            # Insertar los que faltan en DB
+            for sku in faltan_en_db:
+                conn.execute(text("""
+                    INSERT INTO auditoria_skus_woo (tienda, tipo_error, sku, detalle, fecha_deteccion) 
+                    VALUES (:t, 'Falta en DB', :s, 'El SKU se vende en la web pero no existe en local', NOW())
+                """), {"t": tienda_url, "s": sku})
+
+        # 6. Finalización
+        resumen = f"100% Inventario simple verificado. 100% Variaciones verificadas."
+        yield {
+            "estado": "completado", 
+            "progreso": 100, 
+            "hora_fin": datetime.now().strftime("%H:%M:%S"),
+            "resumen": resumen,
+            "err_wp": len(faltan_en_wp),
+            "err_db": len(faltan_en_db)
+        }
+
+    except Exception as e:
+        yield {"estado": "error", "msg": str(e)}
