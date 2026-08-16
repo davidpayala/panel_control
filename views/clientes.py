@@ -118,7 +118,7 @@ def render_clientes():
 
     query = """
         SELECT c.id_cliente, c.nombre_corto, c.estado, c.excluir_publicidad, c.nombre, c.apellido, c.etiquetas, c.google_id, c.whatsapp_internal_id, c.nombre_ia,
-               COALESCE((SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1), c.telefono, c.whatsapp_internal_id) as tel_principal,
+               COALESCE((SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1), c.telefono) as tel_principal,
                COALESCE((SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE), c.telefono) as todos_telefonos
         FROM clientes c
         WHERE c.activo = TRUE
@@ -194,19 +194,32 @@ def render_clientes():
                     new_estado = c3.selectbox("Estado", options=estados_opciones, index=estados_opciones.index(curr_est) if curr_est in estados_opciones else 0)
 
                     st.write("")
-                    new_excluir = st.toggle("🚫 Excluir de campañas publicitarias automáticas (Proveedor / No Molestar)", value=bool(row_full.get('excluir_publicidad', False)))
+                    new_excluir = st.toggle("🚫 Excluir de campañas publicitarias automáticas", value=bool(row_full.get('excluir_publicidad', False)))
 
-                    st.markdown("##### 👥 Sincronización Directa a Google Contacts")
-                    c4, c5, c6 = st.columns(3)
+                    st.markdown("##### 👥 Sincronización Directa y Teléfono")
                     
                     val_nom = row_full['nombre'] if pd.notna(row_full['nombre']) else ""
                     val_ape = row_full['apellido'] if pd.notna(row_full['apellido']) else ""
-                    val_tel = row_full['tel_principal'] if pd.notna(row_full['tel_principal']) else ""
+                    
+                    # 🛠️ CORRECCIÓN: Ocultamos visualmente el LID para evitar confusión
+                    val_tel_raw = row_full['tel_principal'] if pd.notna(row_full['tel_principal']) else ""
+                    if str(val_tel_raw).startswith("LID_") or "@lid" in str(val_tel_raw):
+                        val_tel_ui = ""
+                    else:
+                        val_tel_ui = val_tel_raw
+
                     val_eti = row_full['etiquetas'] if pd.notna(row_full['etiquetas']) else ""
 
-                    new_real_nombre = c4.text_input("Nombre Real", value=val_nom)
-                    new_apellido = c5.text_input("Apellido", value=val_ape)
-                    new_tel_principal = c6.text_input("Teléfono Principal", value=val_tel)
+                    # 🔒 LÓGICA DE BLOQUEO: Verificar si hay un número real válido
+                    bloquear_google = (val_tel_ui == "")
+                    
+                    if bloquear_google:
+                        st.info("⚠️ Guarda un Teléfono Principal válido primero para habilitar la edición del Nombre/Apellido y vincular con Google.")
+
+                    c4, c5, c6 = st.columns(3)
+                    new_real_nombre = c4.text_input("Nombre Real", value=val_nom, disabled=bloquear_google)
+                    new_apellido = c5.text_input("Apellido", value=val_ape, disabled=bloquear_google)
+                    new_tel_principal = c6.text_input("Teléfono Principal", value=val_tel_ui, placeholder="Ej: +51 999 888 777")
                     
                     new_etiquetas = st.text_area("Etiquetas / Notas", value=val_eti)
 
@@ -215,41 +228,61 @@ def render_clientes():
                         google_id_crudo = row_full['google_id']
                         tiene_google_id = pd.notna(google_id_crudo) and str(google_id_crudo).strip().lower() not in ['', 'nan', 'none']
                         
-                        if tiene_google_id:
+                        if tiene_google_id and new_tel_principal.strip():
                             norm_t = normalizar_telefono_maestro(new_tel_principal)
                             tel_g = norm_t['google'] if norm_t else new_tel_principal
-                            
                             with st.spinner("Sincronizando con Google Contacts..."):
                                 exito_google = actualizar_en_google(str(google_id_crudo), new_real_nombre, new_apellido, tel_g)
-                                
                             if exito_google: st.toast("✅ Contacto actualizado en Google", icon="👥")
                             else: st.error("❌ Falló la actualización en Google Contacts.")
                         
                         with engine.begin() as conn:
-                            norm_t = normalizar_telefono_maestro(new_tel_principal)
+                            # 1. Obtener estado real de la base de datos (por si es LID oculto)
+                            reg_actual = conn.execute(text("SELECT telefono FROM clientes WHERE id_cliente=:id"), {"id": id_cli_sel}).fetchone()
+                            tel_bd_actual = reg_actual[0] if reg_actual else None
+                            es_lid_actual = tel_bd_actual and (str(tel_bd_actual).startswith("LID_") or "@lid" in str(tel_bd_actual))
+
+                            # 2. Interpretar lo que ingresó el usuario
+                            norm_t = normalizar_telefono_maestro(new_tel_principal) if new_tel_principal.strip() else None
                             tel_clean = norm_t['db'] if norm_t else str(new_tel_principal).strip()
 
-                            if tel_clean != str(row_full['tel_principal']).strip():
-                                conn.execute(text("UPDATE clientes SET telefono = NULL WHERE telefono = :t AND id_cliente != :id"), {"t": tel_clean, "id": id_cli_sel})
-                                conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t AND id_cliente != :id"), {"t": tel_clean, "id": id_cli_sel})
+                            # 3. Lógica Segura: Si está vacío y antes era LID, mantener LID
+                            if not tel_clean and es_lid_actual:
+                                tel_final = tel_bd_actual
+                            else:
+                                tel_final = tel_clean if tel_clean else None
 
+                            # 4. Si ha ingresado un número REAL y NUEVO
+                            es_numero_real = tel_final and not (str(tel_final).startswith("LID_") or "@lid" in str(tel_final))
+                            
+                            if tel_final and tel_final != tel_bd_actual and es_numero_real:
+                                # Liberamos colisiones de números
+                                conn.execute(text("UPDATE clientes SET telefono = NULL WHERE telefono = :t AND id_cliente != :id"), {"t": tel_final, "id": id_cli_sel})
+                                conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t AND id_cliente != :id"), {"t": tel_final, "id": id_cli_sel})
+                                
+                                # 🚀 AUTO-UPGRADE: Si era LID, transferir el historial al número real
+                                if es_lid_actual:
+                                    conn.execute(text("UPDATE mensajes SET telefono = :new WHERE telefono = :old"), {"new": tel_final, "old": tel_bd_actual})
+
+                            # 5. Guardar Cambios en la Ficha del Cliente
                             conn.execute(text("""
                                 UPDATE clientes 
                                 SET nombre_corto=:nc, nombre_ia=:nia, nombre=:n, apellido=:a, etiquetas=:e, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc, telefono=:t
                                 WHERE id_cliente=:id
                             """), {
                                 "nc": new_nombre, "nia": new_nombre_ia, "n": new_real_nombre, "a": new_apellido,
-                                "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "exc": new_excluir, "t": tel_clean, "id": id_cli_sel
+                                "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "exc": new_excluir, "t": tel_final, "id": id_cli_sel
                             })
                             
-                            if tel_clean != str(row_full['tel_principal']).strip():
+                            # 6. Actualizar Tabla Secundaria Solo Si Es Número Real
+                            if es_numero_real and tel_final != tel_bd_actual:
                                 conn.execute(text("UPDATE telefonoscliente SET es_principal=FALSE WHERE id_cliente=:id"), {"id": id_cli_sel})
-                                existe_tel = conn.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente=:id AND telefono=:t"), {"id": id_cli_sel, "t": tel_clean}).fetchone()
+                                existe_tel = conn.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente=:id AND telefono=:t"), {"id": id_cli_sel, "t": tel_final}).fetchone()
                                 
                                 if existe_tel:
                                     conn.execute(text("UPDATE telefonoscliente SET es_principal=TRUE, activo=TRUE WHERE id_telefono=:idt"), {"idt": existe_tel[0]})
                                 else:
-                                    conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal, activo) VALUES (:id, :t, TRUE, TRUE)"), {"id": id_cli_sel, "t": tel_clean})
+                                    conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal, activo) VALUES (:id, :t, TRUE, TRUE)"), {"id": id_cli_sel, "t": tel_final})
 
                         st.success("Guardado en Base de Datos.")
                         time.sleep(1)
