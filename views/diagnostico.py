@@ -34,19 +34,28 @@ def render_diagnostico():
     # PESTAÑA 1: LOGS DE BASE DE DATOS
     # ==========================================================================
     with tab_logs:
-        c_btn, c_info = st.columns([20, 80])
+        c_btn, c_info, c_filtro = st.columns([15, 55, 30])
+        
         if c_btn.button("🔄 Actualizar", key="btn_logs"):
             st.rerun()
         
         c_info.info("Últimos eventos recibidos por el servidor.")
+        
+        # 🕵️ NUEVO: Filtro visual para aislar el diagnóstico
+        solo_lid = c_filtro.checkbox("🕵️ Solo clientes anónimos (LID)", value=True)
 
         try:
             with engine.connect() as conn:
                 conn.commit()
-                query = """
+                
+                # Inyectamos la condición SQL si la casilla está marcada
+                condicion_sql = "WHERE event_type = 'TRACE_LID_ANONIMO'" if solo_lid else ""
+                
+                query = f"""
                     SELECT id, fecha, session_name, event_type, payload 
                     FROM webhook_logs 
-                    ORDER BY id DESC LIMIT 20
+                    {condicion_sql}
+                    ORDER BY id DESC LIMIT 40
                 """
                 df = pd.read_sql(text(query), conn)
 
@@ -58,28 +67,61 @@ def render_diagnostico():
                     evento = row['event_type']
                     
                     try:
+                        # Corregido: Algunos payloads vienen directo en la raíz y otros anidados
                         payload_json = json.loads(row['payload'])
-                        p = payload_json.get('payload', {})
+                        p = payload_json.get('payload', payload_json) 
                         resumen = "Datos..."
+                        icono = "📩"
                         
                         if evento == 'message':
                             body = p.get('body', '') or (p.get('media', {}).get('url', '')) 
                             if not body: body = "[Multimedia/Sticker]"
                             origen = "📤 YO" if p.get('fromMe') else f"📥 {p.get('from', '?').split('@')[0]}"
                             resumen = f"{origen} | {str(body)[:40]}"
+                        
                         elif evento == 'message.ack':
                             est_map = {1:'Enviado', 2:'Recibido', 3:'Leído', 4:'Play'}
                             status = est_map.get(p.get('ack'), str(p.get('ack')))
                             resumen = f"Estado: {status}"
-                    except:
+                            icono = "✔️"
+                            
+                        # 🕵️ Captura visual del rastreador de anónimos
+                        elif evento == 'TRACE_LID_ANONIMO':
+                            lid_id = payload_json.get('3_registro_panel', {}).get('campo_whatsapp_internal_id', 'Desconocido')
+                            resumen = f"Rastreo de Cliente sin Teléfono | {lid_id}"
+                            icono = "🕵️"
+                            
+                    except Exception as e:
                         payload_json = {"error": "No JSON", "raw": str(row['payload'])}
                         resumen = "Log sin formato"
+                        icono = "⚠️"
 
-                    icono = "📩" if evento != 'message.ack' else "✔️"
-                    
                     with st.expander(f"{icono} {fecha_str} | {evento} | {resumen}"):
                         st.text(f"ID Log: {row['id']} | Sesión: {row['session_name']}")
-                        st.json(payload_json)
+                        
+                        if evento == 'TRACE_LID_ANONIMO':
+                            st.markdown("### 🔍 Análisis de Cliente Anónimo (LID)")
+                            
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.info("**2. ¿Qué dijo WAHA al pedir el teléfono?**")
+                                st.write(payload_json.get("2_waha_resolucion", ""))
+                                
+                                st.warning("**4. ¿Intentó sincronizar con Google?**")
+                                st.write(payload_json.get("4_intento_google", ""))
+                                
+                            with c2:
+                                st.success("**3. ¿Cómo se registró en el Panel?**")
+                                reg = payload_json.get("3_registro_panel", {})
+                                st.write(f"**ID Cliente:** {reg.get('id_cliente')}")
+                                st.write(f"**Campo `telefono`:** `{reg.get('campo_telefono')}`")
+                                st.write(f"**Campo `whatsapp_internal_id`:** `{reg.get('campo_whatsapp_internal_id')}`")
+                                
+                            st.markdown("**1. Payload RAW recibido (Data original):**")
+                            st.json(payload_json.get("1_raw_waha", {}))
+                            
+                        else:
+                            st.json(payload_json)
 
         except Exception as e:
             st.error(f"Error leyendo logs: {e}")

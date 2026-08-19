@@ -401,6 +401,28 @@ def recibir_mensaje():
                                 raise e
 
                     # ===============================================================
+                    # 🕵️ NUEVO: RASTREADOR DE CLIENTES ANÓNIMOS (LID)
+                    # ===============================================================
+                    if wspid_lid and not telefono_num and tipo_msg == 'ENTRANTE':
+                        # Recopilamos las 4 preguntas exactas para el diagnóstico
+                        trace_data = {
+                            "1_raw_waha": payload,
+                            "2_waha_resolucion": "La API de WAHA no devolvió un número válido." if not locals().get('tel_api') else locals().get('tel_api'),
+                            "3_registro_panel": {
+                                "id_cliente": id_cliente_final,
+                                "campo_whatsapp_internal_id": wspid_lid,
+                                "campo_telefono": locals().get('t_final', f"LID_{wspid_lid.split('@')[0]}"),
+                                "tabla": "Clientes y telefonoscliente"
+                            },
+                            "4_intento_google": "Sincronización abortada de forma segura. La función sync_google_fondo ignora automáticamente teléfonos que contienen 'LID_' o valores nulos."
+                        }
+                        
+                        # Guardamos este rastro especial en los logs
+                        p_trace_str = json.dumps(trace_data, ensure_ascii=False)
+                        conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
+                                    {"s": session_name, "e": "TRACE_LID_ANONIMO", "p": p_trace_str})
+
+                    # ===============================================================
                     # GUARDADO Y SINCRONIZACIÓN CON TABLA SECUNDARIA
                     # ===============================================================
                     if id_cliente_final:

@@ -109,7 +109,6 @@ def render_catalogo():
             # --- OPCIÓN B: DUPLICAR PRODUCTO EXISTENTE ---
             elif "Duplicar Producto" in tipo_creacion:
                 with engine.connect() as conn:
-                    # EXTRAEMOS url_tienda
                     df_prods = pd.read_sql(text("SELECT id_producto, macro_categoria, categoria, marca, modelo, nombre, color_principal, diametro, url_imagen, url_compra, url_tienda FROM Productos ORDER BY macro_categoria, marca, modelo, nombre"), conn)
                 
                 if not df_prods.empty:
@@ -149,7 +148,7 @@ def render_catalogo():
                         
                         c_ub1, c_ub2 = st.columns(2)
                         n_url_buy = c_ub1.text_input("URL Compra (Proveedor):", value=src_prod['url_compra'] or "")
-                        n_url_tienda = c_ub2.text_input("URL WP (Tienda Web):", value=src_prod.get('url_tienda') or "", help="Enlace final en tu WordPress (dejar vacío si quieres que la IA arme uno genérico)")
+                        n_url_tienda = c_ub2.text_input("URL WP (Tienda Web):", value=src_prod.get('url_tienda') or "", help="Enlace final en tu WordPress")
 
                         st.markdown("### 3. Asigna Nuevos SKUs a las Variantes Clonadas")
                         
@@ -274,7 +273,6 @@ def render_catalogo():
             
             if sku_edit:
                 with engine.connect() as conn:
-                    # EXTRAEMOS url_tienda EN LA QUERY
                     q_edit = text("""
                         SELECT 
                             v.sku, v.id_producto, v.medida, v.precio, v.precio_rebajado, 
@@ -360,6 +358,25 @@ def render_catalogo():
                                     try: final_rebajado = float(new_precio_reb_txt)
                                     except: pass
 
+                                # =====================================================================
+                                # 💡 AUTO-PARCHE DE BASE DE DATOS (ACTUALIZACIÓN EN CASCADA)
+                                # =====================================================================
+                                # Modifica temporalmente la BD para que los estantes o ventas históricas 
+                                # actualicen el SKU solos si tú lo cambias aquí.
+                                try:
+                                    with engine.begin() as conn_patch:
+                                        conn_patch.execute(text("ALTER TABLE Stock_Ubicaciones DROP CONSTRAINT IF EXISTS stock_ubicaciones_sku_fkey;"))
+                                        conn_patch.execute(text("ALTER TABLE Stock_Ubicaciones ADD CONSTRAINT stock_ubicaciones_sku_fkey FOREIGN KEY (sku) REFERENCES Variantes(sku) ON UPDATE CASCADE ON DELETE CASCADE;"))
+                                        
+                                        conn_patch.execute(text("ALTER TABLE Movimientos DROP CONSTRAINT IF EXISTS movimientos_sku_fkey;"))
+                                        conn_patch.execute(text("ALTER TABLE Movimientos ADD CONSTRAINT movimientos_sku_fkey FOREIGN KEY (sku) REFERENCES Variantes(sku) ON UPDATE CASCADE ON DELETE CASCADE;"))
+                                        
+                                        conn_patch.execute(text("ALTER TABLE DetalleVenta DROP CONSTRAINT IF EXISTS detalleventa_sku_fkey;"))
+                                        conn_patch.execute(text("ALTER TABLE DetalleVenta ADD CONSTRAINT detalleventa_sku_fkey FOREIGN KEY (sku) REFERENCES Variantes(sku) ON UPDATE CASCADE ON DELETE CASCADE;"))
+                                except Exception as e:
+                                    print("Nota: El parche de cascada no fue necesario o ya estaba aplicado.", e)
+                                # =====================================================================
+
                                 try:
                                     with engine.connect() as conn:
                                         trans = conn.begin()
@@ -373,7 +390,6 @@ def render_catalogo():
                                             "old_sku": curr['sku']
                                         })
                                         
-                                        # ACTUALIZACIÓN EN PRODUCTO PADRE CON url_tienda INCLUIDO
                                         conn.execute(text("""
                                             UPDATE Productos 
                                             SET marca=:mar, modelo=:mod, nombre=:nom, macro_categoria=:macro, categoria=:cat, 
@@ -387,8 +403,8 @@ def render_catalogo():
                                             "idp": int(curr['id_producto'])
                                         })
                                         trans.commit()
-                                    st.success("✅ ¡Actualizado correctamente!")
-                                    time.sleep(1)
+                                    st.success("✅ ¡Actualizado correctamente en catálogo y estantes!")
+                                    time.sleep(1.5)
                                     st.rerun()
                                 except Exception as e: st.error(f"Error: {e}")
             else: st.warning("SKU no encontrado.")
