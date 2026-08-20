@@ -257,15 +257,7 @@ def recibir_mensaje():
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
         
-        try:
-            with engine.begin() as conn:
-                item = data[0] if isinstance(data, list) else data
-                p_str = json.dumps(item, ensure_ascii=False)[:5000]
-                conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
-                            {"s": item.get('session', 'unk'), "e": item.get('event', 'unk'), "p": p_str})
-                conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 50)"))
-        except: pass
-
+        # WAHA a veces envía listas de eventos, otras veces un solo diccionario
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
@@ -273,6 +265,36 @@ def recibir_mensaje():
             session_name = evento.get('session', 'default')
             payload = evento.get('payload', {})
 
+            # ===============================================================
+            # 🛡️ PASO 1: FILTRO ANTI-BROADCAST TEMPRANO Y DEFINITIVO (WEBJS)
+            # ===============================================================
+            # Cortamos los estados de raíz evaluando las múltiples formas en las que WEBJS los reporta
+            is_broadcast = (
+                payload.get('from') == 'status@broadcast' or 
+                payload.get('to') == 'status@broadcast' or
+                payload.get('_data', {}).get('id', {}).get('remote') == 'status@broadcast' or
+                'status@broadcast' in str(payload.get('id', ''))
+            )
+            
+            if is_broadcast:
+                continue # 🚫 Salta a la siguiente iteración. No se procesa ni se guarda en los logs.
+            
+            # ===============================================================
+            # 📝 PASO 2: GUARDAR LOG RAW (Solo de eventos útiles)
+            # ===============================================================
+            try:
+                with engine.begin() as conn:
+                    p_str = json.dumps(evento, ensure_ascii=False)[:5000]
+                    conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
+                                {"s": session_name, "e": tipo_evento, "p": p_str})
+                    # Mantenemos limpia la tabla conservando solo los últimos 50
+                    conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 50)"))
+            except Exception as e:
+                log_error(f"Error DB Log Raw: {e}")
+
+            # ===============================================================
+            # 🔄 PASO 3: PROCESAMIENTO DE CONFIRMACIONES (ACKS)
+            # ===============================================================
             if tipo_evento == 'message.ack':
                 msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
@@ -285,9 +307,11 @@ def recibir_mensaje():
                 except: pass
                 continue 
 
+            # ===============================================================
+            # 📩 PASO 4: PROCESAMIENTO DE MENSAJES Y LLAMADAS
+            # ===============================================================
             if tipo_evento not in ['message', 'message.any', 'message.created', 'call.received']: 
                 continue
-            if payload.get('from') == 'status@broadcast': continue
 
             wspid_lid = obtener_lid_local(payload)
             telefono_crudo = obtener_telefono_local(payload)
@@ -328,13 +352,16 @@ def recibir_mensaje():
             # 3. Determinar Nombre Corto y Nombre IA
             nombre_corto_final = nombre_wsp if nombre_wsp and nombre_wsp.strip() else "Cliente Nuevo"
             nombre_ia_final = nombre_corto_final.split()[0] if nombre_corto_final != "Cliente Nuevo" else ""
+            
+            # 4. 🚀 ALIAS FUTURO: Reservado para cuando WAHA libere el soporte
+            alias_final = None
 
             id_cliente_final = None
 
             try:
                 with engine.begin() as conn:
                     # ===============================================================
-                    # 🚀 NUEVO MOTOR DE RESOLUCIÓN Y FUSIÓN AUTOMÁTICA EN WEBHOOK
+                    # 🚀 PASO 2: NUEVO MOTOR DE RESOLUCIÓN USANDO 'TelefonosCliente'
                     # ===============================================================
                     
                     # 1. Intentamos forzar la resolución del número si solo tenemos LID
@@ -344,97 +371,121 @@ def recibir_mensaje():
                             norm_api = normalizar_telefono_maestro(tel_api)
                             telefono_num = norm_api.get('db') if isinstance(norm_api, dict) else norm_api
 
-                    # 2. Consultar existencia simultánea de ambos rastros
-                    cliente_tel = conn.execute(text("SELECT id_cliente, whatsapp_internal_id, telefono FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).fetchone() if telefono_num else None
-                    cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid"), {"lid": wspid_lid}).fetchone() if wspid_lid else None
+                    # 2. Consultar existencia priorizando la tabla TelefonosCliente
+                    cliente_tel = conn.execute(text("SELECT id_cliente FROM telefonoscliente WHERE telefono = :t LIMIT 1"), {"t": telefono_num}).fetchone() if telefono_num else None
+                    cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM telefonoscliente WHERE lid = :lid LIMIT 1"), {"lid": wspid_lid}).fetchone() if wspid_lid else None
+
+                    # Fallback de compatibilidad (por si quedan LIDs antiguos en la tabla Clientes)
+                    if not cliente_lid and wspid_lid:
+                        cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid LIMIT 1"), {"lid": wspid_lid}).fetchone()
+                    if not cliente_tel and telefono_num:
+                        cliente_tel = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE telefono = :t LIMIT 1"), {"t": telefono_num}).fetchone()
 
                     # --- ESCENARIO 1: COLISIÓN (Existen ambos separados) -> FUSIÓN AUTOMÁTICA ---
                     if cliente_tel and cliente_lid and cliente_tel.id_cliente != cliente_lid.id_cliente:
                         viejo_tel = cliente_lid.telefono
-                        conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": telefono_num, "o": viejo_tel})
-                        conn.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": cliente_tel.id_cliente, "old": cliente_lid.id_cliente})
-                        conn.execute(text("UPDATE Clientes SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE id_cliente=:old"), {"fake": f"MERGED_{viejo_tel}", "old": cliente_lid.id_cliente})
-                        conn.execute(text("UPDATE Clientes SET whatsapp_internal_id=:lid, activo=TRUE WHERE id_cliente=:new"), {"lid": wspid_lid, "new": cliente_tel.id_cliente})
+                        
+                        # Transferir mensajes al número real o al LID
+                        if telefono_num:
+                            conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o OR telefono=:lid_str"), {"n": telefono_num, "o": viejo_tel, "lid_str": wspid_lid})
+                        
+                        # Trasladar el LID a la lista de teléfonos del cliente verídico
+                        conn.execute(text("""
+                            UPDATE telefonoscliente 
+                            SET id_cliente = :new, es_principal = FALSE, lid = :lid, alias = :alias 
+                            WHERE id_cliente = :old
+                        """), {"new": cliente_tel.id_cliente, "old": cliente_lid.id_cliente, "lid": wspid_lid, "alias": nombre_corto_final})
+                        
+                        # Matar al clon
+                        conn.execute(text("UPDATE Clientes SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=NULL WHERE id_cliente=:old"), {"old": cliente_lid.id_cliente})
+                        conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:new"), {"new": cliente_tel.id_cliente})
+                        
                         id_cliente_final = cliente_tel.id_cliente
 
                     # --- ESCENARIO 2: Solo existe el cliente por Teléfono ---
                     elif cliente_tel:
-                        if wspid_lid and cliente_tel.whatsapp_internal_id != wspid_lid:
-                            conn.execute(text("UPDATE Clientes SET whatsapp_internal_id = :lid, activo=TRUE WHERE id_cliente = :id"), {"lid": wspid_lid, "id": cliente_tel.id_cliente})
-                        else:
-                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": cliente_tel.id_cliente})
                         id_cliente_final = cliente_tel.id_cliente
+                        conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
+                        
+                        # Inyectar el LID y Alias nuevo al teléfono existente
+                        if wspid_lid:
+                            conn.execute(text("""
+                                UPDATE telefonoscliente SET lid = :lid, alias = :alias 
+                                WHERE id_cliente = :id AND telefono = :t
+                            """), {"lid": wspid_lid, "alias": nombre_corto_final, "id": id_cliente_final, "t": telefono_num})
 
                     # --- ESCENARIO 3: Solo existe el cliente por LID ---
                     elif cliente_lid:
-                        viejo_tel = cliente_lid.telefono
-                        if telefono_num and viejo_tel != telefono_num:
-                            # Reemplazamos el LID temporal por el número real y transferimos chats
-                            conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": telefono_num, "o": viejo_tel})
-                            conn.execute(text("UPDATE telefonoscliente SET telefono=:n WHERE telefono=:o AND id_cliente=:id"), {"n": telefono_num, "o": viejo_tel, "id": cliente_lid.id_cliente})
-                            conn.execute(text("UPDATE Clientes SET telefono=:n, activo=TRUE WHERE id_cliente=:id"), {"n": telefono_num, "id": cliente_lid.id_cliente})
-                        else:
-                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": cliente_lid.id_cliente})
                         id_cliente_final = cliente_lid.id_cliente
+                        viejo_tel = cliente_lid.telefono
+                        
+                        if telefono_num and viejo_tel != telefono_num:
+                            # ¡Descubrimos su número real! Lo actualizamos
+                            conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o OR telefono=:lid_str"), {"n": telefono_num, "o": viejo_tel, "lid_str": wspid_lid})
+                            conn.execute(text("""
+                                UPDATE telefonoscliente SET telefono=:n, lid=:lid, alias=:alias 
+                                WHERE id_cliente=:id AND (telefono=:o OR lid=:lid)
+                            """), {"n": telefono_num, "lid": wspid_lid, "alias": nombre_corto_final, "o": viejo_tel, "id": id_cliente_final})
+                            conn.execute(text("UPDATE Clientes SET telefono=:n, activo=TRUE WHERE id_cliente=:id"), {"n": telefono_num, "id": id_cliente_final})
+                        else:
+                            conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": id_cliente_final})
+                            conn.execute(text("UPDATE telefonoscliente SET alias=:alias WHERE id_cliente=:id AND lid=:lid"), {"alias": nombre_corto_final, "id": id_cliente_final, "lid": wspid_lid})
 
                     # --- ESCENARIO 4: Prospecto 100% Nuevo ---
                     else:
-                        t_final = telefono_num if telefono_num else (f"LID_{wspid_lid.split('@')[0]}" if wspid_lid else payload.get('from', 'DESCONOCIDO'))
-                        wid_final = wspid_lid if wspid_lid else payload.get('from')
-                        
                         try:
+                            # 1. Crear en tabla Clientes (Solo datos maestros)
                             res = conn.execute(text("""
-                                INSERT INTO Clientes (whatsapp_internal_id, telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
-                                VALUES (:lid, :t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
+                                INSERT INTO Clientes (telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
+                                VALUES (:t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
                                 RETURNING id_cliente
-                            """), {"lid": wid_final, "t": t_final, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
+                            """), {"t": telefono_num, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
                             id_cliente_final = res.id_cliente
                             
-                            # Sincronización en segundo plano con Google
+                            # 2. Registrar en tabla TelefonosCliente (Aquí vive el LID y el ALIAS)
+                            conn.execute(text("""
+                                INSERT INTO telefonoscliente (id_cliente, telefono, lid, alias, es_principal, activo)
+                                VALUES (:id, :t, :lid, :alias, TRUE, TRUE)
+                            """), {"id": id_cliente_final, "t": telefono_num, "lid": wspid_lid, "alias": nombre_corto_final})
+
+                            # 3. Sincronizar Google (Solo si conseguimos número real)
                             if telefono_num:
                                 threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, telefono_num)).start()
+                        
                         except Exception as e:
                             # Fallback ultra-seguro por si hubo condición de carrera
                             if "UniqueViolation" in str(e):
-                                id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": t_final}).scalar()
+                                if telefono_num:
+                                    id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
+                                else:
+                                    id_cliente_final = conn.execute(text("SELECT id_cliente FROM telefonoscliente WHERE lid = :lid"), {"lid": wspid_lid}).scalar()
                             else:
                                 raise e
 
                     # ===============================================================
-                    # 🕵️ NUEVO: RASTREADOR DE CLIENTES ANÓNIMOS (LID)
+                    # 🕵️ RASTREADOR DE CLIENTES ANÓNIMOS (Mantenido intacto)
                     # ===============================================================
                     if wspid_lid and not telefono_num and tipo_msg == 'ENTRANTE':
-                        # Recopilamos las 4 preguntas exactas para el diagnóstico
                         trace_data = {
                             "1_raw_waha": payload,
                             "2_waha_resolucion": "La API de WAHA no devolvió un número válido." if not locals().get('tel_api') else locals().get('tel_api'),
                             "3_registro_panel": {
                                 "id_cliente": id_cliente_final,
-                                "campo_whatsapp_internal_id": wspid_lid,
-                                "campo_telefono": locals().get('t_final', f"LID_{wspid_lid.split('@')[0]}"),
-                                "tabla": "Clientes y telefonoscliente"
+                                "campo_whatsapp_internal_id": wspid_lid, # Referencia
+                                "campo_telefono": "NULL (Anónimo)",
+                                "tabla": "Clientes y TelefonosCliente"
                             },
-                            "4_intento_google": "Sincronización abortada de forma segura. La función sync_google_fondo ignora automáticamente teléfonos que contienen 'LID_' o valores nulos."
+                            "4_intento_google": "Sincronización abortada de forma segura (sin número)."
                         }
-                        
-                        # Guardamos este rastro especial en los logs
                         p_trace_str = json.dumps(trace_data, ensure_ascii=False)
                         conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
                                     {"s": session_name, "e": "TRACE_LID_ANONIMO", "p": p_trace_str})
 
                     # ===============================================================
-                    # GUARDADO Y SINCRONIZACIÓN CON TABLA SECUNDARIA
+                    # REGISTRO DEL MENSAJE (Se vincula al destino correcto: número o LID)
                     # ===============================================================
                     if id_cliente_final:
-                        t_msg = conn.execute(text("SELECT telefono FROM Clientes WHERE id_cliente = :id"), {"id": int(id_cliente_final)}).scalar()
-                        if not t_msg: t_msg = "DESCONOCIDO"
-
-                        # --- GARANTIZAR QUE EL TELÉFONO EXISTA EN LA TABLA SECUNDARIA ---
-                        if t_msg and not str(t_msg).startswith("LID_") and t_msg != "DESCONOCIDO":
-                            tel_existe = conn.execute(text("SELECT 1 FROM telefonoscliente WHERE id_cliente = :id AND telefono = :t AND activo = TRUE"), {"id": int(id_cliente_final), "t": t_msg}).scalar()
-                            if not tel_existe:
-                                conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
-                                conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :t, TRUE)"), {"id": int(id_cliente_final), "t": t_msg})
+                        t_msg = telefono_num if telefono_num else wspid_lid
 
                         existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
                         if not existe:
@@ -446,7 +497,7 @@ def recibir_mensaje():
                                 "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
                             })
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
-                                                
+
                         # --- LÓGICA DE DETECCIÓN ZOMBIE ---
                         if tipo_msg == 'ENTRANTE':
                             texto_limpio = body.strip().lower()

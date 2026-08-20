@@ -346,6 +346,43 @@ def verificar_numero_waha(telefono):
     except Exception as e:
         print(f"🔥 Error general en verificar_numero_waha: {e}")
         return None
+
+def obtener_lid_de_waha(telefono):
+    """
+    Consulta a WAHA para obtener el código LID anónimo a partir de un número.
+    Busca automáticamente en todas las sesiones activas para evitar falsos negativos.
+    """
+    if not WAHA_URL or not telefono: return None
+    try:
+        norm = normalizar_telefono_maestro(telefono)
+        if not norm: return None
+        
+        tel_safe = norm['waha'].replace('@', '%40')
+        headers = {"Content-Type": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+
+        # Definimos las sesiones donde queremos buscar
+        sesiones_a_probar = ["default", "principal"]
+
+        for sesion in sesiones_a_probar:
+            url = f"{WAHA_URL.rstrip('/')}/api/{sesion}/lids/pn/{tel_safe}"
+            r = requests.get(url, headers=headers, timeout=5)
+            
+            if r.status_code == 200:
+                data = r.json()
+                lid_encontrado = data.get('lid')
+                
+                if lid_encontrado:
+                    print(f"✅ [WAHA LOG] LID recuperado con éxito desde la sesión '{sesion}' para {telefono}")
+                    return lid_encontrado
+
+        # Si el bucle termina y no encontró nada en ninguna sesión
+        print(f"⚠️ [WAHA LOG] Privacidad estricta: Ninguna de tus sesiones conoce el LID oculto de {telefono}")
+        return None
+        
+    except Exception as e:
+        print(f"🔥 [WAHA ERROR] Fallo interno al buscar LID: {e}")
+    return None
 # ==============================================================================
 # 🤖 4. FUNCIONES DE INTELIGENCIA ARTIFICIAL
 # ==============================================================================
