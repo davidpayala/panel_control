@@ -250,11 +250,13 @@ def obtener_perfil_waha(telefono):
 
 def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default"):
     """Envía texto simple o imagen soportando LIDs"""
+    import requests
     if not WAHA_URL: return False
+    
     try:
         telefono_str = str(telefono)
         
-        # Identificar si es un LID o un número normal
+        # 🛡️ ENRUTAMIENTO INTELIGENTE: LID vs Número Normal
         if telefono_str.startswith("LID_"):
             chat_id = f"{telefono_str.replace('LID_', '')}@lid"
         else:
@@ -272,18 +274,29 @@ def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default
             url = f"{WAHA_URL.rstrip('/')}/api/sendText"
             payload = {"session": session, "chatId": chat_id, "text": mensaje}
             
-        r = requests.post(url, json=payload, headers=headers, timeout=15)
+        # ⏳ Paciencia aumentada a 45s para imágenes pesadas
+        r = requests.post(url, json=payload, headers=headers, timeout=45)
         return r.status_code in [200, 201]
     except Exception as e:
         print(f"⚠️ Error al enviar WSP (utils): {e}")
         return False
 
 def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_type, session="default"):
-    """Envía archivos adjuntos (Campañas)"""
+    """Envía archivos adjuntos (Campañas) soportando LIDs"""
+    import requests
+    import base64
     if not WAHA_URL: return False
+    
     try:
-        norm = normalizar_telefono_maestro(telefono)
-        if not norm: return False
+        telefono_str = str(telefono)
+        
+        # 🛡️ ENRUTAMIENTO INTELIGENTE: LID vs Número Normal (Agregado aquí)
+        if telefono_str.startswith("LID_"):
+            chat_id = f"{telefono_str.replace('LID_', '')}@lid"
+        else:
+            norm = normalizar_telefono_maestro(telefono)
+            if not norm: return False
+            chat_id = norm['waha']
 
         b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
         data_uri = f"data:{mime_type};base64,{b64_data}"
@@ -294,7 +307,7 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
 
         payload = {
             "session": session,
-            "chatId": norm['waha'],
+            "chatId": chat_id,  # <--- Ahora usa la variable correcta
             "file": {
                 "mimetype": mime_type,
                 "filename": nombre_archivo,
@@ -303,12 +316,14 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
             "caption": caption
         }
 
-        r = requests.post(url, json=payload, headers=headers, timeout=15)
+        # ⏳ Paciencia aumentada a 45s para procesar la subida del archivo
+        r = requests.post(url, json=payload, headers=headers, timeout=45)
         return r.status_code in [200, 201]
     except Exception as e:
         print(f"Error media: {e}")
         return False
 
+        
 # 🚀 FUNCION PARA VERIFICAR EL NUMERO WSP SI EXISTE
 def verificar_numero_waha(telefono):
     """
@@ -1072,30 +1087,57 @@ def obtener_historial_compras(telefono):
     
     return None
 
-def subir_estado_whatsapp(session_name, texto, media_url=None):
+def subir_estado_whatsapp(session_name, texto, media_url=None, lista_contactos=None):
     """
-    Sube un estado a WhatsApp (Texto, Imagen o Video).
+    Sube un estado a WhatsApp. 
+    Convierte webp a JPEG y acepta una inyección de contactos directa 
+    (Bala de Plata) para evitar el problema de agenda vacía de NOWEB.
     """
     import requests
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    
+    url_estados = WAHA_URL.replace("3000", "3001")
+
     try:
+        payload = {}
         if media_url:
-            # Detectamos si es un video por la extensión
             if media_url.lower().endswith('.mp4'):
-                endpoint = f"{WAHA_URL}/api/{session_name}/status/video"
+                endpoint = f"{url_estados}/api/{session_name}/status/video"
+                payload = {"file": {"url": media_url}, "caption": texto if texto else ""}
             else:
-                endpoint = f"{WAHA_URL}/api/{session_name}/status/image"
-                
-            payload = {
-                "file": {
-                    "url": media_url 
-                },
-                "caption": texto if texto else ""
-            }
+                endpoint = f"{url_estados}/api/{session_name}/status/image"
+                try:
+                    resp_img = requests.get(media_url, timeout=15)
+                    resp_img.raise_for_status()
+                    
+                    img = Image.open(BytesIO(resp_img.content))
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                        
+                    buffer = BytesIO()
+                    img.save(buffer, format="JPEG", quality=90)
+                    img_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                    
+                    payload = {
+                        "file": {
+                            "mimetype": "image/jpeg",
+                            "data": img_b64,
+                            "filename": "estado.jpeg"
+                        },
+                        "caption": texto if texto else ""
+                    }
+                except Exception as e:
+                    print(f"⚠️ Error convirtiendo imagen: {e}")
+                    payload = {"file": {"url": media_url}, "caption": texto if texto else ""}
         else:
-            endpoint = f"{WAHA_URL}/api/{session_name}/status/text"
-            payload = {
-                "text": texto
-            }
+            endpoint = f"{url_estados}/api/{session_name}/status/text"
+            payload = {"text": texto}
+
+        # 🔥 LA BALA DE PLATA: Inyectamos tu BD directamente a WAHA
+        if lista_contactos and isinstance(lista_contactos, list):
+            payload["contacts"] = lista_contactos
 
         headers = {
             "accept": "application/json",
@@ -1103,20 +1145,18 @@ def subir_estado_whatsapp(session_name, texto, media_url=None):
             "X-Api-Key": WAHA_KEY  
         }
 
-        # ⏳ AUMENTAMOS LA PACIENCIA A 45 SEGUNDOS PARA MULTIMEDIA
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=45)
-        
+        # ⏳ PACIENCIA EXTENDIDA A 120 SEGUNDOS POR LA ENCRIPTACIÓN MASIVA
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=120)
+
         if response.status_code in [200, 201]:
             return True, "Estado subido correctamente a WhatsApp."
         else:
             return False, f"Error de WAHA: {response.text} (Código: {response.status_code})"
 
     except requests.exceptions.Timeout:
-        # 🛡️ PARCHE DE TIEMPO: Si tarda más de 45s, WAHA igual lo está subiendo de fondo
-        return True, "Timeout: WAHA tardó en responder, pero el estado se está procesando en 2do plano."
+        return True, "Timeout: WAHA tardó en responder, pero el estado se procesó de fondo."
     except Exception as e:
         return False, f"Error interno al conectar con WAHA: {str(e)}"
-
 
 def publicar_en_facebook_via_webhook(mensaje, url_imagen, webhook_url):
     """Sube el post a Facebook delegando la tarea a un Webhook de Make.com"""

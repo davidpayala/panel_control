@@ -63,15 +63,15 @@ def sync_google_fondo(id_cliente, nombre, telefono):
     """Guarda el contacto en Google Contacts de forma asíncrona y lo vincula"""
     if not telefono or "LID_" in str(telefono): 
         return
-    
+
     norm = normalizar_telefono_maestro(telefono)
     if norm:
         tel_google = norm.get('google', norm['db'])
         exito = crear_en_google(nombre, "", tel_google)
-        
+
         if exito:
             log_info(f"✅ Sincronización Google exitosa para: {nombre} ({tel_google})")
-            
+
             # Buscar el contacto recién creado para obtener su ID y sus Nombres
             res_g = buscar_contacto_google(norm['db'])
             if res_g and res_g.get('encontrado'):
@@ -90,7 +90,7 @@ def sync_google_fondo(id_cliente, nombre, telefono):
                     log_error(f"❌ Error al guardar el Google ID en la BD: {e}")
         else:
             log_error(f"❌ Falló sincronización con Google para: {nombre}")
-            
+
 def descargar_media_plus(media_url):
     try:
         if not media_url: return None
@@ -117,18 +117,18 @@ def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
     try:
         img = Image.open(io.BytesIO(image_bytes))
         formato = img.format
-        
+
         if formato not in ['JPEG', 'PNG', 'WEBP']:
             return image_bytes
 
         nuevo_ancho = int(img.width * 0.5)
         nuevo_alto = int(img.height * 0.5)
-        
+
         try:
             resample_filter = Image.Resampling.LANCZOS
         except AttributeError:
             resample_filter = Image.ANTIALIAS
-            
+
         img = img.resize((nuevo_ancho, nuevo_alto), resample_filter)
 
         output = io.BytesIO()
@@ -143,43 +143,62 @@ def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
         return None
 
 # ==============================================================================
-# 🕵️ FUNCIONES LOCALES (MEJORADAS PARA LLAMADAS Y NOMBRES)
+# 🕵️ FUNCIONES LOCALES (BLINDADAS CONTRA AUTO-VINCULACIÓN)
 # ==============================================================================
 def obtener_lid_local(payload):
     try:
+        # 🛡️ Extraemos tu propia identidad del payload para ignorarla
+        me_lid = payload.get('me', {}).get('lid', '')
+
+        es_saliente = payload.get('fromMe', False)
+        target = payload.get('to') if es_saliente else payload.get('from')
+
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
+        remote_id = _data.get('id', {}).get('remote')
+
         candidatos = [
-            payload.get('from'), payload.get('to'), payload.get('participant'),
-            key.get('remoteJid'), key.get('participant'), _data.get('lid'),
-            _data.get('chatId')
+            remote_id, target, payload.get('participant'),
+            key.get('remoteJid'), _data.get('lid'), _data.get('chatId')
         ]
         for c in candidatos:
-            if c and isinstance(c, str) and '@lid' in c: return c
+            if c and isinstance(c, str) and '@lid' in c:
+                if c != me_lid:  # EVITAMOS DEVOLVER TU PROPIO LID
+                    return c
         return None
     except: return None
 
 def obtener_telefono_local(payload):
     try:
+        # 🛡️ Extraemos tu propio número del payload para ignorarlo
+        me_id = payload.get('me', {}).get('id', '')
+        me_phone = me_id.split('@')[0] if me_id else ''
+
+        es_saliente = payload.get('fromMe', False)
+        target = payload.get('to') if es_saliente else payload.get('from')
+
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
-        
+        remote_id = _data.get('id', {}).get('remote')
+
         call_creator = payload.get('callCreator') or _data.get('callCreator') or payload.get('peerJid')
         if call_creator and isinstance(call_creator, str) and ('@s.whatsapp.net' in call_creator or '@c.us' in call_creator):
-            return call_creator.split('@')[0]
+            num = call_creator.split('@')[0]
+            if num != me_phone: return num  # ESCUDO ANTI-ESPEJO
 
-        alt = key.get('remoteJidAlt')
-        if alt and isinstance(alt, str) and ('@s.whatsapp.net' in alt or '@c.us' in alt):
-            return alt.split('@')[0]
-
-        candidatos = [payload.get('from'), payload.get('to'), key.get('remoteJid'), payload.get('participant')]
+        candidatos = [
+            remote_id, target, key.get('remoteJidAlt'), 
+            key.get('remoteJid'), payload.get('participant')
+        ]
         for c in candidatos:
             if c and isinstance(c, str) and ('@s.whatsapp.net' in c or '@c.us' in c):
-                return c.split('@')[0]
-        
+                num = c.split('@')[0]
+                if num != me_phone: return num  # ESCUDO ANTI-ESPEJO
+
         user_id = _data.get('id', {}).get('user')
-        if user_id and str(user_id).isdigit(): return str(user_id)
-        
+        if user_id and str(user_id).isdigit():
+            if str(user_id) != me_phone: return str(user_id)
+
         return None
     except: return None
 
@@ -209,7 +228,7 @@ def obtener_nombre_waha(contact_id, session):
         params = {"contactId": contact_id, "session": session}
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-        
+
         r = requests.get(url, params=params, headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
@@ -228,6 +247,7 @@ def obtener_nombre_waha(contact_id, session):
 @app.route('/', methods=['GET'])
 def home():
     return "Webhook V54 (Smart Sync & Name Fix) ✅", 200
+
 # ==============================================================================
 # 🚨 NUEVO ENDPOINT PARA RECIBIR ALERTAS DEL SCRIPT DE MONITORIZACIÓN
 # ==============================================================================
@@ -236,16 +256,16 @@ def recibir_alerta():
     try:
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
-        
+
         log_error(f"🚨 ALERTA CRÍTICA RECIBIDA: {data}")
-        
+
         with engine.begin() as conn:
             p_str = json.dumps(data, ensure_ascii=False)
             session_name = data.get('sesion', 'SISTEMA')
             # Guardamos la alerta en los logs con un tipo especial "ALERTA_CRITICA"
             conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
                         {"s": session_name, "e": "ALERTA_CRITICA", "p": p_str})
-            
+
         return jsonify({"status": "success"}), 200
     except Exception as e:
         log_error(f"🔥 Error procesando alerta: {e}")
@@ -256,7 +276,7 @@ def recibir_mensaje():
     try:
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
-        
+
         # WAHA a veces envía listas de eventos, otras veces un solo diccionario
         eventos = data if isinstance(data, list) else [data]
 
@@ -266,31 +286,54 @@ def recibir_mensaje():
             payload = evento.get('payload', {})
 
             # ===============================================================
-            # 🛡️ PASO 1: FILTRO ANTI-BROADCAST TEMPRANO Y DEFINITIVO (WEBJS)
+            # 🛡️ MEGA-ESCUDO 1: IGNORAR RUIDO DE MOTOR WEBJS
             # ===============================================================
-            # Cortamos los estados de raíz evaluando las múltiples formas en las que WEBJS los reporta
+            # WEBJS envía 'engine.event' como un duplicado de bajo nivel. 
+            # Lo ignoramos por completo para no procesar ni loguear las cosas dos veces.
+            if tipo_evento == 'engine.event':
+                continue
+
+            # ===============================================================
+            # 🛡️ MEGA-ESCUDO 2: FILTRO DE ESTADOS Y SISTEMA
+            # ===============================================================
             is_broadcast = (
                 payload.get('from') == 'status@broadcast' or 
                 payload.get('to') == 'status@broadcast' or
                 payload.get('_data', {}).get('id', {}).get('remote') == 'status@broadcast' or
                 'status@broadcast' in str(payload.get('id', ''))
             )
-            
-            if is_broadcast:
-                continue # 🚫 Salta a la siguiente iteración. No se procesa ni se guarda en los logs.
-            
+
+            # WEBJS a veces oculta el type y subtype dentro de _data
+            tipo_msg_waha = payload.get('type') or payload.get('_data', {}).get('type', '')
+            subtipo = payload.get('subtype') or payload.get('_data', {}).get('subtype', '')
+
+            # Detectamos notificaciones de seguridad de WhatsApp (como cuenta de empresa o mensajes temporales)
+            es_sistema = (
+                tipo_msg_waha in ['notification_template', 'e2e_notification', 'gp2', 'system', 'protocol'] or
+                subtipo in ['biz_me_account_type_is_hosted', 'ephemeral_setting']
+            )
+
+            # Si es un estado, mensaje de sistema, o un mensaje 100% vacío (sin texto ni media) lo destruimos
+            if is_broadcast or es_sistema or (not payload.get('body') and not payload.get('hasMedia') and tipo_evento != 'call.received'):
+                continue
+
             # ===============================================================
-            # 📝 PASO 2: GUARDAR LOG RAW (Solo de eventos útiles)
+            # 📝 PASO 2: GUARDAR EN LOGS (Solo lo importante)
             # ===============================================================
-            try:
-                with engine.begin() as conn:
-                    p_str = json.dumps(evento, ensure_ascii=False)[:5000]
-                    conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
-                                {"s": session_name, "e": tipo_evento, "p": p_str})
-                    # Mantenemos limpia la tabla conservando solo los últimos 50
-                    conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 50)"))
-            except Exception as e:
-                log_error(f"Error DB Log Raw: {e}")
+            # Determinamos si el mensaje lo enviaste tú (para excluirlo de la tabla logs)
+            from_me = payload.get('fromMe') or payload.get('_data', {}).get('id', {}).get('fromMe') == True
+
+            # Solo guardamos en la pestaña "Logs Webhook" si NO es enviado por ti y NO es un ACK de lectura
+            if not from_me and tipo_evento not in ['message.ack']:
+                try:
+                    with engine.begin() as conn:
+                        p_str = json.dumps(evento, ensure_ascii=False)[:5000]
+                        conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
+                                    {"s": session_name, "e": tipo_evento, "p": p_str})
+                        # Mantenemos limpia la tabla conservando solo los últimos 50
+                        conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 50)"))
+                except Exception as e:
+                    log_error(f"Error DB Log Raw: {e}")
 
             # ===============================================================
             # 🔄 PASO 3: PROCESAMIENTO DE CONFIRMACIONES (ACKS)
@@ -308,14 +351,37 @@ def recibir_mensaje():
                 continue 
 
             # ===============================================================
-            # 📩 PASO 4: PROCESAMIENTO DE MENSAJES Y LLAMADAS
+            # 📩 PASO 4: PROCESAMIENTO DE MENSAJES Y LLAMADAS (WEBJS FIX)
             # ===============================================================
+            # Ignorar todo lo que no sea recepción de mensajes
             if tipo_evento not in ['message', 'message.any', 'message.created', 'call.received']: 
                 continue
+            if payload.get('from') == 'status@broadcast': continue
+
+            # 🛑 FILTRO VITAL WEBJS: Matamos el 'message.any' entrante para evitar 
+            # que la Base de Datos colapse intentando guardar el mismo mensaje 2 veces.
+            if tipo_evento == "message.any" and not from_me:
+                continue
+
+            # ===============================================================
+            # 🛡️ ESCUDO ANTI-MENSAJES FANTASMA (SISTEMA WEBJS)
+            # ===============================================================
+            tipo_msg_waha = payload.get('type', '')
+            subtipo = payload.get('_data', {}).get('subtype', '')
+
+            # Ignoramos eventos internos de seguridad, plantillas de negocio y mensajes 100% vacíos
+            es_sistema = (
+                tipo_msg_waha in ['notification_template', 'e2e_notification', 'gp2', 'system'] or
+                subtipo in ['biz_me_account_type_is_hosted']
+            )
+
+            if es_sistema or (not payload.get('body') and not payload.get('hasMedia') and tipo_evento != 'call.received'):
+                continue
+            # ===============================================================
 
             wspid_lid = obtener_lid_local(payload)
             telefono_crudo = obtener_telefono_local(payload)
-            
+
             telefono_num = None
             if telefono_crudo:
                 norm = normalizar_telefono_maestro(telefono_crudo)
@@ -327,12 +393,12 @@ def recibir_mensaje():
             body = "📞 Llamada entrante" if tipo_evento == 'call.received' else payload.get('body', '')
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
-            
+
             if archivo_bytes:
                 archivo_bytes = comprimir_imagen_waha(archivo_bytes)
-                
+
             if archivo_bytes and not body: body = "📷 Archivo Multimedia"
-            
+
             tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
             whatsapp_id = payload.get('id')
             reply_id = (payload.get('replyTo') or {}).get('id')
@@ -340,19 +406,19 @@ def recibir_mensaje():
 
             # --- LÓGICA INTELIGENTE DE NOMBRES (CORREGIDA) ---
             wsp_id_contact = payload.get('from') if tipo_msg == 'ENTRANTE' else payload.get('to')
-            
+
             # 1. Buscar el nombre en todas las posibles rutas de WAHA
             _data = payload.get('_data') or {}
             nombre_wsp = payload.get('pushName') or _data.get('notifyName') or _data.get('pushname') or _data.get('name')
-            
+
             # 2. Si no viene en el mensaje, consultar a la API de WAHA
             if not nombre_wsp and wsp_id_contact:
                 nombre_wsp = obtener_nombre_waha(wsp_id_contact, session_name)
-            
+
             # 3. Determinar Nombre Corto y Nombre IA
             nombre_corto_final = nombre_wsp if nombre_wsp and nombre_wsp.strip() else "Cliente Nuevo"
             nombre_ia_final = nombre_corto_final.split()[0] if nombre_corto_final != "Cliente Nuevo" else ""
-            
+
             # 4. 🚀 ALIAS FUTURO: Reservado para cuando WAHA libere el soporte
             alias_final = None
 
@@ -363,7 +429,7 @@ def recibir_mensaje():
                     # ===============================================================
                     # 🚀 PASO 2: NUEVO MOTOR DE RESOLUCIÓN USANDO 'TelefonosCliente'
                     # ===============================================================
-                    
+
                     # 1. Intentamos forzar la resolución del número si solo tenemos LID
                     if wspid_lid and not telefono_num:
                         tel_api = resolver_telefono_api(wspid_lid, session_name)
@@ -384,29 +450,29 @@ def recibir_mensaje():
                     # --- ESCENARIO 1: COLISIÓN (Existen ambos separados) -> FUSIÓN AUTOMÁTICA ---
                     if cliente_tel and cliente_lid and cliente_tel.id_cliente != cliente_lid.id_cliente:
                         viejo_tel = cliente_lid.telefono
-                        
+
                         # Transferir mensajes al número real o al LID
                         if telefono_num:
                             conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o OR telefono=:lid_str"), {"n": telefono_num, "o": viejo_tel, "lid_str": wspid_lid})
-                        
+
                         # Trasladar el LID a la lista de teléfonos del cliente verídico
                         conn.execute(text("""
                             UPDATE telefonoscliente 
                             SET id_cliente = :new, es_principal = FALSE, lid = :lid, alias = :alias 
                             WHERE id_cliente = :old
                         """), {"new": cliente_tel.id_cliente, "old": cliente_lid.id_cliente, "lid": wspid_lid, "alias": nombre_corto_final})
-                        
+
                         # Matar al clon
                         conn.execute(text("UPDATE Clientes SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=NULL WHERE id_cliente=:old"), {"old": cliente_lid.id_cliente})
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:new"), {"new": cliente_tel.id_cliente})
-                        
+
                         id_cliente_final = cliente_tel.id_cliente
 
                     # --- ESCENARIO 2: Solo existe el cliente por Teléfono ---
                     elif cliente_tel:
                         id_cliente_final = cliente_tel.id_cliente
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
-                        
+
                         # Inyectar el LID y Alias nuevo al teléfono existente
                         if wspid_lid:
                             conn.execute(text("""
@@ -418,7 +484,7 @@ def recibir_mensaje():
                     elif cliente_lid:
                         id_cliente_final = cliente_lid.id_cliente
                         viejo_tel = cliente_lid.telefono
-                        
+
                         if telefono_num and viejo_tel != telefono_num:
                             # ¡Descubrimos su número real! Lo actualizamos
                             conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o OR telefono=:lid_str"), {"n": telefono_num, "o": viejo_tel, "lid_str": wspid_lid})
@@ -441,7 +507,7 @@ def recibir_mensaje():
                                 RETURNING id_cliente
                             """), {"t": telefono_num, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
                             id_cliente_final = res.id_cliente
-                            
+
                             # 2. Registrar en tabla TelefonosCliente (Aquí vive el LID y el ALIAS)
                             conn.execute(text("""
                                 INSERT INTO telefonoscliente (id_cliente, telefono, lid, alias, es_principal, activo)
@@ -451,7 +517,7 @@ def recibir_mensaje():
                             # 3. Sincronizar Google (Solo si conseguimos número real)
                             if telefono_num:
                                 threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, telefono_num)).start()
-                        
+
                         except Exception as e:
                             # Fallback ultra-seguro por si hubo condición de carrera
                             if "UniqueViolation" in str(e):
@@ -501,12 +567,12 @@ def recibir_mensaje():
                         # --- LÓGICA DE DETECCIÓN ZOMBIE ---
                         if tipo_msg == 'ENTRANTE':
                             texto_limpio = body.strip().lower()
-                            
+
                             if archivo_bytes or "archivo multimedia" in texto_limpio:
                                 conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                             else:
                                 es_clave = conn.execute(text("SELECT 1 FROM respuestas_automaticas WHERE LOWER(frase_clave) = :t LIMIT 1"), {"t": texto_limpio}).scalar()
-                                
+
                                 if es_clave:
                                     conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = (NOW() - INTERVAL '5 hours') WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                 else:

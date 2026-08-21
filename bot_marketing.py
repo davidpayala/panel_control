@@ -28,12 +28,10 @@ from utils import (
 # ==============================================================================
 def log_mkt(mensaje):
     """Guarda el log en la Base de Datos y lo imprime en la terminal SSH"""
-    # Limpiamos los saltos de línea iniciales para que la base de datos quede ordenada
     mensaje_limpio = str(mensaje).lstrip('\n')
     print(mensaje_limpio, flush=True) 
     try:
         with engine.begin() as conn:
-            # Insertamos con el reloj de Perú
             conn.execute(text("INSERT INTO logs_marketing (fecha, mensaje) VALUES (NOW() - INTERVAL '5 hours', :msg)"), {"msg": mensaje_limpio})
     except Exception:
         pass
@@ -44,8 +42,7 @@ def log_mkt(mensaje):
 # ==============================================================================
 def buscar_producto_dinamico(conn, col_probabilidad):
     """
-    Selecciona un producto con stock asegurando un doble candado:
-    Coincidencia exacta de Macro-Categoría + Sub-Categoría con probabilidad > 0.
+    Selecciona un producto con stock asegurando un doble candado.
     """
     query_pesos = text(f"""
         SELECT TRIM(s.macro_categoria) as macro, TRIM(s.subcategoria) as subcat, MAX(s.{col_probabilidad}) as prob
@@ -96,7 +93,6 @@ def buscar_producto_dinamico(conn, col_probabilidad):
         prod = conn.execute(text(query_rescate), {"cat": cat_elegida, "macro": macro_elegida}).fetchone()
         
     if prod:
-        # Inyectamos contexto fuerte para la IA
         producto_dict = dict(prod._mapping)
         producto_dict['contexto_ia_extra'] = f"REGLA DE ORO: ESTE PRODUCTO ES UN/UNA {producto_dict.get('macro_categoria', '').upper()}. HABLA ESTRICTAMENTE DE ESA CATEGORÍA."
         return producto_dict
@@ -118,7 +114,6 @@ def ejecutar_francotirador():
             log_mkt("🛑 No hay configuración registrada en la base de datos.")
             return
 
-        # --- LÓGICA DE PROBABILIDAD (Ciclo Base = 30 min) ---
         minutos_base = 30
         
         def obtener_probabilidad(texto):
@@ -177,7 +172,6 @@ def ejecutar_francotirador():
                     {"sesion": "default", "col_prob": "prob_msg_default", "nombre_vis": "Lentes"}
                 ]
                 
-                disparo_general_exitoso = False
                 for obrero in obreros:
                     with engine.connect() as conn:
                         query_conteo = text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess AND fecha::date = (NOW() - INTERVAL '5 hours')::date")
@@ -222,7 +216,6 @@ def ejecutar_francotirador():
                                     conn_save.execute(text("INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW() - INTERVAL '5 hours', TRUE, :sess)"), 
                                                       {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
                                 log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']})!")
-                                disparo_general_exitoso = True
                                 break 
                         else:
                             log_mkt(f"⚠️ El número {telefono_final} no tiene WhatsApp. Purgando del embudo para siempre...")
@@ -235,7 +228,7 @@ def ejecutar_francotirador():
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_mensajes = NOW() WHERE id = :id"), {"id": config.id})
 
         # ==================================================================
-        # 📱 TAREA 2: ESTADOS
+        # 📱 TAREA 2: ESTADOS CON TRAZABILIDAD EXTREMA
         # ==================================================================
         if not tiempo_ok_est:
             pass
@@ -250,22 +243,62 @@ def ejecutar_francotirador():
                     {"sesion": "default", "col_prob": "prob_est_default"}
                 ]
                 for cuenta in cuentas_estados:
+                    log_mkt(f" 🔍 [TRACE] Evaluando sesión '{cuenta['sesion']}'...")
                     with engine.connect() as conn:
                         prod_est = buscar_producto_dinamico(conn, cuenta['col_prob'])
                         
+
                     if prod_est:
+                        log_mkt(f" 🔍 [TRACE] Producto seleccionado: {prod_est.get('nombre')} (SKU: {prod_est.get('sku')})")
+                        
                         respuestas_ia = generar_texto_producto_ia(prod_est, es_estado=True)
                         texto_estado = respuestas_ia.get('estado_whatsapp', '')
                         
-                        log_mkt(f" 📡 Enviando estado a WAHA ({cuenta['sesion']})...")
-                        exito, msg_api = subir_estado_whatsapp(cuenta['sesion'], texto_estado, prod_est.get('url_imagen', ''))
+    # 🛠️ CARGA SEGURA PARA LA RAM (150 ROTATIVOS) Y USO DE LIDs
+                        log_mkt(f" 📡 [TRACE] Extrayendo agenda (LIDs) de PostgreSQL para hacer Bypass de WAHA...")
                         
-                        if exito or ("error" not in str(msg_api).lower() and "fail" not in str(msg_api).lower()):
-                            log_mkt(f" ✅ ¡Estado publicado y registrado en la BD ({cuenta['sesion']})!")
+                        with engine.connect() as conn_contactos:
+                            # Seleccionamos 150 contactos al azar que tengan LID o un teléfono válido
+                            query_contactos = text("""
+                                SELECT telefono, lid 
+                                FROM telefonoscliente 
+                                WHERE activo = TRUE AND (lid IS NOT NULL OR length(telefono) > 6)
+                                ORDER BY RANDOM() 
+                                LIMIT 150
+                            """)
+                            telefonos_db = conn_contactos.execute(query_contactos).fetchall()
+                        
+                        lista_jids = []
+                        for t in telefonos_db:
+                            if t.lid:
+                                # Si tiene un identificador oculto, usamos el formato @lid
+                                lid_str = str(t.lid)
+                                if "@lid" in lid_str:
+                                    lista_jids.append(lid_str)
+                                else:
+                                    lista_jids.append(f"{lid_str}@lid")
+                            elif t.telefono:
+                                # Fallback: Si aún no tiene LID, usamos su número normal
+                                lista_jids.append(f"{t.telefono}@c.us")
+                        
+                        # 🔥 PASE VIP: Inyecta tu número personal aquí para que SIEMPRE veas los estados
+                        mi_numero_personal = "51986203398@c.us"
+                        if mi_numero_personal not in lista_jids:
+                            lista_jids.append(mi_numero_personal)
+                        
+                        log_mkt(f" 📡 Enviando estado a WAHA ({cuenta['sesion']}) dirigido a {len(lista_jids)} clientes...")
+                    
+                        # Pasamos la lista mágica a la función
+                        exito, msg_api = subir_estado_whatsapp(cuenta['sesion'], texto_estado, prod_est.get('url_imagen', ''), lista_jids)
+                        
+                        if exito:
+                            log_mkt(f" ✅ ¡Estado publicado en BD ({cuenta['sesion']})! Respuesta WAHA: {msg_api}")
                             with engine.begin() as conn_est:
                                 conn_est.execute(text("INSERT INTO Historial_Estados (sku, session_name, fecha_publicacion) VALUES (:sku, :sess, NOW())"), {"sku": prod_est['sku'], "sess": cuenta['sesion']})
                         else:
-                            log_mkt(f" ❌ Fallo real en la subida a WAHA: {msg_api}")
+                            log_mkt(f" ❌ [TRACE ERROR] Fallo en la subida a WAHA ({cuenta['sesion']}): {msg_api}")
+                    else:
+                        log_mkt(f" ⚠️ [TRACE] No se encontró producto para '{cuenta['sesion']}' (Stock cero o probabilidad 0%).")
             else:
                 log_mkt(f"🎲 TAREA 2 SALTADA: El dado cayó en {dado_est} (Requerido: <= {prob_est}%).")
 
@@ -290,11 +323,9 @@ def ejecutar_francotirador():
                     {"nombre": "Pelucas", "col_prob": "prob_fb_pelucas", "webhook": getattr(config, 'webhook_fb_pelucas', '')},
                     {"nombre": "Lentes", "col_prob": "prob_fb_lentes", "webhook": getattr(config, 'webhook_fb_lentes', '')}
                 ]
-                disparo_fb = False
                 
                 for pagina in paginas_fb:
                     if not pagina["webhook"] or str(pagina["webhook"]).strip() == "":
-                        log_mkt(f" ⚠️ Omitido: No hay URL de Webhook guardada para la página '{pagina['nombre']}'.")
                         continue
                     
                     with engine.connect() as conn:
@@ -311,11 +342,8 @@ def ejecutar_francotirador():
                             log_mkt(f" ✅ ¡Post inyectado exitosamente en Make.com ({pagina['nombre']})!")
                             with engine.begin() as conn_hist:
                                 conn_hist.execute(text("INSERT INTO Historial_Facebook (pagina, sku) VALUES (:pag, :sku)"), {"pag": pagina['nombre'], "sku": prod_fb.get('sku', '')})
-                            disparo_fb = True
                         else:
                             log_mkt(f" ❌ Make.com rechazó el envío para {pagina['nombre']}. Razón: {mensaje_fb}")
-                    else:
-                        log_mkt(f" ⚠️ Omitido: Cero stock o probabilidad 0% para categorías en FB {pagina['nombre']}.")
             else:
                 log_mkt(f"🎲 TAREA 3 SALTADA: El dado cayó en {dado_fb} (Requerido: <= {prob_fb}%).")
             
