@@ -247,49 +247,17 @@ def ejecutar_francotirador():
                     with engine.connect() as conn:
                         prod_est = buscar_producto_dinamico(conn, cuenta['col_prob'])
                         
-
                     if prod_est:
                         log_mkt(f" 🔍 [TRACE] Producto seleccionado: {prod_est.get('nombre')} (SKU: {prod_est.get('sku')})")
                         
                         respuestas_ia = generar_texto_producto_ia(prod_est, es_estado=True)
-                        texto_estado = respuestas_ia.get('estado_whatsapp', '')
+                        # Aseguramos extraer el texto correcto de la IA
+                        texto_estado = respuestas_ia.get('estado_whatsapp', '') 
                         
-    # 🛠️ CARGA SEGURA PARA LA RAM (150 ROTATIVOS) Y USO DE LIDs
-                        log_mkt(f" 📡 [TRACE] Extrayendo agenda (LIDs) de PostgreSQL para hacer Bypass de WAHA...")
+                        log_mkt(f" 📡 Enviando estado a WAHA ({cuenta['sesion']}) delegando a su memoria interna (Store) sin restricciones...")
                         
-                        with engine.connect() as conn_contactos:
-                            # Seleccionamos 150 contactos al azar que tengan LID o un teléfono válido
-                            query_contactos = text("""
-                                SELECT telefono, lid 
-                                FROM telefonoscliente 
-                                WHERE activo = TRUE AND (lid IS NOT NULL OR length(telefono) > 6)
-                                ORDER BY RANDOM() 
-                                LIMIT 150
-                            """)
-                            telefonos_db = conn_contactos.execute(query_contactos).fetchall()
-                        
-                        lista_jids = []
-                        for t in telefonos_db:
-                            if t.lid:
-                                # Si tiene un identificador oculto, usamos el formato @lid
-                                lid_str = str(t.lid)
-                                if "@lid" in lid_str:
-                                    lista_jids.append(lid_str)
-                                else:
-                                    lista_jids.append(f"{lid_str}@lid")
-                            elif t.telefono:
-                                # Fallback: Si aún no tiene LID, usamos su número normal
-                                lista_jids.append(f"{t.telefono}@c.us")
-                        
-                        # 🔥 PASE VIP: Inyecta tu número personal aquí para que SIEMPRE veas los estados
-                        mi_numero_personal = "51986203398@c.us"
-                        if mi_numero_personal not in lista_jids:
-                            lista_jids.append(mi_numero_personal)
-                        
-                        log_mkt(f" 📡 Enviando estado a WAHA ({cuenta['sesion']}) dirigido a {len(lista_jids)} clientes...")
-                    
-                        # Pasamos la lista mágica a la función
-                        exito, msg_api = subir_estado_whatsapp(cuenta['sesion'], texto_estado, prod_est.get('url_imagen', ''), lista_jids)
+                        # 🧹 RETIRAMOS EL BYPASS: Ya no le pasamos lista_jids. WAHA enviará a TODOS sus contactos nativos.
+                        exito, msg_api = subir_estado_whatsapp(cuenta['sesion'], texto_estado, prod_est.get('url_imagen', ''))
                         
                         if exito:
                             log_mkt(f" ✅ ¡Estado publicado en BD ({cuenta['sesion']})! Respuesta WAHA: {msg_api}")
