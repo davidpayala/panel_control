@@ -3,7 +3,6 @@ import pandas as pd
 from sqlalchemy import text
 from database import engine
 from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_maestro, generar_nombre_ia, actualizar_en_google, obtener_lid_de_waha
-
 import time
 
 ESTADOS_CLIENTE_FALLBACK = [
@@ -30,11 +29,12 @@ def render_clientes():
 
     st.title("👤 Gestión de Clientes y Proveedores")
 
-    # --- CREAR NUEVO CLIENTE ---
+# --- CREAR NUEVO CLIENTE ---
     with st.expander("➕ Registrar Nuevo Cliente / Proveedor", expanded=False):
         with st.form("form_nuevo_cliente"):
             c1, c2, c3 = st.columns([2, 2, 2])
-            nuevo_tel = c1.text_input("Teléfono Principal (Obligatorio)")
+            # Cambiamos la etiqueta para guiar al usuario
+            nuevo_tel = c1.text_input("Teléfono o LID (@lid) *", placeholder="Ej: +51999... o 12345@lid")
             nuevo_alias = c2.text_input("Alias / Nombre Corto")
             nuevo_estado = c3.selectbox("Estado Inicial", options=estados_opciones, index=0)
 
@@ -46,66 +46,97 @@ def render_clientes():
             excluir_publicidad = c_mkt.checkbox("🚫 Excluir de campañas publicitarias (Proveedor / No Molestar)", value=False)
 
             if st.form_submit_button("💾 Crear Registro", type="primary"):
-                norm = normalizar_telefono_maestro(nuevo_tel)
-                if not norm:
-                    st.error("Número de teléfono inválido.")
+                input_raw = nuevo_tel.strip()
+                if not input_raw:
+                    st.error("Debes ingresar un número de teléfono o un código LID.")
                 else:
-                    tel_db = norm['db']
-                    with engine.connect() as conn:
-                        existe = conn.execute(text("SELECT id_cliente FROM telefonoscliente WHERE telefono=:t AND activo=TRUE"), {"t": tel_db}).fetchone()
-
-                    if existe:
-                        st.warning(f"El teléfono {tel_db} ya pertenece al cliente ID {existe[0]}.")
+                    # 1. Ruteador: ¿Es un LID o un Teléfono normal?
+                    es_lid = "@lid" in input_raw.lower()
+                    tel_db = None
+                    lid_db = None
+                    es_valido = True
+                    
+                    if es_lid:
+                        lid_db = input_raw.lower()
                     else:
-                        g_id, g_nom, g_ape = None, None, None
-                        if not nuevo_alias: nuevo_alias = "Cliente Nuevo"
-                        
-                        if vincular_google:
-                            res_g = buscar_contacto_google(tel_db)
-                            if not (res_g and res_g.get('encontrado')):
-                                tel_google = norm.get('google', tel_db)
-                                res_g = buscar_contacto_google(tel_google)
-                                
-                            if res_g and res_g.get('encontrado'):
-                                g_id = res_g['google_id']
-                                g_nom = res_g['nombre']
-                                g_ape = res_g['apellido']
-                                nuevo_alias = f"{g_nom} {g_ape}".strip() if f"{g_nom} {g_ape}".strip() else nuevo_alias
-                                st.toast("✅ Vinculado a un contacto en Google.", icon="🔗")
+                        norm = normalizar_telefono_maestro(input_raw)
+                        if norm:
+                            tel_db = norm['db']
+                        else:
+                            st.error("Formato de número de teléfono inválido.")
+                            es_valido = False
+
+                    if es_valido:
+                        with engine.connect() as conn:
+                            # Buscar duplicados dependiendo de lo que ingresó
+                            if tel_db:
+                                existe = conn.execute(text("SELECT id_cliente FROM telefonoscliente WHERE telefono=:t AND activo=TRUE LIMIT 1"), {"t": tel_db}).fetchone()
                             else:
-                                tel_google = norm.get('google', tel_db)
-                                nuevo_gid = crear_en_google(nuevo_alias, "", tel_google)
-                                if nuevo_gid:
-                                    g_id = nuevo_gid
-                                    g_nom = nuevo_alias
-                                    g_ape = ""
-                                    st.toast("🆕 Nuevo contacto en Google.", icon="👤")
+                                existe = conn.execute(text("SELECT id_cliente FROM telefonoscliente WHERE lid=:l AND activo=TRUE LIMIT 1"), {"l": lid_db}).fetchone()
 
-                        nombre_ia = generar_nombre_ia(nuevo_alias, g_nom or "")
-                        id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
+                        if existe:
+                            st.warning(f"Este contacto (Teléfono/LID) ya pertenece al cliente ID {existe[0]}.")
+                        else:
+                            g_id, g_nom, g_ape = None, None, None
+                            if not nuevo_alias: nuevo_alias = "Cliente Nuevo"
+                            
+                            # 2. Google Contacts (Solo si tenemos número de verdad)
+                            if vincular_google and tel_db:
+                                res_g = buscar_contacto_google(tel_db)
+                                if not (res_g and res_g.get('encontrado')):
+                                    tel_google = norm.get('google', tel_db)
+                                    res_g = buscar_contacto_google(tel_google)
+                                    
+                                if res_g and res_g.get('encontrado'):
+                                    g_id = res_g['google_id']
+                                    g_nom = res_g['nombre']
+                                    g_ape = res_g['apellido']
+                                    nuevo_alias = f"{g_nom} {g_ape}".strip() if f"{g_nom} {g_ape}".strip() else nuevo_alias
+                                    st.toast("✅ Vinculado a un contacto en Google.", icon="🔗")
+                                else:
+                                    tel_google = norm.get('google', tel_db)
+                                    nuevo_gid = crear_en_google(nuevo_alias, "", tel_google)
+                                    if nuevo_gid:
+                                        g_id = nuevo_gid
+                                        g_nom = nuevo_alias
+                                        g_ape = ""
+                                        st.toast("🆕 Nuevo contacto en Google.", icon="👤")
+                            elif vincular_google and lid_db:
+                                st.toast("⚠️ Se omitió Google Contacts al tratarse de un usuario anónimo.", icon="🛡️")
 
-                        try:
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE clientes SET telefono = NULL WHERE telefono = :t"), {"t": tel_db})
-                                conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t"), {"t": tel_db})
+                            nombre_ia = generar_nombre_ia(nuevo_alias, g_nom or "")
+                            id_etapa_val = mapa_subgrupo_id.get(nuevo_estado)
 
-                                res = conn.execute(text("""
-                                    INSERT INTO clientes (nombre_corto, estado, id_etapa, etiquetas, google_id, nombre, apellido, nombre_ia, telefono, excluir_publicidad, activo, fecha_registro)
-                                    VALUES (:nc, :e, :id_etapa, :et, :gid, :n, :a, :nia, :t, :exc, TRUE, NOW())
-                                    RETURNING id_cliente
-                                """), {"nc": nuevo_alias, "e": nuevo_estado, "id_etapa": id_etapa_val, "et": nuevas_etiquetas, "gid": g_id, "n": g_nom, "a": g_ape, "nia": nombre_ia, "t": tel_db, "exc": excluir_publicidad})
-                                nuevo_id = res.fetchone()[0]
+                            try:
+                                with engine.begin() as conn:
+                                    # Si nos dieron teléfono, intentamos pescar su LID automáticamente
+                                    if tel_db and not lid_db:
+                                        lid_existente = conn.execute(text("SELECT lid FROM telefonoscliente WHERE telefono = :t AND lid IS NOT NULL LIMIT 1"), {"t": tel_db}).scalar()
+                                        lid_db = lid_existente if lid_existente else obtener_lid_de_waha(tel_db)
 
-                                conn.execute(text("""
-                                    INSERT INTO telefonoscliente (id_cliente, telefono, es_principal)
-                                    VALUES (:id, :t, TRUE)
-                                """), {"id": nuevo_id, "t": tel_db})
+                                    # Liberar colisiones previas si hay número
+                                    if tel_db:
+                                        conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t"), {"t": tel_db})
 
-                            st.success(f"✅ Registro guardado con ID {nuevo_id}.")
-                            time.sleep(1)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error al insertar: {e}")
+                                    # Insertar en tabla maestra
+                                    res = conn.execute(text("""
+                                        INSERT INTO clientes (nombre_corto, estado, id_etapa, etiquetas, google_id, nombre, apellido, nombre_ia, excluir_publicidad, activo, fecha_registro)
+                                        VALUES (:nc, :e, :id_etapa, :et, :gid, :n, :a, :nia, :exc, TRUE, NOW())
+                                        RETURNING id_cliente
+                                    """), {"nc": nuevo_alias, "e": nuevo_estado, "id_etapa": id_etapa_val, "et": nuevas_etiquetas, "gid": g_id, "n": g_nom, "a": g_ape, "nia": nombre_ia, "exc": excluir_publicidad})
+                                    nuevo_id = res.fetchone()[0]
+
+                                    # Insertar en TelefonosCliente
+                                    conn.execute(text("""
+                                        INSERT INTO telefonoscliente (id_cliente, telefono, lid, es_principal, activo)
+                                        VALUES (:id, :t, :lid, TRUE, TRUE)
+                                    """), {"id": nuevo_id, "t": tel_db, "lid": lid_db})
+
+                                st.success(f"✅ Registro guardado exitosamente.")
+                                time.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error al insertar en Base de Datos: {e}")
 
     st.divider()
 
@@ -117,18 +148,18 @@ def render_clientes():
     term_tel = f"%{busqueda_limpia}%" if busqueda_limpia else f"%{busqueda}%"
     term_gen = f"%{busqueda}%"
 
+    # Consulta adaptada 100% a TelefonosCliente
     query = """
-        SELECT c.id_cliente, c.nombre_corto, c.estado, c.excluir_publicidad, c.nombre, c.apellido, c.etiquetas, c.google_id, c.whatsapp_internal_id, c.nombre_ia,
-               COALESCE((SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1), c.telefono) as tel_principal,
-               COALESCE((SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE), c.telefono) as todos_telefonos
+        SELECT c.id_cliente, c.nombre_corto, c.estado, c.excluir_publicidad, c.nombre, c.apellido, c.etiquetas, c.google_id, c.nombre_ia,
+               (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1) as tel_principal,
+               (SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE AND telefono IS NOT NULL) as todos_telefonos
         FROM clientes c
         WHERE c.activo = TRUE
     """
     params = {}
     if busqueda:
-        # 🚀 SE AGREGÓ t.alias Y t.lid A LA BÚSQUEDA DE LA TABLA SECUNDARIA
         query += """ AND (
-            c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.apellido ILIKE :g OR c.etiquetas ILIKE :g OR c.nombre_ia ILIKE :g OR c.telefono ILIKE :g OR c.whatsapp_internal_id ILIKE :g
+            c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.apellido ILIKE :g OR c.etiquetas ILIKE :g OR c.nombre_ia ILIKE :g
             OR EXISTS (SELECT 1 FROM telefonoscliente t WHERE t.id_cliente = c.id_cliente AND (t.telefono ILIKE :t OR t.lid ILIKE :g OR t.alias ILIKE :g) AND t.activo = TRUE)
         )"""
         params = {"g": term_gen, "t": term_tel}
@@ -154,7 +185,7 @@ def render_clientes():
                 "excluir_publicidad": st.column_config.CheckboxColumn("🚫 Sin Mkt", help="Tilda para que el bot no le envíe publicidad"),
                 "tel_principal": st.column_config.TextColumn("Telf. Principal", disabled=True),
                 "todos_telefonos": st.column_config.TextColumn("Todos los Teléfonos", disabled=True, width="large"),
-                "nombre": None, "apellido": None, "google_id": None, "whatsapp_internal_id": None, "etiquetas": None
+                "nombre": None, "apellido": None, "google_id": None, "etiquetas": None
             },
             hide_index=True, use_container_width=True
         )
@@ -187,7 +218,7 @@ def render_clientes():
             tab_datos, tab_tel, tab_dir = st.tabs(["👤 Datos Personales", "📞 Teléfonos", "🏠 Direcciones"])
 
             # ==============================================================================
-            # 1️⃣ PESTAÑA: DATOS PERSONALES
+            # 1️⃣ PESTAÑA: DATOS PERSONALES (Con Opción de Bloqueo)
             # ==============================================================================
             with tab_datos:
                 with st.form(f"form_cli_{id_cli_sel}"):
@@ -199,47 +230,32 @@ def render_clientes():
                     new_estado = c3.selectbox("Estado", options=estados_opciones, index=estados_opciones.index(curr_est) if curr_est in estados_opciones else 0)
 
                     st.write("")
-                    new_excluir = st.toggle("🚫 Excluir de campañas publicitarias automáticas", value=bool(row_full.get('excluir_publicidad', False)))
+                    col_tg1, col_tg2 = st.columns(2)
+                    new_excluir = col_tg1.toggle("🚫 Excluir de campañas publicitarias automáticas", value=bool(row_full.get('excluir_publicidad', False)))
+                    
+                    # 🚀 NUEVO: Interruptor para Bloquear Cliente
+                    bloquear_cliente = col_tg2.toggle("🔒 Bloquear / Desactivar Cliente", value=False, help="Actívalo si deseas bloquear completamente al cliente (pasar a inactivos).")
 
-                    st.markdown("##### 👥 Sincronización Directa y Teléfono")
+                    st.markdown("##### 👥 Sincronización y Datos")
                     
                     val_nom = row_full['nombre'] if pd.notna(row_full['nombre']) else ""
                     val_ape = row_full['apellido'] if pd.notna(row_full['apellido']) else ""
                     val_eti = row_full['etiquetas'] if pd.notna(row_full['etiquetas']) else ""
 
-                    # -----------------------------------------------------------
-                    # LÓGICA DE TELÉFONO PRINCIPAL, ALIAS Y BLOQUEO GOOGLE
-                    # -----------------------------------------------------------
                     with engine.connect() as conn:
                         prin_data = conn.execute(text("SELECT telefono, alias, lid FROM telefonoscliente WHERE id_cliente=:id AND es_principal=TRUE AND activo=TRUE LIMIT 1"), {"id": id_cli_sel}).fetchone()
 
                     tel_bd_actual = prin_data.telefono if prin_data else None
-                    alias_bd_actual = prin_data.alias if prin_data else None
-                    lid_bd_actual = prin_data.lid if prin_data else None
-
-                    # ¿Es un número de verdad o un código interno oculto?
                     es_numero_real = tel_bd_actual and not (str(tel_bd_actual).startswith("LID_") or "@lid" in str(tel_bd_actual))
 
-                    # Regla 3: Si hay teléfono, mostrarlo. Si no, mostrar alias. Si no, mostrar LID
-                    if es_numero_real:
-                        val_mostrar = tel_bd_actual
-                    elif alias_bd_actual:
-                        val_mostrar = alias_bd_actual
-                    else:
-                        val_mostrar = lid_bd_actual or "Sin número"
-
-                    # Regla 4: Bloquear Google Contacts si no hay teléfono real
                     bloquear_google = not es_numero_real
                     
                     if bloquear_google:
-                        st.info("⚠️ El contacto principal es un Alias/LID. Edita o selecciona un Teléfono Real en la pestaña 'Teléfonos' para habilitar la vinculación con Google.")
+                        st.info("⚠️ El contacto principal no tiene un teléfono real. Edítalo en la pestaña 'Teléfonos' para habilitar la vinculación con Google.")
 
-                    c4, c5, c6 = st.columns(3)
+                    c4, c5 = st.columns(2)
                     new_real_nombre = c4.text_input("Nombre Real", value=val_nom, disabled=bloquear_google)
                     new_apellido = c5.text_input("Apellido", value=val_ape, disabled=bloquear_google)
-                    
-                    # Regla 3: Teléfono ineditable en esta pestaña
-                    c6.text_input("Teléfono Principal (Editable en Pestaña 'Teléfonos')", value=val_mostrar, disabled=True)
                     
                     new_etiquetas = st.text_area("Etiquetas / Notas", value=val_eti)
 
@@ -248,7 +264,6 @@ def render_clientes():
                         google_id_crudo = row_full['google_id']
                         tiene_google_id = pd.notna(google_id_crudo) and str(google_id_crudo).strip().lower() not in ['', 'nan', 'none']
                         
-                        # Guardar en Google si está permitido
                         if tiene_google_id and not bloquear_google:
                             norm_t = normalizar_telefono_maestro(tel_bd_actual)
                             tel_g = norm_t['google'] if norm_t else tel_bd_actual
@@ -257,54 +272,29 @@ def render_clientes():
                             if exito_google: st.toast("✅ Contacto actualizado en Google", icon="👥")
                             else: st.error("❌ Falló la actualización en Google Contacts.")
                         
-                        # Actualizar base de datos (Excluye el teléfono porque se maneja en la otra pestaña)
+                        # Si el usuario activó el bloqueo, pasamos activo a FALSE
+                        nuevo_activo_val = False if bloquear_cliente else True
+
                         with engine.begin() as conn:
                             conn.execute(text("""
                                 UPDATE clientes 
-                                SET nombre_corto=:nc, nombre_ia=:nia, nombre=:n, apellido=:a, etiquetas=:e, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc
+                                SET nombre_corto=:nc, nombre_ia=:nia, nombre=:n, apellido=:a, etiquetas=:e, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc, activo=:act
                                 WHERE id_cliente=:id
                             """), {
                                 "nc": new_nombre, "nia": new_nombre_ia, "n": new_real_nombre, "a": new_apellido,
-                                "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "exc": new_excluir, "id": id_cli_sel
+                                "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "exc": new_excluir, "act": nuevo_activo_val, "id": id_cli_sel
                             })
                             
-                        st.success("Guardado en Base de Datos.")
+                        if bloquear_cliente:
+                            st.warning("🔒 Cliente bloqueado exitosamente. Se ha movido a inactivos.")
+                        else:
+                            st.success("Guardado en Base de Datos.")
+                            
                         time.sleep(1)
                         st.rerun()
 
-            # Forzar Sincronización Manual protegida
-            if st.button("🔍 Forzar Sincronización Manual (Vincular o Crear)"):
-                if es_numero_real and tel_bd_actual:
-                    with st.spinner("Buscando exhaustivamente en Google Contacts..."):
-                        res = buscar_contacto_google(tel_bd_actual)
-                            
-                    if res and res.get('encontrado'):
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE clientes SET nombre=:n, apellido=:a, google_id=:gid WHERE id_cliente=:id"),
-                                        {"n": res['nombre'], "a": res['apellido'], "gid": res['google_id'], "id": id_cli_sel})
-                        st.success("✅ ¡Contacto encontrado y vinculado con éxito! (No se crearon duplicados)")
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ No existe en Google. Creando contacto nuevo...")
-                        norm_t = normalizar_telefono_maestro(tel_bd_actual)
-                        tel_google = norm_t['google'] if norm_t else tel_bd_actual
-                        alias_crear = row_full['nombre_corto'] or f"Cliente {id_cli_sel}"
-                        
-                        nuevo_gid = crear_en_google(alias_crear, "", tel_google)
-                        if nuevo_gid:
-                            with engine.begin() as conn:
-                                conn.execute(text("UPDATE clientes SET nombre=:n, apellido='', google_id=:gid WHERE id_cliente=:id"),
-                                            {"n": alias_crear, "gid": nuevo_gid, "id": id_cli_sel})
-                            st.success("✨ ¡Contacto nuevo creado y vinculado en Google!")
-                            time.sleep(2)
-                            st.rerun()
-                        else: st.error("❌ Falló la creación en Google Contacts.")
-                else: 
-                    st.warning("⚠️ Este cliente no tiene un Teléfono Real asignado. No se puede vincular a Google.")
-
             # ==============================================================================
-            # 2️⃣ PESTAÑA: TELÉFONOS Y ALIAS
+            # 2️⃣ PESTAÑA: TELÉFONOS Y ALIAS (Independiente de Clientes)
             # ==============================================================================
             with tab_tel:
                 st.markdown("##### 📱 Gestión de Números Asociados y Alias")
@@ -316,11 +306,10 @@ def render_clientes():
                     es_prin_label = "⭐ Principal" if t_row['es_principal'] else "Secundario"
                     st.markdown(f"**Contacto {idx+1}** ({es_prin_label})")
                     
-                    # Regla 1: Aparece alias editable, LID sin editar
                     col_t1, col_t2, col_t3, col_t4 = st.columns([2, 2, 2, 1.5])
                     
                     cambios[t_row['id_telefono']] = {
-                        'tel_old': t_row['telefono'], # 👈 Memoria del teléfono original para comparar
+                        'tel_old': t_row['telefono'],
                         'tel_new': col_t1.text_input("Teléfono", value=t_row['telefono'] or "", key=f"t_{t_row['id_telefono']}"),
                         'alias': col_t2.text_input("Alias", value=t_row['alias'] or "", key=f"a_{t_row['id_telefono']}"),
                         'lid': col_t3.text_input("LID", value=t_row['lid'] or "", disabled=True, key=f"l_{t_row['id_telefono']}")
@@ -339,12 +328,11 @@ def render_clientes():
                                 tx.execute(text("UPDATE telefonoscliente SET activo=FALSE WHERE id_telefono=:idt"), {"idt": t_row['id_telefono']})
                             st.rerun()
                             
-                    st.write("") # Espaciador
+                    st.write("")
                 
-                # Regla 2 y Escudo Anti-Duplicados: Motor de guardado con Alertas
                 if st.button("💾 Guardar Cambios de Teléfonos", type="primary", key=f"btn_save_tels_{id_cli_sel}"):
                     hay_error = False
-                    avisos_waha = []  # 👈 NUEVO: Recolector de fallos silenciosos
+                    avisos_waha = []
                     
                     with engine.begin() as tx:
                         for id_tel, data in cambios.items():
@@ -358,10 +346,8 @@ def render_clientes():
                             else:
                                 t_clean = None
                                 
-                            # 🚨 EVALUAR SI EL USUARIO REALMENTE MODIFICÓ EL NÚMERO
                             if t_clean != t_old:
                                 if t_clean:
-                                    # 1. Validar que no estemos duplicando/robando un número de otro cliente activo
                                     ex_activo = tx.execute(text("""
                                         SELECT c.id_cliente, c.nombre_corto 
                                         FROM telefonoscliente t 
@@ -370,77 +356,55 @@ def render_clientes():
                                     """), {"t": t_clean, "id": id_cli_sel}).fetchone()
 
                                     if ex_activo:
-                                        st.error(f"⚠️ El número {t_clean} ya pertenece a **{ex_activo.nombre_corto}** (ID: {ex_activo.id_cliente}). Fusiónalos en la pestaña 'Mantenimiento'.")
+                                        st.error(f"⚠️ El número {t_clean} ya pertenece a **{ex_activo.nombre_corto}** (ID: {ex_activo.id_cliente}).")
                                         hay_error = True
                                         continue
                                         
-                                    # 2. Buscar si el NUEVO número tiene un LID en el historial interno
                                     lid_existente = tx.execute(text("SELECT lid FROM telefonoscliente WHERE telefono = :t AND lid IS NOT NULL LIMIT 1"), {"t": t_clean}).scalar()
                                     
-                                    # 🚀 3. LA MAGIA: Si no lo tenemos, se lo preguntamos en vivo a WAHA
                                     if not lid_existente:
                                         lid_api = obtener_lid_de_waha(t_clean)
                                         if lid_api:
                                             lid_existente = lid_api
                                         else:
-                                            # 👈 NUEVO: Capturamos el error si WAHA no lo devuelve
-                                            avisos_waha.append(f"No se pudo extraer el LID para {t_clean}. Puede ser restricción de privacidad de WhatsApp o sesión incorrecta.")
+                                            avisos_waha.append(f"No se pudo extraer el LID para {t_clean}.")
                                     
-                                    # 4. Guardar número nuevo y SOBRESCRIBIR el LID
+                                    if lid_existente:
+                                        tx.execute(text("UPDATE telefonoscliente SET lid = NULL WHERE lid = :l AND id_telefono != :id"), {"l": lid_existente, "id": id_tel})
+
                                     tx.execute(text("UPDATE telefonoscliente SET telefono=:t, alias=:a, lid=:l WHERE id_telefono=:id"), 
                                                {"t": t_clean, "a": a_val, "l": lid_existente, "id": id_tel})
                                 else:
-                                    # El usuario borró el teléfono de la caja, dejamos solo el alias y limpiamos el LID viejo
                                     tx.execute(text("UPDATE telefonoscliente SET telefono=NULL, alias=:a, lid=NULL WHERE id_telefono=:id"), 
                                                {"a": a_val, "id": id_tel})
                             else:
-                                # =====================================================================
-                                # 🚀 AUTO-COMPLETADO DE LID: El número NO cambió, pero revisamos si falta LID
-                                # =====================================================================
                                 if t_clean:
-                                    # Verificamos si en la base de datos la celda de LID está vacía
                                     lid_actual = tx.execute(text("SELECT lid FROM telefonoscliente WHERE id_telefono = :id"), {"id": id_tel}).scalar()
-                                    
                                     if not lid_actual:
-                                        # Le preguntamos a WAHA y actualizamos silenciosamente
                                         lid_api = obtener_lid_de_waha(t_clean)
                                         if lid_api:
-                                            tx.execute(text("UPDATE telefonoscliente SET alias=:a, lid=:l WHERE id_telefono=:id"), 
-                                                       {"a": a_val, "l": lid_api, "id": id_tel})
+                                            tx.execute(text("UPDATE telefonoscliente SET lid = NULL WHERE lid = :l AND id_telefono != :id"), {"l": lid_api, "id": id_tel})
+                                            tx.execute(text("UPDATE telefonoscliente SET alias=:a, lid=:l WHERE id_telefono=:id"), {"a": a_val, "l": lid_api, "id": id_tel})
                                         else:
-                                            # 👈 NUEVO: Informamos el fallo silencioso del auto-completado
-                                            avisos_waha.append(f"Intento de auto-completar fallido: WAHA devolvió 'None' para {t_clean}. (Revisa la privacidad del usuario).")
-                                            tx.execute(text("UPDATE telefonoscliente SET alias=:a WHERE id_telefono=:id"), 
-                                                       {"a": a_val, "id": id_tel})
+                                            tx.execute(text("UPDATE telefonoscliente SET alias=:a WHERE id_telefono=:id"), {"a": a_val, "id": id_tel})
                                     else:
-                                        # Ya tenía LID, simplemente guardamos el alias sin molestar a la API
-                                        tx.execute(text("UPDATE telefonoscliente SET alias=:a WHERE id_telefono=:id"), 
-                                                   {"a": a_val, "id": id_tel})
+                                        tx.execute(text("UPDATE telefonoscliente SET alias=:a WHERE id_telefono=:id"), {"a": a_val, "id": id_tel})
                                 else:
-                                    # Es una celda completamente vacía (sin número), solo guardamos alias
-                                    tx.execute(text("UPDATE telefonoscliente SET alias=:a WHERE id_telefono=:id"), 
-                                               {"a": a_val, "id": id_tel})
+                                    tx.execute(text("UPDATE telefonoscliente SET alias=:a WHERE id_telefono=:id"), {"a": a_val, "id": id_tel})
                                 
                     if not hay_error:
                         st.success("Teléfonos actualizados correctamente en la Base de Datos.")
-                        
-                        # 🧹 NUEVO: Destruir la memoria caché (Session State) de las cajas de texto
-                        # Para forzar a Streamlit a mostrar los nuevos LIDs recién obtenidos
                         for id_t in cambios.keys():
                             for prefijo in ['t_', 'a_', 'l_']:
                                 clave_memoria = f"{prefijo}{id_t}"
                                 if clave_memoria in st.session_state:
                                     del st.session_state[clave_memoria]
-                        
-                        # Mostrar las advertencias recopiladas antes de recargar
                         if avisos_waha:
                             for aviso in avisos_waha:
                                 st.warning(f"🕵️ {aviso}")
-                            # Le damos 4 segundos al usuario para que lea los mensajes antes de que la pantalla parpadee
                             time.sleep(4)
                         else:
                             time.sleep(1)
-                            
                         st.rerun()
 
                 st.divider()
@@ -456,22 +420,41 @@ def render_clientes():
                         alias_clean = new_alias.strip() if new_alias else None
                         
                         if tel_clean or alias_clean:
-                            with engine.begin() as tx:
-                                lid_existente = None
-                                if tel_clean:
-                                    lid_existente = tx.execute(text("SELECT lid FROM telefonoscliente WHERE telefono = :t AND lid IS NOT NULL LIMIT 1"), {"t": tel_clean}).scalar()
-                                    
-                                    # 🚀 LA MAGIA: Preguntar a WAHA si el número es nuevo
-                                    if not lid_existente:
-                                        lid_api = obtener_lid_de_waha(tel_clean)
-                                        if lid_api:
-                                            lid_existente = lid_api
+                            ex_activo = None
+                            if tel_clean:
+                                with engine.connect() as conn:
+                                    ex_activo = conn.execute(text("""
+                                        SELECT c.id_cliente, c.nombre_corto 
+                                        FROM telefonoscliente t JOIN clientes c ON t.id_cliente = c.id_cliente 
+                                        WHERE t.telefono = :t AND t.activo = TRUE AND c.activo = TRUE AND t.id_cliente != :id
+                                    """), {"t": tel_clean, "id": id_cli_sel}).fetchone()
+
+                            if ex_activo:
+                                st.error(f"⚠️ El número {tel_clean} ya está en uso activo por: **{ex_activo.nombre_corto}** (ID: {ex_activo.id_cliente}).")
+                            else:
+                                with engine.begin() as tx:
+                                    lid_existente = None
+                                    if tel_clean:
+                                        lid_existente = tx.execute(text("SELECT lid FROM telefonoscliente WHERE telefono = :t AND lid IS NOT NULL LIMIT 1"), {"t": tel_clean}).scalar()
+                                        if not lid_existente:
+                                            lid_api = obtener_lid_de_waha(tel_clean)
+                                            if lid_api: lid_existente = lid_api
                                             
-                                tx.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, alias, lid, es_principal, activo) VALUES (:id, :t, :a, :l, FALSE, TRUE)"), 
-                                           {"id": id_cli_sel, "t": tel_clean, "a": alias_clean, "l": lid_existente})
-                            st.success("Añadido exitosamente.")
-                            time.sleep(1)
-                            st.rerun()
+                                    if lid_existente:
+                                        tx.execute(text("UPDATE telefonoscliente SET lid = NULL WHERE lid = :l"), {"l": lid_existente})
+                                    if tel_clean:
+                                        tx.execute(text("UPDATE telefonoscliente SET activo = FALSE, telefono = NULL WHERE telefono = :t AND id_cliente != :id"), {"t": tel_clean, "id": id_cli_sel})
+                                        
+                                    ya_mio = tx.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente = :id AND telefono = :t"), {"id": id_cli_sel, "t": tel_clean}).fetchone() if tel_clean else None
+                                    
+                                    if ya_mio:
+                                        tx.execute(text("UPDATE telefonoscliente SET activo = TRUE, alias = :a, lid = :l WHERE id_telefono = :idt"), {"a": alias_clean, "l": lid_existente, "idt": ya_mio[0]})
+                                    else:
+                                        tx.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, alias, lid, es_principal, activo) VALUES (:id, :t, :a, :l, FALSE, TRUE)"), {"id": id_cli_sel, "t": tel_clean, "a": alias_clean, "l": lid_existente})
+                                
+                                st.success("Añadido exitosamente.")
+                                time.sleep(1)
+                                st.rerun()
                         else: 
                             st.error("Debes ingresar un teléfono o un alias.")
 

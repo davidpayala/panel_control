@@ -284,36 +284,48 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # --- NUEVA CONSULTA MAESTRA (FULL OUTER JOIN + ORDENAMIENTO INTELIGENTE) ---
+                # --- NUEVA CONSULTA MAESTRA (100% DEPENDIENTE DE TELEFONOSCLIENTE) ---
                 query = f"""
-                    WITH msg_vinculados AS (
-                        SELECT m.id_mensaje, m.telefono, m.fecha, m.leido, m.tipo, 
-                               COALESCE(t.id_cliente, (SELECT id_cliente FROM {tabla} WHERE telefono = m.telefono AND activo = TRUE LIMIT 1)) as id_cliente
-                        FROM mensajes m
-                        LEFT JOIN telefonoscliente t ON m.telefono = t.telefono AND t.activo = TRUE
+                    WITH chat_summary AS (
+                        -- 1. Agrupar la tabla pesada de mensajes PRIMERO (súper rápido)
+                        SELECT 
+                            telefono, 
+                            MAX(fecha) as ultima_interaccion, 
+                            SUM(CASE WHEN leido = FALSE AND tipo = 'ENTRANTE' THEN 1 ELSE 0 END) as no_leidos
+                        FROM mensajes
+                        GROUP BY telefono
+                    ),
+                    mapped_chats AS (
+                        -- 2. Cruzar solo los números únicos con telefonoscliente
+                        SELECT 
+                            cs.telefono, cs.ultima_interaccion, cs.no_leidos, 
+                            t.id_cliente
+                        FROM chat_summary cs
+                        LEFT JOIN telefonoscliente t ON (cs.telefono = t.telefono OR cs.telefono = t.lid) AND t.activo = TRUE
                     ),
                     chat_list AS (
+                        -- 3. Consolidar usando el chat_id
                         SELECT 
                             COALESCE(CAST(id_cliente AS VARCHAR), telefono) as chat_id,
                             MAX(id_cliente) as id_cliente,
                             MAX(telefono) as telefono_contacto,
-                            MAX(fecha) as ultima_interaccion,
-                            COALESCE(SUM(CASE WHEN leido = FALSE AND tipo = 'ENTRANTE' THEN 1 ELSE 0 END), 0) as no_leidos
-                        FROM msg_vinculados
+                            MAX(ultima_interaccion) as ultima_interaccion,
+                            SUM(no_leidos) as no_leidos
+                        FROM mapped_chats
                         GROUP BY COALESCE(CAST(id_cliente AS VARCHAR), telefono)
                     )
                     SELECT 
-                        COALESCE(cl.chat_id, CAST(c.id_cliente AS VARCHAR), c.telefono) as chat_id,
+                        COALESCE(cl.chat_id, CAST(c.id_cliente AS VARCHAR)) as chat_id,
                         COALESCE(cl.id_cliente, c.id_cliente) as id_cliente,
-                        COALESCE(cl.telefono_contacto, c.telefono) as telefono_contacto,
+                        cl.telefono_contacto,
                         cl.ultima_interaccion,
                         COALESCE(cl.no_leidos, 0) as no_leidos,
-                        c.nombre_corto, c.whatsapp_internal_id, c.estado, c.nivel_zombie, c.ultimo_msg_zombie,
+                        c.nombre_corto, c.estado, c.nivel_zombie, c.ultimo_msg_zombie,
                         (SELECT tipo_envio FROM direcciones d WHERE d.id_cliente = COALESCE(cl.id_cliente, c.id_cliente) AND d.activo = TRUE ORDER BY es_principal DESC, id_direccion DESC LIMIT 1) as tipo_envio,
                         CASE 
                             WHEN c.nombre_corto IS NOT NULL AND c.nombre_corto != '' THEN c.nombre_corto
                             WHEN cl.telefono_contacto IS NOT NULL THEN cl.telefono_contacto
-                            ELSE c.telefono
+                            ELSE 'Desconocido'
                         END as nombre
                     FROM chat_list cl
                     FULL OUTER JOIN {tabla} c ON cl.id_cliente = c.id_cliente AND c.activo = TRUE
@@ -412,44 +424,43 @@ def render_chat():
                     else:
                         info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
 
-                # 2. AUTO-RESOLUCIÓN LIDs INTELIGENTE (Ahora evalúa la info.telefono, no el ID)
-                if info and info.telefono and str(info.telefono).startswith("LID_"):
+                # 2. AUTO-RESOLUCIÓN LIDs INTELIGENTE (100% Migrado a telefonoscliente)
+                tc_principal = None
+                if es_cliente:
+                    with engine.connect() as conn:
+                        tc_principal = conn.execute(text("SELECT id_telefono, telefono, lid FROM telefonoscliente WHERE id_cliente=:id AND es_principal=TRUE AND activo=TRUE LIMIT 1"), {"id": int(chat_actual)}).fetchone()
+
+                if tc_principal and not tc_principal.telefono and tc_principal.lid:
                     with st.spinner("🕵️‍♂️ Consultando número real oculto en WAHA..."):
-                        num_real = resolver_telefono_api(info.whatsapp_internal_id, "default")
-                        if not num_real: num_real = resolver_telefono_api(info.whatsapp_internal_id, "principal")
+                        num_real = resolver_telefono_api(tc_principal.lid, "default")
+                        if not num_real: num_real = resolver_telefono_api(tc_principal.lid, "principal")
                         
                         if num_real:
                             norm = normalizar_telefono_maestro(num_real)
                             real_db = norm.get('db') if isinstance(norm, dict) else norm
                             if real_db:
                                 with engine.begin() as t_conn:
-                                    existente = t_conn.execute(text(f"SELECT id_cliente FROM {tabla} WHERE telefono=:t AND activo = TRUE"), {"t": real_db}).fetchone()
-                                    if existente:
-                                        t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": info.telefono})
-                                        t_conn.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": existente.id_cliente, "old": info.id_cliente})
-                                        t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=:fake WHERE id_cliente=:old"), {"fake": f"MERGED_{info.telefono}", "old": info.id_cliente})
-                                        t_conn.execute(text(f"UPDATE {tabla} SET whatsapp_internal_id=:lid WHERE id_cliente=:new"), {"lid": info.whatsapp_internal_id, "new": existente.id_cliente})
+                                    existente = t_conn.execute(text(f"SELECT id_cliente FROM telefonoscliente WHERE telefono=:t AND activo = TRUE LIMIT 1"), {"t": real_db}).fetchone()
+                                    
+                                    if existente and existente.id_cliente != int(chat_actual):
+                                        # ¡Colisión! El número real ya existía en otro cliente. Los fusionamos.
+                                        t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": tc_principal.lid})
+                                        t_conn.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": existente.id_cliente, "old": int(chat_actual)})
+                                        t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE WHERE id_cliente=:old"), {"old": int(chat_actual)})
                                         st.session_state['chat_actual_id'] = str(existente.id_cliente)
                                     else:
-                                        t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": info.telefono})
-                                        t_conn.execute(text(f"UPDATE {tabla} SET telefono=:n WHERE id_cliente=:id"), {"n": real_db, "id": info.id_cliente})
-                                        
-                                        lid_ex = t_conn.execute(text("SELECT id_telefono FROM telefonoscliente WHERE id_cliente = :id AND telefono = :o"), {"id": info.id_cliente, "o": info.telefono}).fetchone()
-                                        if lid_ex:
-                                            t_conn.execute(text("UPDATE telefonoscliente SET telefono = :n, es_principal = TRUE WHERE id_telefono = :idt"), {"n": real_db, "idt": lid_ex[0]})
-                                        else:
-                                            t_conn.execute(text("UPDATE telefonoscliente SET es_principal = FALSE WHERE id_cliente = :id"), {"id": info.id_cliente})
-                                            t_conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :n, TRUE)"), {"id": info.id_cliente, "n": real_db})
-                                        st.session_state['chat_actual_id'] = str(info.id_cliente)
-                                st.rerun()
+                                        # Todo limpio, le guardamos su número real descubierto
+                                        t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": tc_principal.lid})
+                                        t_conn.execute(text("UPDATE telefonoscliente SET telefono=:n WHERE id_telefono=:idt"), {"n": real_db, "idt": tc_principal.id_telefono})
+                                st.rerun()  
 
-                # 3. MARCAR COMO LEÍDO EN BD Y WHATSAPP (Bug del nombre de función resuelto)
+                # 3. MARCAR COMO LEÍDO EN BD Y WHATSAPP
                 with engine.connect() as conn:
                     conn.commit() 
                     tels_condition = """
-                        SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE
+                        SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND telefono IS NOT NULL AND activo = TRUE
                         UNION
-                        SELECT telefono FROM Clientes WHERE id_cliente = :id AND activo = TRUE
+                        SELECT lid FROM telefonoscliente WHERE id_cliente = :id AND lid IS NOT NULL AND activo = TRUE
                     """ if es_cliente else "SELECT :id"
                     param_id = int(chat_actual) if es_cliente else chat_actual
                     
@@ -506,15 +517,28 @@ def render_chat():
                         if len(sub_detalles) > 45:
                             sub_detalles = sub_detalles[:42] + "..."
 
+                    # --- CARGA OPTIMIZADA DE MENSAJES (Sin JOINs masivos) ---
+                    if es_cliente:
+                        # Si es cliente, sacamos todos sus números (normales y LIDs) de una vez
+                        tels_query = """
+                            SELECT telefono FROM telefonoscliente WHERE id_cliente = :chat_id AND telefono IS NOT NULL AND activo = TRUE
+                            UNION 
+                            SELECT lid FROM telefonoscliente WHERE id_cliente = :chat_id AND lid IS NOT NULL AND activo = TRUE
+                        """
+                        where_clause = f"telefono IN ({tels_query})"
+                        params = {"chat_id": int(chat_actual)}
+                    else:
+                        # Si es número anónimo, buscamos directo
+                        where_clause = "telefono = :chat_id"
+                        params = {"chat_id": str(chat_actual)}
+
                     msgs = pd.read_sql(text(f"""
                         SELECT * FROM (
-                            SELECT m.* FROM mensajes m
-                            LEFT JOIN telefonoscliente t ON m.telefono = t.telefono AND t.activo = TRUE
-                            LEFT JOIN {tabla} c ON m.telefono = c.telefono AND c.activo = TRUE
-                            WHERE COALESCE(CAST(t.id_cliente AS VARCHAR), CAST(c.id_cliente AS VARCHAR), m.telefono) = :chat_id
-                            ORDER BY m.fecha DESC LIMIT 100
+                            SELECT * FROM mensajes
+                            WHERE {where_clause}
+                            ORDER BY fecha DESC LIMIT 100
                         ) sub ORDER BY fecha ASC
-                    """), conn, params={"chat_id": str(chat_actual)})
+                    """), conn, params=params)
 
                 # --- CONTROL DE ZONA HORARIA LIMA ---
                 if not msgs.empty and 'fecha' in msgs.columns:
@@ -749,10 +773,10 @@ def render_chat():
                     if es_cliente:
                         with engine.connect() as conn:
                             lista_tels = pd.read_sql(text("""
-                                SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND activo = TRUE
+                                SELECT telefono as tel FROM telefonoscliente WHERE id_cliente = :id AND telefono IS NOT NULL AND activo = TRUE
                                 UNION
-                                SELECT telefono FROM Clientes WHERE id_cliente = :id AND activo = TRUE
-                            """), conn, params={"id": int(chat_actual)})['telefono'].tolist()
+                                SELECT lid as tel FROM telefonoscliente WHERE id_cliente = :id AND lid IS NOT NULL AND activo = TRUE
+                            """), conn, params={"id": int(chat_actual)})['tel'].tolist()
                         
                         if tel_defecto and tel_defecto not in lista_tels: lista_tels.append(tel_defecto)
                         if not lista_tels: lista_tels = [tel_defecto] if tel_defecto else [chat_actual]
@@ -762,7 +786,6 @@ def render_chat():
                     else:
                         telefono_destino = tel_defecto or chat_actual
                         st.text_input("Enviar a:", value=telefono_destino, disabled=True, label_visibility="collapsed")
-
                 with c_sel:
                     sesion_elegida = st.selectbox(
                         "Línea de envío:", 
