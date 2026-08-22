@@ -772,17 +772,62 @@ def render_chat():
                 with c_num:
                     if es_cliente:
                         with engine.connect() as conn:
-                            lista_tels = pd.read_sql(text("""
-                                SELECT telefono as tel FROM telefonoscliente WHERE id_cliente = :id AND telefono IS NOT NULL AND activo = TRUE
-                                UNION
-                                SELECT lid as tel FROM telefonoscliente WHERE id_cliente = :id AND lid IS NOT NULL AND activo = TRUE
-                            """), conn, params={"id": int(chat_actual)})['tel'].tolist()
+                            # 1. Traemos toda la fila para evaluar las prioridades
+                            tels_data = pd.read_sql(text("""
+                                SELECT telefono, alias, lid 
+                                FROM telefonoscliente 
+                                WHERE id_cliente = :id AND activo = TRUE
+                            """), conn, params={"id": int(chat_actual)})
                         
-                        if tel_defecto and tel_defecto not in lista_tels: lista_tels.append(tel_defecto)
-                        if not lista_tels: lista_tels = [tel_defecto] if tel_defecto else [chat_actual]
+                        opciones_envio = {}
+                        for _, row in tels_data.iterrows():
+                            t = row['telefono']
+                            a = row['alias']
+                            l = row['lid']
+                            
+                            # PRIORIDAD 1: Si hay teléfono, ignoramos el LID como opción separada
+                            if pd.notna(t) and str(t).strip() != "":
+                                valor_destino = str(t).strip()
+                                a_str = str(a).strip() if pd.notna(a) else ""
+                                # Si tiene alias, lo mostramos al lado del número para más claridad
+                                label_mostrar = f"📱 {valor_destino}" + (f" ({a_str})" if a_str else "")
+                                opciones_envio[valor_destino] = label_mostrar
+                            
+                            # PRIORIDADES 2 y 3: No hay teléfono, pero sí existe un LID
+                            elif pd.notna(l) and str(l).strip() != "":
+                                valor_destino = str(l).strip()
+                                a_str = str(a).strip() if pd.notna(a) else ""
+                                
+                                if a_str:
+                                    # Prioridad 2: Mostramos el Alias
+                                    label_mostrar = f"🕵️‍♂️ {a_str} (Anónimo)"
+                                else:
+                                    # Prioridad 3: Mostramos el LID feo porque no queda de otra
+                                    label_mostrar = f"🕵️‍♂️ {valor_destino}"
+                                    
+                                opciones_envio[valor_destino] = label_mostrar
+
+                        # Fallback por si el tel_defecto (el último que nos escribió) no estaba en la tabla
+                        if tel_defecto and tel_defecto not in opciones_envio:
+                            opciones_envio[tel_defecto] = f"📱 {tel_defecto}"
+                            
+                        # Si por alguna razón la tabla estaba vacía
+                        if not opciones_envio:
+                            fallback = tel_defecto if tel_defecto else str(chat_actual)
+                            opciones_envio[fallback] = f"📱 {fallback}"
+                            
+                        lista_valores = list(opciones_envio.keys())
+                        idx_tel = lista_valores.index(tel_defecto) if tel_defecto in lista_valores else 0
                         
-                        idx_tel = lista_tels.index(tel_defecto) if tel_defecto in lista_tels else 0
-                        telefono_destino = st.selectbox("Enviar a:", options=lista_tels, index=idx_tel, key=f"dest_{chat_actual}", label_visibility="collapsed")
+                        # 2. El selectbox usa 'format_func' para mostrar el label bonito, pero internamente devuelve el valor_destino
+                        telefono_destino = st.selectbox(
+                            "Enviar a:", 
+                            options=lista_valores, 
+                            index=idx_tel, 
+                            format_func=lambda x: opciones_envio.get(x, str(x)),
+                            key=f"dest_{chat_actual}", 
+                            label_visibility="collapsed"
+                        )
                     else:
                         telefono_destino = tel_defecto or chat_actual
                         st.text_input("Enviar a:", value=telefono_destino, disabled=True, label_visibility="collapsed")

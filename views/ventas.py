@@ -278,11 +278,26 @@ def render_nueva_venta():
 
                 with engine.connect() as conn:
                     if grupo_sel == "Todos":
-                        query_clientes = text("SELECT id_cliente, nombre_corto FROM Clientes WHERE activo = TRUE ORDER BY nombre_corto")
+                        query_clientes = text("""
+                            SELECT c.id_cliente, c.nombre_corto,
+                                   COALESCE(
+                                       (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                                       (SELECT lid FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                                       'Sin Contacto'
+                                   ) as identificador
+                            FROM Clientes c 
+                            WHERE c.activo = TRUE 
+                            ORDER BY c.nombre_corto
+                        """)
                         cli_df = pd.read_sql(query_clientes, conn)
                     else:
                         query_clientes = text("""
-                            SELECT c.id_cliente, c.nombre_corto 
+                            SELECT c.id_cliente, c.nombre_corto,
+                                   COALESCE(
+                                       (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                                       (SELECT lid FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                                       'Sin Contacto'
+                                   ) as identificador
                             FROM Clientes c
                             JOIN EtapasCliente e ON c.id_etapa = e.id_etapa
                             WHERE c.activo = TRUE AND e.grupo = :grupo
@@ -290,7 +305,8 @@ def render_nueva_venta():
                         """)
                         cli_df = pd.read_sql(query_clientes, conn, params={"grupo": grupo_sel})
 
-                lista_cli = {row['nombre_corto']: row['id_cliente'] for i, row in cli_df.iterrows()}
+                # Diccionario blindado: Ahora muestra "Nombre (Teléfono/LID)" para evitar colisiones
+                lista_cli = {f"{row['nombre_corto']} ({row['identificador']})": row['id_cliente'] for i, row in cli_df.iterrows()}
                 
                 if not lista_cli:
                     col_c.warning(f"No hay clientes en {grupo_sel}.")
@@ -575,13 +591,17 @@ def render_nueva_venta():
                     except Exception as e:
                         st.error(f"❌ Error al procesar la salida: {e}")
 
-
 def render_gestion_ventas():
     st.subheader("📜 Búsqueda y Anulación de Ventas")
     
     with engine.connect() as conn:
         query = text("""
             SELECT v.id_venta, v.fecha_venta, c.nombre_corto as cliente, 
+                   COALESCE(
+                       (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                       (SELECT lid FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                       'Sin Contacto'
+                   ) as identificador,
                    v.total_venta, v.nota, v.anulado
             FROM Ventas v
             LEFT JOIN Clientes c ON v.id_cliente = c.id_cliente
@@ -593,8 +613,9 @@ def render_gestion_ventas():
         st.info("No hay ventas registradas.")
         return
 
+    # Inyectamos el identificador dinámico en la lista de opciones
     opciones = df_ventas.apply(
-        lambda row: f"#{row['id_venta']} | {row['fecha_venta'].strftime('%d/%m/%Y %H:%M') if pd.notnull(row['fecha_venta']) else ''} | {row['cliente']} | S/ {row['total_venta']} {'(❌ ANULADA)' if row['anulado'] else ''}", 
+        lambda row: f"#{row['id_venta']} | {row['fecha_venta'].strftime('%d/%m/%Y %H:%M') if pd.notnull(row['fecha_venta']) else ''} | {row['cliente']} ({row['identificador']}) | S/ {row['total_venta']} {'(❌ ANULADA)' if row['anulado'] else ''}", 
         axis=1
     ).tolist()
     

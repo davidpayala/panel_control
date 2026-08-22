@@ -349,7 +349,59 @@ def recibir_mensaje():
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
                 except: pass
                 continue 
+            # ===============================================================
+            # ✏️ PASO 3.5: PROCESAMIENTO DE EDICIÓN Y ELIMINACIÓN
+            # ===============================================================
+            if tipo_evento == 'message.edited':
+                msg_id = payload.get('editedMessageId')
+                new_body = payload.get('body', '')
+                try:
+                    with engine.begin() as conn:
+                        # 1. Recuperar el mensaje antiguo de la base de datos
+                        old_msg = conn.execute(text("SELECT contenido FROM mensajes WHERE whatsapp_id = :wid"), {"wid": msg_id}).scalar()
+                        
+                        if old_msg:
+                            import re
+                            from datetime import datetime, timedelta
+                            
+                            # 2. Separar el texto actual del historial oculto (por si ya fue editado antes)
+                            partes = old_msg.split('<!--HISTORIAL-->')
+                            texto_previo = partes[0].strip()
+                            historial_acumulado = partes[1] if len(partes) > 1 else ""
+                            
+                            # 3. Extraer solo la lista de items viejos para no crear acordeones anidados
+                            if historial_acumulado:
+                                m = re.search(r'<div class="items-historial"[^>]*>(.*?)</div>\s*</details>', historial_acumulado, re.DOTALL)
+                                historial_acumulado = m.group(1) if m else ""
 
+                            # 4. Crear el nuevo registro con la hora exacta de Perú
+                            ahora_str = (datetime.utcnow() - timedelta(hours=5)).strftime("%d/%m %I:%M %p")
+                            nuevo_item = f"<div style='margin-bottom: 6px;'><i>{ahora_str}:</i><br><s>{texto_previo}</s></div>"
+                            
+                            historial_final = nuevo_item + historial_acumulado
+                            
+                            # 5. Ensamblar el mensaje final con el acordeón HTML nativo
+                            nuevo_contenido = f"{new_body}<!--HISTORIAL--><div class='historial-edicion' style='margin-top: 5px; font-size: 11px;'><details style='cursor: pointer; color: #666; background: rgba(0,0,0,0.05); padding: 4px; border-radius: 4px;'><summary style='outline: none; font-weight: bold;'>✏️ Ver historial</summary><div class='items-historial' style='margin-top: 5px; padding-top: 5px; border-top: 1px dashed #ccc; color: #888;'>{historial_final}</div></details></div>"
+                            conn.execute(text("UPDATE mensajes SET contenido = :nuevo WHERE whatsapp_id = :wid"), {"nuevo": nuevo_contenido, "wid": msg_id})
+                            conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
+                except Exception as e:
+                    log_error(f"Error editando mensaje: {e}")
+                continue
+
+            if tipo_evento in ['message.revoked', 'message_revoke_everyone']:
+                msg_id = payload.get('id')
+                try:
+                    with engine.begin() as conn:
+                        # Añadimos la pastilla roja, asegurándonos de no duplicarla si llegan varios eventos de revoke
+                        conn.execute(text("""
+                            UPDATE mensajes 
+                            SET contenido = contenido || '<br><span style="font-size: 11px; color: #c0392b; background: #fadbd8; padding: 2px 6px; border-radius: 4px; display: inline-block; margin-top: 5px;">🚫 Mensaje eliminado</span>'
+                            WHERE whatsapp_id = :wid AND contenido NOT LIKE '%Mensaje eliminado%'
+                        """), {"wid": msg_id})
+                        conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
+                except Exception as e:
+                    log_error(f"Error marcando mensaje como eliminado: {e}")
+                continue
             # ===============================================================
             # 📩 PASO 4: PROCESAMIENTO DE MENSAJES Y LLAMADAS (WEBJS FIX)
             # ===============================================================
