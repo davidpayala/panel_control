@@ -12,7 +12,9 @@ from woocommerce import API
 import threading
 import random
 from datetime import datetime
-
+import time
+from io import BytesIO
+from PIL import Image
 # ==============================================================================
 # CONFIGURACIÓN GENERAL
 # ==============================================================================
@@ -1087,17 +1089,12 @@ def obtener_historial_compras(telefono):
     
     return None
 
-def subir_estado_whatsapp(session_name, texto, media_url=None, lista_contactos=None):
+def subir_estado_whatsapp(session_name, texto, media_url=None):
     """
     Sube un estado a WhatsApp. 
-    Convierte webp a JPEG y acepta una inyección de contactos directa 
-    (Bala de Plata) para evitar el problema de agenda vacía de NOWEB.
+    Delega el envío a la memoria interna (Store) de WAHA.
+    Incluye cronómetro para monitorear la salud de la RAM del servidor.
     """
-    import requests
-    import base64
-    from io import BytesIO
-    from PIL import Image
-    
     url_estados = WAHA_URL.replace("3000", "3001")
 
     try:
@@ -1135,26 +1132,58 @@ def subir_estado_whatsapp(session_name, texto, media_url=None, lista_contactos=N
             endpoint = f"{url_estados}/api/{session_name}/status/text"
             payload = {"text": texto}
 
-        # 🔥 LA BALA DE PLATA: Inyectamos tu BD directamente a WAHA
-        if lista_contactos and isinstance(lista_contactos, list):
-            payload["contacts"] = lista_contactos
-
         headers = {
             "accept": "application/json",
             "Content-Type": "application/json",
             "X-Api-Key": WAHA_KEY  
         }
 
-        # ⏳ PACIENCIA EXTENDIDA A 120 SEGUNDOS POR LA ENCRIPTACIÓN MASIVA
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=120)
+        # ⏱️ 1. INICIAMOS EL CRONÓMETRO
+        inicio_peticion = time.time()
 
+        # ⏳ PACIENCIA EXTENDIDA A 240 SEGUNDOS POR LA ENCRIPTACIÓN MASIVA
+        response = requests.post(endpoint, json=payload, headers=headers, timeout=240)
+        
+        # ⏱️ 2. PARAMOS EL CRONÓMETRO
+        tiempo_total = time.time() - inicio_peticion
+
+        # 🚨 3. DISPARADOR DE ALERTA SI EXCEDE 120 SEGUNDOS
+        if tiempo_total > 120:
+            try:
+                with engine.begin() as conn_alerta:
+                    alerta_json = json.dumps({
+                        "mensaje": f"⚠️ Lentitud Crítica: WAHA tardó {int(tiempo_total)} segundos en procesar los estados. Es momento de reiniciar el servidor para liberar memoria RAM.",
+                        "sesion": session_name
+                    }, ensure_ascii=False)
+                    conn_alerta.execute(
+                        text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, 'ALERTA_CRITICA', :p)"),
+                        {"s": session_name, "p": alerta_json}
+                    )
+            except Exception as e:
+                print(f"No se pudo guardar la alerta: {e}")
+
+        # 4. RESPUESTA FINAL
         if response.status_code in [200, 201]:
-            return True, "Estado subido correctamente a WhatsApp."
+            return True, f"Estado subido correctamente a WhatsApp en {int(tiempo_total)}s."
         else:
             return False, f"Error de WAHA: {response.text} (Código: {response.status_code})"
 
     except requests.exceptions.Timeout:
-        return True, "Timeout: WAHA tardó en responder, pero el estado se procesó de fondo."
+        # 🚨 ALERTA ROJA SI SE ACABAN LOS 240 SEGUNDOS COMPLETOS
+        try:
+            with engine.begin() as conn_alerta:
+                alerta_json = json.dumps({
+                    "mensaje": "🔥 Timeout Extremo: WAHA colapsó por falta de RAM intentando subir el estado. Reinicia el servidor inmediatamente.",
+                    "sesion": session_name
+                }, ensure_ascii=False)
+                conn_alerta.execute(
+                    text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, 'ALERTA_CRITICA', :p)"),
+                    {"s": session_name, "p": alerta_json}
+                )
+        except:
+            pass
+        return True, "Timeout: WAHA tardó más de 240s. El estado se está procesando de fondo, pero el servidor necesita reinicio."
+    
     except Exception as e:
         return False, f"Error interno al conectar con WAHA: {str(e)}"
 

@@ -442,7 +442,33 @@ def recibir_mensaje():
 
             log_info(f"🏁 Inicio Proceso: Tel={telefono_num} | LID={wspid_lid}")
 
+            # ===============================================================
+            # 📍 FILTRO INTELIGENTE PARA UBICACIONES GOOGLE MAPS (WEBJS)
+            # ===============================================================
             body = "📞 Llamada entrante" if tipo_evento == 'call.received' else payload.get('body', '')
+            
+            tipo_mensaje_real = payload.get('type') or payload.get('_data', {}).get('type')
+            datos_ubicacion = payload.get('location') or payload.get('_data', {}).get('location') or {}
+
+            if tipo_mensaje_real == 'location' or datos_ubicacion:
+                # 1. Extraemos las coordenadas o URL si existen
+                lat = datos_ubicacion.get('latitude') or datos_ubicacion.get('lat')
+                lng = datos_ubicacion.get('longitude') or datos_ubicacion.get('lng')
+                url_mapa = datos_ubicacion.get('url') or payload.get('_data', {}).get('loc')
+                
+                if url_mapa:
+                    body = f"📍 Ubicación compartida: {url_mapa}"
+                elif lat and lng:
+                    body = f"📍 Ubicación compartida: https://maps.google.com/?q={lat},{lng}"
+                else:
+                    body = "📍 Ubicación compartida (Google Maps)"
+            
+            # 2. Seguro Anti-Basura: Si el body sigue siendo Base64 (miniatura del mapa)
+            elif isinstance(body, str) and body.startswith('/9j/'):
+                body = "📍 [Ubicación o enlace compartido]"
+
+            # ===============================================================
+
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
 

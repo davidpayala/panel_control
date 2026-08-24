@@ -12,62 +12,12 @@ from sqlalchemy import text
 from database import engine
 import utils 
 
-# Importar las vistas (¡AGREGAMOS OPCIONES AQUÍ!)
-from views import ventas, compras, productos, clientes, seguimiento, catalogo, facturacion, chats, campanas, diagnostico, opciones, estadisticas 
+# Importar las vistas (¡ELIMINAMOS FACTURACION!)
+from views import ventas, compras, productos, clientes, seguimiento, catalogo, chats, campanas, diagnostico, opciones, estadisticas 
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
 
-# ==========================================
-# LIMPIEZA Y MIGRACIÓN (Mantenimiento DB)
-# ==========================================
-def ejecutar_migraciones():
-    try:
-        with engine.connect() as conn:
-            # ... (Tu código existente de ALTER TABLE y migraciones se mantiene aquí) ...
-            
-            # --- NUEVA TABLA: ETAPAS DE CLIENTES ---
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS EtapasCliente (
-                    id_etapa SERIAL PRIMARY KEY,
-                    grupo TEXT NOT NULL,
-                    subgrupo TEXT NOT NULL,
-                    activo BOOLEAN DEFAULT TRUE
-                );
-            """))
-            
-            # Insertar las etapas por defecto SI la tabla está vacía
-            conn.execute(text("""
-                INSERT INTO EtapasCliente (grupo, subgrupo)
-                SELECT * FROM (VALUES 
-                    ('Etapa 0', 'Sin empezar'),
-                    ('Etapa 1', 'Responder duda'),
-                    ('Etapa 1', 'Interesado en venta'),
-                    ('Etapa 1', 'Proveedor Nacional'),
-                    ('Etapa 1', 'Proveedor Internacional'),
-                    ('Etapa 2', 'Venta Motorizado'),
-                    ('Etapa 2', 'Venta Agencia'),
-                    ('Etapa 2', 'Recojo en Almacen'),
-                    ('Etapa 3', 'En camino moto'),
-                    ('Etapa 3', 'En camino agencia'),
-                    ('Etapa 4', 'Pendiente agradecer'),
-                    ('Etapa 4', 'Problema post')
-                ) AS t(g, s)
-                WHERE NOT EXISTS (SELECT 1 FROM EtapasCliente);
-            """))
-            
-            conn.commit()
-            
-    except Exception as e:
-        print(f"⚠️ Nota Mantenimiento DB: {e}")
-
-@st.cache_resource
-def iniciar_sistema_db():
-    print("🚀 Iniciando sistema...")
-    ejecutar_migraciones()
-    return True
-
-# LLAMAR A LA FUNCIÓN CON CACHÉ
 def render_login():
     st.title("🔐 Acceso al Sistema")
     with st.form("login_form"):
@@ -228,12 +178,13 @@ def main():
 
         st.title("Menú K&M")
         
+        # --- ORDEN ACTUALIZADO Y SIN FACTURACIÓN ---
         OPCIONES_BASE = [
-            "VENTA", "COMPRAS", "PRODUCTOS", "CLIENTES",
-            "SEGUIMIENTO", "CATALOGO", "FACTURACION", "CHAT", "CAMPANAS", "DIAGNOSTICO", "ESTADISTICAS"
+            "PRODUCTOS", "VENTA", "COMPRAS", "CLIENTES",
+            "SEGUIMIENTO", "CATALOGO", "CHAT", "CAMPANAS", "DIAGNOSTICO", "ESTADISTICAS"
         ]
 
-        # Lógica de Roles (¡CAMBIAMOS USUARIOS POR OPCIONES!)
+        # Lógica de Roles
         if st.session_state['rol'] == 'Admin':
             OPCIONES_MENU = OPCIONES_BASE + ["OPCIONES"] 
         else:
@@ -242,16 +193,13 @@ def main():
         if "indice_menu" not in st.session_state:
             st.session_state.indice_menu = 0
 
-        # Función de formato
+        # Función de formato ajustada
         def formatear_menu(opcion):
             mapeo = {
-                "VENTA": "🛒 Venta (POS)", "COMPRAS": "📦 Compras", 
-                "PRODUCTOS": "📦 Productos", "CLIENTES": "👤 Clientes",
-                "SEGUIMIENTO": "📆 Seguimiento", "CATALOGO": "🔧 Catálogo",
-                "FACTURACION": "💰 Facturación", "CHAT": texto_dinamico_chat,
-                "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico",
-                "ESTADISTICAS": "📊 Estadísticas", # <--- AGREGADO
-                "OPCIONES": "⚙️ Opciones"
+                "PRODUCTOS": "📦 Productos", "VENTA": "🛒 Venta (POS)", "COMPRAS": "📦 Compras", 
+                "CLIENTES": "👤 Clientes", "SEGUIMIENTO": "📆 Seguimiento", "CATALOGO": "🔧 Catálogo",
+                "CHAT": texto_dinamico_chat, "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico",
+                "ESTADISTICAS": "📊 Estadísticas", "OPCIONES": "⚙️ Opciones"
             }
             return mapeo.get(opcion, opcion)
 
@@ -275,23 +223,17 @@ def main():
     st.title(f"{formatear_menu(seleccion_interna)}") 
     st.markdown("---")
 
-    if seleccion_interna == "VENTA": ventas.render_ventas()
+    if seleccion_interna == "PRODUCTOS": productos.vista_productos()
+    elif seleccion_interna == "VENTA": ventas.render_ventas()
     elif seleccion_interna == "COMPRAS": compras.render_compras()
-    elif seleccion_interna == "PRODUCTOS": productos.vista_productos()
     elif seleccion_interna == "CLIENTES": clientes.render_clientes()
     elif seleccion_interna == "SEGUIMIENTO": seguimiento.render_seguimiento()
     elif seleccion_interna == "CATALOGO": catalogo.render_catalogo()
-    elif seleccion_interna == "FACTURACION":
-        tab1, tab2 = st.tabs(["📝 Registro de Boletas", "📊 Reporte Mensual"])
-        with tab1: facturacion.render_facturacion() 
-        with tab2: facturacion.render_reporte_mensual()
     elif seleccion_interna == "CHAT": chats.render_chat()
     elif seleccion_interna == "CAMPANAS": campanas.render_campanas()
     elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico()
-    elif seleccion_interna == "ESTADISTICAS": estadisticas.render_estadisticas() # <--- AGREGADO
-    elif seleccion_interna == "OPCIONES": 
-        opciones.render_opciones()
+    elif seleccion_interna == "ESTADISTICAS": estadisticas.render_estadisticas()
+    elif seleccion_interna == "OPCIONES": opciones.render_opciones()
 
 if __name__ == "__main__":
-    ejecutar_migraciones() 
     main()
