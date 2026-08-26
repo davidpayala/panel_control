@@ -165,54 +165,72 @@ def buscar_contacto_google(telefono):
 
     return {'encontrado': False}
 
-def crear_en_google(nombre, apellido, telefono, email=None):
-    """Crea un contacto en Google Contacts"""
+def crear_en_google(nombre, apellido, telefonos, email=None):
+    """Crea un contacto en Google Contacts soportando múltiples teléfonos."""
     service = get_google_service()
     if not service: return False
     try:
+        # 1. Normalizar a lista por si llega un solo texto
+        lista_tels = telefonos if isinstance(telefonos, list) else [telefonos]
+        
+        # 2. Asignar etiquetas dinámicas de Google
+        phone_numbers_body = []
+        etiquetas = ["mobile", "home", "work", "main", "other"]
+        for i, tel in enumerate(lista_tels):
+            tipo = etiquetas[i] if i < len(etiquetas) else "other"
+            phone_numbers_body.append({"value": tel, "type": tipo})
+
         body = {
             "names": [{"givenName": nombre, "familyName": apellido}],
-            "phoneNumbers": [{"value": telefono}],
+            "phoneNumbers": phone_numbers_body,
         }
         if email: body["emailAddresses"] = [{"value": email}]
-        service.people().createContact(body=body).execute()
-        return True
-    except: return False
-
-def actualizar_en_google(google_id, nombre, apellido, telefono):
-    if not google_id:
+        
+        # 3. Guardar y retornar el ID real generado
+        res = service.people().createContact(body=body).execute()
+        return res.get('resourceName')
+    except Exception as e:
+        print(f"❌ Error al crear en Google: {e}")
         return False
+
+def actualizar_en_google(google_id, nombre, apellido, telefonos):
+    """Actualiza un contacto existente en Google soportando múltiples teléfonos."""
+    if not google_id: return False
     try:
-        # Obtener el servicio de autenticación correcto
         service = get_google_service()
         if not service:
             print("⚠️ No se pudo inicializar el servicio de Google.")
             return False
 
-        # Forzar formato correcto del resourceName
         resource_name = google_id if google_id.startswith('people/') else f"people/{google_id}"
-        
-        # 1. Obtener el 'etag' actual del contacto
+
         contacto = service.people().get(
             resourceName=resource_name,
             personFields='metadata'
         ).execute()
-        etag = contacto.get('etag')
 
-        # 2. Construir el cuerpo con los datos modificados
+        # 1. Normalizar a lista
+        lista_tels = telefonos if isinstance(telefonos, list) else [telefonos]
+        
+        # 2. Asignar etiquetas dinámicas
+        phone_numbers_body = []
+        etiquetas = ["mobile", "home", "work", "main", "other"]
+        for i, tel in enumerate(lista_tels):
+            tipo = etiquetas[i] if i < len(etiquetas) else "other"
+            phone_numbers_body.append({"value": tel, "type": tipo})
+
         body = {
-            "etag": etag,
+            "etag": contacto.get('etag'),
             "names": [{"givenName": nombre, "familyName": apellido}],
-            "phoneNumbers": [{"value": telefono, "type": "mobile"}]
+            "phoneNumbers": phone_numbers_body
         }
 
-        # 3. Enviar la actualización a la API
         service.people().updateContact(
             resourceName=resource_name,
             updatePersonFields="names,phoneNumbers",
             body=body
         ).execute()
-        
+
         return True
     except Exception as e:
         print(f"❌ Error real en actualizar_en_google: {e}")

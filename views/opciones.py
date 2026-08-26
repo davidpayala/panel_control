@@ -1,44 +1,23 @@
 import streamlit as st
 import pandas as pd
 import time
+import subprocess # <- Importante para poder enviar comandos a Linux
 from sqlalchemy import text
 from database import engine
 
-# =========================================================================
-# AUTO-CREACIÓN DE TABLA MAESTRA DE SUBCATEGORÍAS AL INICIAR
-# =========================================================================
-try:
-    with engine.begin() as conn_init:
-        conn_init.execute(text("""
-            CREATE TABLE IF NOT EXISTS Subcategorias_Sistema (
-                id SERIAL PRIMARY KEY,
-                macro_categoria VARCHAR(50) NOT NULL,
-                subcategoria VARCHAR(100) NOT NULL,
-                UNIQUE(macro_categoria, subcategoria)
-            )
-        """))
-        # Sembrar subcategorías base por defecto si está vacía
-        conn_init.execute(text("""
-            INSERT INTO Subcategorias_Sistema (macro_categoria, subcategoria) VALUES 
-            ('Lentes', 'Estilo Natural'),
-            ('Lentes', 'Estilo Fantasía'),
-            ('Lentes', 'Accesorios'),
-            ('Pelucas', 'Peluca Natural'),
-            ('Pelucas', 'Peluca Fantasía'),
-            ('Pelucas', 'Accesorios Pelucas')
-            ON CONFLICT DO NOTHING
-        """))
-except Exception:
-    pass
-
-
 def render_opciones():
-    tab1, tab2, tab3 = st.tabs(["📋 Estados de Clientes", "📁 Jerarquía de Categorías", "👥 Usuarios"])
+    # Estructura mejorada con nombres descriptivos para facilitar agregar nuevas pestañas
+    tab_estados, tab_jerarquia, tab_usuarios, tab_sistema = st.tabs([
+        "📋 Estados de Clientes", 
+        "📁 Jerarquía de Categorías", 
+        "👥 Usuarios",
+        "⚙️ Sistema y Mantenimiento" # <--- Tu nueva pestaña
+    ])
 
     # =========================================================================
     # PESTAÑA 1: GESTIÓN DE ETAPAS / ESTADOS
     # =========================================================================
-    with tab1:
+    with tab_estados:
         st.subheader("Gestión de Etapas y Estados")
         st.info("Aquí puedes editar los grupos y subgrupos. También puedes agregar nuevas filas al final de la tabla para crear nuevos estados.")
         
@@ -92,7 +71,7 @@ def render_opciones():
     # =========================================================================
     # PESTAÑA 2: DEPURACIÓN Y GESTIÓN DE CATEGORÍAS
     # =========================================================================
-    with tab2:
+    with tab_jerarquia:
         st.subheader("🛠️ Depuración de Categorías y Estructura")
         
         with engine.connect() as conn:
@@ -192,10 +171,42 @@ def render_opciones():
     # =========================================================================
     # PESTAÑA 3: USUARIOS
     # =========================================================================
-    with tab3:
+    with tab_usuarios:
         st.subheader("👥 Gestión de Usuarios del Sistema")
         with engine.connect() as conn:
             df_usuarios = pd.read_sql(text("SELECT id, usuario, rol, modulos FROM Usuarios ORDER BY id"), conn)
             
         st.dataframe(df_usuarios, hide_index=True, use_container_width=True)
         st.info("Para modificar contraseñas o permisos de acceso, utiliza tu cliente SQL o pgAdmin conectado a la base de datos local.")
+
+    # =========================================================================
+    # PESTAÑA 4: SISTEMA Y MANTENIMIENTO
+    # =========================================================================
+    with tab_sistema:
+        st.subheader("🛠️ Mantenimiento del Motor WAHA")
+        st.write("Usa este botón si notas que el envío de mensajes está lento o si el servidor está consumiendo demasiada memoria RAM.")
+
+        # Botón de reinicio con color rojo de advertencia
+        if st.button("♻️ Reiniciar Servidor WAHA (Liberar Memoria)", type="primary"):
+            with st.spinner("⏳ Apagando y limpiando memoria de WAHA... (Esto tomará unos 15 segundos)"):
+                try:
+                    # Mandamos la orden directa a Linux para reiniciar el contenedor llamado 'waha'
+                    resultado = subprocess.run(
+                        ["docker", "restart", "waha"], 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=30
+                    )
+                    
+                    if resultado.returncode == 0:
+                        # Damos unos segundos extra para que la API interna levante
+                        time.sleep(3) 
+                        st.success("✅ ¡Éxito! El motor WAHA ha sido reiniciado y la memoria RAM ha sido liberada.")
+                        st.info("💡 Tus sesiones se reconectarán a WhatsApp automáticamente en los próximos segundos.")
+                    else:
+                        st.error(f"❌ Fallo al intentar reiniciar. Error de Linux: {resultado.stderr}")
+                        
+                except subprocess.TimeoutExpired:
+                    st.error("⏳ El servidor tardó demasiado en reiniciar el contenedor. Revisa la consola SSH.")
+                except Exception as e:
+                    st.error(f"🔥 Error crítico de sistema: {e}")
