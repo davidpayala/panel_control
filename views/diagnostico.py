@@ -130,7 +130,6 @@ def render_diagnostico():
     # PESTAÑA 2: WOO (Sincronización Bidireccional)
     # ==========================================================================
     with tab_woo:
-        # Se ha corregido la indentación eliminando el "def render_sincronizacion_woo():" erróneo
         st.subheader("🔄 Auditoría Espejo: Local vs WordPress")
         st.write("Verifica discrepancias entre tu inventario físico y la tienda virtual.")
 
@@ -378,7 +377,7 @@ def render_diagnostico():
                         st.write("Todo en orden aquí ✔️")
                 st.divider()
 
-# ==========================================================================
+    # ==========================================================================
     # PESTAÑA 7: LOGS DE MARKETING (LECTURA SQL CLOUD-NATIVE)
     # ==========================================================================
     with tab_marketing:
@@ -391,13 +390,13 @@ def render_diagnostico():
         if c_btn_log.button("🔄 Refrescar Logs", key="btn_refresh_mkt"):
             st.rerun()
 
-        # Condición SQL directa sin doble desfase
+        # LIMPIEZA: Condición SQL directa sin los desfases de - INTERVAL '5 hours'
         if filtro_tiempo == "Últimas 2 horas":
-            condicion_tiempo = "fecha >= (NOW() - INTERVAL '5 hours') - INTERVAL '2 hours'"
+            condicion_tiempo = "fecha >= NOW() - INTERVAL '2 hours'"
         elif filtro_tiempo == "Hoy":
-            condicion_tiempo = "fecha::date = (NOW() - INTERVAL '5 hours')::date"
+            condicion_tiempo = "fecha::date = CURRENT_DATE"
         else:
-            condicion_tiempo = "fecha >= (NOW() - INTERVAL '5 hours') - INTERVAL '7 days'"
+            condicion_tiempo = "fecha >= NOW() - INTERVAL '7 days'"
         
         try:
             # Auto-creación de tabla de contingencia
@@ -419,8 +418,8 @@ def render_diagnostico():
                 """), conn)
             
             if not df_logs.empty:
-                # Conversión explícita a formato datetime en caso de ser necesario
-                df_logs['fecha'] = pd.to_datetime(df_logs['fecha']) + pd.Timedelta(hours=5)
+                # LIMPIEZA: Se elimina el pd.Timedelta(hours=5) porque ya no hay desfase
+                df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
                 
                 lineas_log = []
                 for _, row in df_logs.iterrows():

@@ -4,6 +4,10 @@ import time
 import subprocess # <- Importante para poder enviar comandos a Linux
 from sqlalchemy import text
 from database import engine
+import subprocess
+import time
+import psutil
+import platform
 
 def render_opciones():
     # Estructura mejorada con nombres descriptivos para facilitar agregar nuevas pestañas
@@ -179,34 +183,148 @@ def render_opciones():
         st.dataframe(df_usuarios, hide_index=True, use_container_width=True)
         st.info("Para modificar contraseñas o permisos de acceso, utiliza tu cliente SQL o pgAdmin conectado a la base de datos local.")
 
-    # =========================================================================
+# =========================================================================
     # PESTAÑA 4: SISTEMA Y MANTENIMIENTO
     # =========================================================================
     with tab_sistema:
-        st.subheader("🛠️ Mantenimiento del Motor WAHA")
-        st.write("Usa este botón si notas que el envío de mensajes está lento o si el servidor está consumiendo demasiada memoria RAM.")
+        # Función auxiliar para consultar el hardware a Linux silenciosamente
+        def consultar_linux(comando):
+            try:
+                return subprocess.check_output(comando, shell=True, text=True, stderr=subprocess.DEVNULL).strip()
+            except Exception:
+                return ""
 
-        # Botón de reinicio con color rojo de advertencia
-        if st.button("♻️ Reiniciar Servidor WAHA (Liberar Memoria)", type="primary"):
-            with st.spinner("⏳ Apagando y limpiando memoria de WAHA... (Esto tomará unos 15 segundos)"):
-                try:
-                    # Mandamos la orden directa a Linux para reiniciar el contenedor llamado 'waha'
-                    resultado = subprocess.run(
-                        ["docker", "restart", "waha"], 
-                        capture_output=True, 
-                        text=True, 
-                        timeout=30
-                    )
-                    
-                    if resultado.returncode == 0:
-                        # Damos unos segundos extra para que la API interna levante
-                        time.sleep(3) 
-                        st.success("✅ ¡Éxito! El motor WAHA ha sido reiniciado y la memoria RAM ha sido liberada.")
-                        st.info("💡 Tus sesiones se reconectarán a WhatsApp automáticamente en los próximos segundos.")
+        st.subheader("🖥️ Especificaciones de Hardware")
+        col_hw1, col_hw2 = st.columns(2)
+        
+        with col_hw1:
+            st.markdown("**1. Procesador (CPU):**")
+            cpu_modelo = consultar_linux("cat /proc/cpuinfo | grep 'model name' | head -n 1 | cut -d ':' -f 2").strip()
+            st.info(f"🧠 **{cpu_modelo if cpu_modelo else platform.processor()}**")
+            
+            st.markdown("**2. Tarjeta de Video (GPU):**")
+            gpu_raw = consultar_linux("lspci | grep -i -E 'vga|3d|display' | cut -d ':' -f 3")
+            if gpu_raw:
+                gpus = [g.strip() for g in gpu_raw.split('\n') if g.strip()]
+                for i, gpu in enumerate(gpus):
+                    st.caption(f"🎮 GPU {i+1}: **{gpu}**")
+            else:
+                st.caption("🎮 Gráficos Integrados / No detectada")
+
+        with col_hw2:
+            st.markdown("**3. Placa Madre (Motherboard):**")
+            board_vendor = consultar_linux("cat /sys/class/dmi/id/board_vendor")
+            board_name = consultar_linux("cat /sys/class/dmi/id/board_name")
+            st.success(f"🎛️ **{board_vendor} {board_name}**".strip() if board_vendor else "🎛️ Acceso restringido")
+            
+            st.markdown("**4. Memoria RAM:**")
+            total_ram = psutil.virtual_memory().total / (1024**3)
+            st.success(f"⚡ **Total Instalada: {total_ram:.1f} GB**")
+            
+            # --- MEJORA: Filtro inteligente de Slots de RAM ---
+            ram_slots = consultar_linux("sudo dmidecode -t memory | grep -E 'Size:|Locator:' | grep -v 'Bank Locator'")
+            if ram_slots:
+                lineas = ram_slots.split('\n')
+                modulos_activos = []
+                size_tmp = ""
+                
+                for linea in lineas:
+                    linea = linea.strip()
+                    if linea.startswith("Size:"):
+                        size_tmp = linea.replace("Size:", "").strip()
+                    elif linea.startswith("Locator:"):
+                        loc_tmp = linea.replace("Locator:", "").strip()
+                        # Solo guardamos si el slot tiene una memoria insertada
+                        if size_tmp and size_tmp != "No Module Installed":
+                            modulos_activos.append(f"🔌 **{loc_tmp}**: {size_tmp}")
+
+                with st.expander("Ver detalle de Módulos (Slots)"):
+                    if modulos_activos:
+                        for mod in modulos_activos:
+                            st.markdown(mod)
                     else:
-                        st.error(f"❌ Fallo al intentar reiniciar. Error de Linux: {resultado.stderr}")
-                        
-                except subprocess.TimeoutExpired:
-                    st.error("⏳ El servidor tardó demasiado en reiniciar el contenedor. Revisa la consola SSH.")
-                except Exception as e:
-                    st.error(f"🔥 Error crítico de sistema: {e}")
+                        st.info("No se pudo extraer la distribución de los slots.")
+
+        st.divider()
+
+        # --- SECCIÓN DE MÉTRICAS EN VIVO E HISTÓRICAS ---
+        st.subheader("📊 Consumo de Recursos y Estadísticas")
+        
+        cpu_pct = psutil.cpu_percent(interval=0.2)
+        ram_info = psutil.virtual_memory()
+        disco_info = psutil.disk_usage('/')
+        
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("💻 CPU (En Vivo)", f"{cpu_pct}%", delta="Normal" if cpu_pct < 80 else "Saturado", delta_color="inverse")
+        col_m2.metric("🧠 RAM (En Vivo)", f"{ram_info.percent}%", delta=f"{ram_info.used / (1024**3):.1f} GB en uso", delta_color="inverse")
+        col_m3.metric("💽 Disco Duro (Raíz)", f"{disco_info.percent}%", delta=f"{disco_info.free / (1024**3):.1f} GB libres", delta_color="normal")
+
+        try:
+            with engine.connect() as conn:
+                df_historial = pd.read_sql(text("""
+                    SELECT 
+                        DATE_TRUNC('hour', fecha) as "Hora",
+                        ROUND(AVG(cpu_pct), 1) as "Promedio CPU (%)",
+                        ROUND((SUM(CASE WHEN cpu_pct >= 95 THEN 1 ELSE 0 END) * 100.0) / COUNT(*), 1) as "CPU al 100% (%)",
+                        ROUND(AVG(ram_pct), 1) as "Promedio RAM (%)",
+                        ROUND((SUM(CASE WHEN ram_pct >= 95 THEN 1 ELSE 0 END) * 100.0) / COUNT(*), 1) as "RAM al 100% (%)"
+                    FROM Servidor_Metricas
+                    WHERE fecha >= NOW() - INTERVAL '24 hours'
+                    GROUP BY 1
+                    ORDER BY 1 DESC
+                    LIMIT 12
+                """), conn)
+                
+            if not df_historial.empty:
+                df_historial['Hora'] = pd.to_datetime(df_historial['Hora'])
+                
+                # --- ⏱️ CORRECCIÓN DEFINITIVA DE HORA (UTC-5 PERÚ) ---
+                # Si el servidor guardó en UTC (Londres), lo forzamos a hora de Lima
+                df_historial['Hora'] = df_historial['Hora'] + pd.Timedelta(hours=5)
+                df_historial['Hora'] = df_historial['Hora'].dt.strftime('%H:00')
+                
+                st.markdown("**⏱️ Historial de las últimas 12 horas:**")
+                st.dataframe(df_historial, use_container_width=True, hide_index=True)
+            else:
+                st.info("⏳ Recolectando datos... El historial aparecerá en unos minutos.")
+        except Exception as e:
+            st.info("⏳ El cron de monitoreo acaba de ser configurado. Los datos aparecerán pronto.")
+
+        st.divider()
+
+        # --- BOTONES DE PELIGRO EN EL FONDO ---
+        st.subheader("⚠️ Zona de Peligro (Opciones de Energía)")
+        st.write("Para evitar accidentes, primero debes desbloquear el candado del botón que deseas utilizar.")
+
+        col_dan1, col_dan2 = st.columns(2)
+        
+        with col_dan1:
+            with st.container(border=True):
+                st.markdown("#### ♻️ Motor WAHA (WhatsApp)")
+                st.caption("Limpia la memoria si notas lentitud en el envío masivo.")
+                candado_waha = st.checkbox("🔓 Desbloquear WAHA")
+                if st.button("Reiniciar WAHA", type="primary", use_container_width=True, disabled=not candado_waha):
+                    with st.spinner("⏳ Apagando y limpiando WAHA..."):
+                        try:
+                            res = subprocess.run(["docker", "restart", "waha"], capture_output=True, text=True, timeout=30)
+                            if res.returncode == 0:
+                                time.sleep(3) 
+                                st.success("✅ WAHA reiniciado.")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Error: {res.stderr}")
+                        except Exception as e:
+                            st.error(f"🔥 Error crítico: {e}")
+
+        with col_dan2:
+            with st.container(border=True):
+                st.markdown("#### ☢️ Servidor (Linux)")
+                st.caption("Apaga físicamente la máquina. El Panel y la BD caerán temporalmente.")
+                candado_linux = st.checkbox("🔓 Desbloquear Sistema")
+                if st.button("🔥 Reiniciar Servidor", type="primary", use_container_width=True, disabled=not candado_linux):
+                    st.info("⏳ Iniciando reinicio profundo... Espera 2 minutos y presiona F5.")
+                    time.sleep(2)
+                    try:
+                        subprocess.Popen(["sudo", "reboot"])
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")

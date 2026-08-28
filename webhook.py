@@ -362,7 +362,6 @@ def recibir_mensaje():
                         
                         if old_msg:
                             import re
-                            from datetime import datetime, timedelta
                             
                             # 2. Separar el texto actual del historial oculto (por si ya fue editado antes)
                             partes = old_msg.split('<!--HISTORIAL-->')
@@ -374,8 +373,8 @@ def recibir_mensaje():
                                 m = re.search(r'<div class="items-historial"[^>]*>(.*?)</div>\s*</details>', historial_acumulado, re.DOTALL)
                                 historial_acumulado = m.group(1) if m else ""
 
-                            # 4. Crear el nuevo registro con la hora exacta de Perú
-                            ahora_str = (datetime.utcnow() - timedelta(hours=5)).strftime("%d/%m %I:%M %p")
+                            # 4. Crear el nuevo registro con la hora local actual 
+                            ahora_str = datetime.now().strftime("%d/%m %I:%M %p")
                             nuevo_item = f"<div style='margin-bottom: 6px;'><i>{ahora_str}:</i><br><s>{texto_previo}</s></div>"
                             
                             historial_final = nuevo_item + historial_acumulado
@@ -635,7 +634,7 @@ def recibir_mensaje():
                         if not existe:
                             conn.execute(text("""
                                 INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content, estado_waha, session_name)
-                                VALUES (:t, :tipo, :txt, (NOW() - INTERVAL '5 hours'), :leido, :d, :wid, :rid, :rbody, :est, :sess)
+                                VALUES (:t, :tipo, :txt, NOW(), :leido, :d, :wid, :rid, :rbody, :est, :sess)
                             """), {
                                 "t": t_msg, "tipo": tipo_msg, "txt": body, "leido": (tipo_msg == 'SALIENTE'), "d": archivo_bytes,
                                 "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
@@ -652,7 +651,7 @@ def recibir_mensaje():
                                 es_clave = conn.execute(text("SELECT 1 FROM respuestas_automaticas WHERE LOWER(frase_clave) = :t LIMIT 1"), {"t": texto_limpio}).scalar()
 
                                 if es_clave:
-                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = (NOW() - INTERVAL '5 hours') WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = NOW() WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                 else:
                                     conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
             except Exception as e:

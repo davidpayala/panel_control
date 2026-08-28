@@ -2,17 +2,17 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# 1. REGLA DE ORO: Inyectar variables de entorno ANTES de invocar a database.py
+# 1. Inyectar variables de entorno
 ruta_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
 load_dotenv(ruta_env)
 
-# 2. Importamos los módulos de la infraestructura
+# 2. Módulos de infraestructura
 import requests
 import random
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from sqlalchemy import text
-from database import engine  
+from database import engine
 
 from utils import (
     normalizar_telefono_maestro, 
@@ -27,23 +27,38 @@ from utils import (
 # 🗄️ INICIALIZADOR DEL SISTEMA DE LOGS SQL
 # ==============================================================================
 def log_mkt(mensaje):
-    """Guarda el log en la Base de Datos y lo imprime en la terminal SSH"""
+    """Guarda el log en la Base de Datos e imprime en SSH"""
     mensaje_limpio = str(mensaje).lstrip('\n')
     print(mensaje_limpio, flush=True) 
     try:
         with engine.begin() as conn:
-            conn.execute(text("INSERT INTO logs_marketing (fecha, mensaje) VALUES (NOW() - INTERVAL '5 hours', :msg)"), {"msg": mensaje_limpio})
-    except Exception:
-        pass
-
+            conn.execute(
+                text("INSERT INTO logs_marketing (fecha, mensaje) VALUES (NOW(), :msg)"), 
+                {"msg": mensaje_limpio}
+            )
+    except Exception as e:
+        try:
+            with engine.begin() as conn_fix:
+                conn_fix.execute(text("""
+                    CREATE TABLE IF NOT EXISTS logs_marketing (
+                        id SERIAL PRIMARY KEY,
+                        fecha TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+                        mensaje TEXT
+                    );
+                    GRANT ALL PRIVILEGES ON TABLE logs_marketing TO PUBLIC;
+                    GRANT ALL PRIVILEGES ON SEQUENCE logs_marketing_id_seq TO PUBLIC;
+                """))
+                conn_fix.execute(
+                    text("INSERT INTO logs_marketing (fecha, mensaje) VALUES (NOW(), :msg)"), 
+                    {"msg": mensaje_limpio}
+                )
+        except Exception as e2:
+            print(f"Error crítico escribiendo log en BD: {e2}", flush=True)
 
 # ==============================================================================
-# 🧠 MOTOR BLINDADO DE SELECCIÓN DE PRODUCTOS
+# 🧠 MOTOR DE SELECCIÓN DE PRODUCTOS
 # ==============================================================================
 def buscar_producto_dinamico(conn, col_probabilidad):
-    """
-    Selecciona un producto con stock asegurando un doble candado.
-    """
     query_pesos = text(f"""
         SELECT TRIM(s.macro_categoria) as macro, TRIM(s.subcategoria) as subcat, MAX(s.{col_probabilidad}) as prob
         FROM Variantes v
@@ -98,7 +113,6 @@ def buscar_producto_dinamico(conn, col_probabilidad):
         return producto_dict
     return None
 
-
 # ==============================================================================
 # 🚀 MOTOR ORQUESTADOR PRINCIPAL
 # ==============================================================================
@@ -114,8 +128,6 @@ def ejecutar_francotirador():
             log_mkt("🛑 No hay configuración registrada en la base de datos.")
             return
 
-        minutos_base = 30
-        
         def obtener_probabilidad(texto):
             try:
                 if str(texto).isdigit(): return int(texto)
@@ -142,12 +154,12 @@ def ejecutar_francotirador():
             """)
             tiempos = conn.execute(query_tiempo).fetchone()
 
-        min_pasados_msg = tiempos.min_pasados_msg if tiempos else 9999
-        min_pasados_est = tiempos.min_pasados_est if tiempos else 9999
-        min_pasados_fb  = tiempos.min_pasados_fb if tiempos and hasattr(tiempos, 'min_pasados_fb') else 9999
+        # 🛡️ SEGURO ANTI-TIEMPO NEGATIVO: Si el número es menor a 0, asume que es un error de BD y dispara forzosamente (9999)
+        min_pasados_msg = tiempos.min_pasados_msg if tiempos and tiempos.min_pasados_msg >= 0 else 9999
+        min_pasados_est = tiempos.min_pasados_est if tiempos and tiempos.min_pasados_est >= 0 else 9999
+        min_pasados_fb  = tiempos.min_pasados_fb if tiempos and hasattr(tiempos, 'min_pasados_fb') and tiempos.min_pasados_fb >= 0 else 9999
 
-        hora_peru = datetime.now(timezone.utc) - timedelta(hours=5)
-        ahora = hora_peru.time()
+        ahora = datetime.now().time()
         dentro_de_horario = (config.hora_inicio <= ahora <= config.hora_fin)
 
         tiempo_ok_msg = es_modo_test or (min_pasados_msg >= 10)
@@ -162,7 +174,7 @@ def ejecutar_francotirador():
         elif not tiempo_ok_msg:
             log_mkt(f"⏳ TAREA 1: Aún no pasan los 30 min base (Han pasado {int(min_pasados_msg)} min).")
         elif not dentro_de_horario:
-            log_mkt("⏰ TAREA 1 OMITIDA: Fuera de horario comercial.")
+            log_mkt(f"⏰ TAREA 1 OMITIDA: Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
         else:
             dado_msg = random.randint(1, 100)
             if dado_msg <= prob_msg or es_modo_test:
@@ -174,7 +186,7 @@ def ejecutar_francotirador():
                 
                 for obrero in obreros:
                     with engine.connect() as conn:
-                        query_conteo = text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess AND fecha::date = (NOW() - INTERVAL '5 hours')::date")
+                        query_conteo = text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess AND fecha::date = CURRENT_DATE")
                         enviados_por_mi = conn.execute(query_conteo, {"sess": obrero["sesion"]}).scalar() or 0
 
                         if enviados_por_mi >= config.max_mensajes_dia:
@@ -213,14 +225,25 @@ def ejecutar_francotirador():
 
                             if enviar_mensaje_whatsapp(telefono_final, mensaje_completo, prod_elegido['url_imagen'], session=obrero['sesion']):
                                 with engine.begin() as conn_save:
-                                    conn_save.execute(text("INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW() - INTERVAL '5 hours', TRUE, :sess)"), 
-                                                      {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
+                                    conn_save.execute(text("""
+                                        INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) 
+                                        VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW(), TRUE, :sess)
+                                    """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
                                 log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']})!")
                                 break 
                         else:
-                            log_mkt(f"⚠️ El número {telefono_final} no tiene WhatsApp. Purgando del embudo para siempre...")
+                            log_mkt(f"🚫 {telefono_final} NO tiene WhatsApp. Bloqueando contacto y excluyendo de publicidad...")
                             with engine.begin() as conn_purge:
-                                conn_purge.execute(text("UPDATE clientes SET excluir_publicidad = TRUE WHERE id_cliente = :idc"), {"idc": cliente.id_cliente})
+                                conn_purge.execute(text("""
+                                    UPDATE clientes 
+                                    SET excluir_publicidad = TRUE, activo = FALSE, estado = 'Sin WhatsApp' 
+                                    WHERE id_cliente = :idc
+                                """), {"idc": cliente.id_cliente})
+                                conn_purge.execute(text("""
+                                    UPDATE telefonoscliente 
+                                    SET activo = FALSE 
+                                    WHERE id_cliente = :idc AND telefono = :t
+                                """), {"idc": cliente.id_cliente, "t": cliente.telefono})
             else:
                 log_mkt(f"🎲 TAREA 1 SALTADA: El dado cayó en {dado_msg} (Requerido: <= {prob_msg}%).")
 
@@ -231,9 +254,9 @@ def ejecutar_francotirador():
         # 📱 TAREA 2: ESTADOS CON TRAZABILIDAD EXTREMA
         # ==================================================================
         if not tiempo_ok_est:
-            pass
+            log_mkt(f"⏳ TAREA 2 OMITIDA: Aún no pasan los 30 min base (Han pasado {int(min_pasados_est)} min).")
         elif not dentro_de_horario:
-            pass
+            log_mkt(f"⏰ TAREA 2 OMITIDA: Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
         else:
             dado_est = random.randint(1, 100)
             if dado_est <= prob_est or es_modo_test:
@@ -251,22 +274,21 @@ def ejecutar_francotirador():
                         log_mkt(f" 🔍 [TRACE] Producto seleccionado: {prod_est.get('nombre')} (SKU: {prod_est.get('sku')})")
                         
                         respuestas_ia = generar_texto_producto_ia(prod_est, es_estado=True)
-                        # Aseguramos extraer el texto correcto de la IA
                         texto_estado = respuestas_ia.get('estado_whatsapp', '') 
                         
-                        log_mkt(f" 📡 Enviando estado a WAHA ({cuenta['sesion']}) delegando a su memoria interna (Store) sin restricciones...")
-                        
-                        # 🧹 RETIRAMOS EL BYPASS: Ya no le pasamos lista_jids. WAHA enviará a TODOS sus contactos nativos.
+                        log_mkt(f" 📡 [TRACE] Enviando estado a WAHA ({cuenta['sesion']}). URL Imagen: {prod_est.get('url_imagen')}")
                         exito, msg_api = subir_estado_whatsapp(cuenta['sesion'], texto_estado, prod_est.get('url_imagen', ''))
                         
-                        if exito:
-                            log_mkt(f" ✅ ¡Estado publicado en BD ({cuenta['sesion']})! Respuesta WAHA: {msg_api}")
+                        log_mkt(f" 🔍 [TRACE] Respuesta WAHA cruda: {msg_api}")
+                        
+                        if exito or ("error" not in str(msg_api).lower() and "fail" not in str(msg_api).lower()):
+                            log_mkt(f" ✅ ¡Estado publicado y registrado en la BD ({cuenta['sesion']})!")
                             with engine.begin() as conn_est:
                                 conn_est.execute(text("INSERT INTO Historial_Estados (sku, session_name, fecha_publicacion) VALUES (:sku, :sess, NOW())"), {"sku": prod_est['sku'], "sess": cuenta['sesion']})
                         else:
-                            log_mkt(f" ❌ [TRACE ERROR] Fallo en la subida a WAHA ({cuenta['sesion']}): {msg_api}")
+                            log_mkt(f" ❌ Fallo real en la subida a WAHA ({cuenta['sesion']}): {msg_api}")
                     else:
-                        log_mkt(f" ⚠️ [TRACE] No se encontró producto para '{cuenta['sesion']}' (Stock cero o probabilidad 0%).")
+                        log_mkt(f" ⚠️ [TRACE] No se encontró producto para '{cuenta['sesion']}' (Stock 0 o probabilidad 0%).")
             else:
                 log_mkt(f"🎲 TAREA 2 SALTADA: El dado cayó en {dado_est} (Requerido: <= {prob_est}%).")
 
@@ -311,7 +333,7 @@ def ejecutar_francotirador():
                             with engine.begin() as conn_hist:
                                 conn_hist.execute(text("INSERT INTO Historial_Facebook (pagina, sku) VALUES (:pag, :sku)"), {"pag": pagina['nombre'], "sku": prod_fb.get('sku', '')})
                         else:
-                            log_mkt(f" ❌ Make.com rechazó el envío para {pagina['nombre']}. Razón: {mensaje_fb}")
+                            log_mkt(f" ❌ Make.com rechazó el envío para {pagina['nombre']}: {mensaje_fb}")
             else:
                 log_mkt(f"🎲 TAREA 3 SALTADA: El dado cayó en {dado_fb} (Requerido: <= {prob_fb}%).")
             

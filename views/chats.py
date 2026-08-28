@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 from streamlit.config import cat
 from database import engine 
-import re # Asegurar la importación al inicio del bucle o del archivo
+import re 
 
 # --- CONFIGURACIÓN ---
 WAHA_URL = os.getenv("WAHA_URL")
@@ -198,7 +198,8 @@ def render_chat():
     c_tit, c_time = st.columns([80, 20])
     c_tit.title("💬 Chat Center")
     
-    lima_time = datetime.utcnow() - timedelta(hours=5)
+    # Limpieza: Ahora usa datetime.now() sin restar 5 horas
+    lima_time = datetime.now()
     c_time.caption(f"🔄 {lima_time.strftime('%H:%M:%S')}")
 
     poller_cambios_db()
@@ -284,7 +285,7 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # --- NUEVA CONSULTA MAESTRA (100% DEPENDIENTE DE TELEFONOSCLIENTE) ---
+                # --- NUEVA CONSULTA MAESTRA (100% DEPENDIENTE DE TELEFONOSCLIENTE) ---[cite: 1]
                 query = f"""
                     WITH chat_summary AS (
                         -- 1. Agrupar la tabla pesada de mensajes PRIMERO (súper rápido)
@@ -424,7 +425,7 @@ def render_chat():
                     else:
                         info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
 
-                # 2. AUTO-RESOLUCIÓN LIDs INTELIGENTE (100% Migrado a telefonoscliente)
+                # 2. AUTO-RESOLUCIÓN LIDs INTELIGENTE (100% Migrado a telefonoscliente)[cite: 1, 2]
                 tc_principal = None
                 if es_cliente:
                     with engine.connect() as conn:
@@ -454,7 +455,7 @@ def render_chat():
                                         t_conn.execute(text("UPDATE telefonoscliente SET telefono=:n WHERE id_telefono=:idt"), {"n": real_db, "idt": tc_principal.id_telefono})
                                 st.rerun()  
 
-                # 3. MARCAR COMO LEÍDO EN BD Y WHATSAPP
+                # 3. MARCAR COMO LEÍDO EN BD Y WHATSAPP[cite: 1]
                 with engine.connect() as conn:
                     conn.commit() 
                     tels_condition = """
@@ -474,7 +475,6 @@ def render_chat():
                         tels_api = conn.execute(text(f"SELECT telefono FROM mensajes WHERE telefono IN ({tels_condition}) GROUP BY telefono"), {"id": param_id}).fetchall()
                         for r_t in tels_api:
                             try: 
-                                # SOLUCIÓN BUG: La función correcta es marcar_leido_waha, no marcar_leido_api
                                 threading.Thread(target=marcar_leido_waha, args=(r_t[0], sesion_unread)).start()
                             except Exception as e:
                                 print(f"Error marcando leído: {e}")
@@ -544,12 +544,9 @@ def render_chat():
                 if not msgs.empty and 'fecha' in msgs.columns:
                     msgs['fecha'] = pd.to_datetime(msgs['fecha'])
                     
-                    # Si el motor de la base de datos asignó una zona horaria, la quitamos
+                    # Si el motor de la base de datos asignó una zona horaria, la quitamos para operar plano
                     if msgs['fecha'].dt.tz is not None:
                         msgs['fecha'] = msgs['fecha'].dt.tz_localize(None)
-                        
-                    # Sumamos 5 horas para corregir el desfase del webhook y empatar con la hora de Lima
-                    msgs['fecha'] = msgs['fecha'] + pd.Timedelta(hours=5)
 
                 # --- HEADER MEJORADO CON DETALLES Y DEUDA VISUAL ---
                 badge_deuda = f"<span style='color: #856404; background-color: #ffeeba; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 13px; margin-left: 10px;'>⚠️ Cobrar: S/ {pendiente_pago:.2f}</span>" if pendiente_pago > 0 else ""
@@ -641,7 +638,8 @@ def render_chat():
                 
                 if not msgs.empty:
                     ultima_fecha = None
-                    ahora_lima = datetime.utcnow() - timedelta(hours=5)
+                    # Limpieza: Ahora evalúa la fecha actual real sin desfaces
+                    ahora_lima = datetime.now()
                     hoy = ahora_lima.date()
                     ayer = hoy - timedelta(days=1)
 
