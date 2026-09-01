@@ -116,12 +116,16 @@ def resolver_telefono_api(lid, session):
 def mandar_mensaje_api(telefono, texto, sesion):
     if not WAHA_URL: return False, "Falta WAHA_URL"
     try:
-        telefono_str = str(telefono)
-        if telefono_str.startswith("LID_"):
-            lid_number = telefono_str.replace("LID_", "")
+        telefono_str = str(telefono).strip()
+        
+        # --- CORRECCIÓN: Detectar de forma segura si es un LID ---
+        if telefono_str.endswith("@lid") or telefono_str.startswith("LID_"):
+            # Limpiamos la cadena de cualquier prefijo o sufijo para extraer solo los números
+            lid_number = telefono_str.replace("LID_", "").replace("@lid", "")
             chat_id = f"{lid_number}@lid"
         else:
-            res_norm = normalizar_telefono_maestro(telefono)
+            # Flujo normal para números de teléfono
+            res_norm = normalizar_telefono_maestro(telefono_str)
             if isinstance(res_norm, dict):
                 telefono_final = res_norm.get('db') 
             else:
@@ -136,6 +140,7 @@ def mandar_mensaje_api(telefono, texto, sesion):
         
         payload = {"session": sesion, "chatId": chat_id, "text": texto}
         r = requests.post(url, json=payload, headers=headers, timeout=10)
+        
         if r.status_code in [200, 201]: return True, ""
         return False, r.text
     except Exception as e:

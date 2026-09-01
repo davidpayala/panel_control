@@ -166,10 +166,38 @@ def ejecutar_francotirador():
         tiempo_ok_est = es_modo_test or (min_pasados_est >= 10)
         tiempo_ok_fb  = es_modo_test or (min_pasados_fb >= 10)
 
+    # 🛡️ NUEVO: MEDIDA DE SEGURIDAD - VERIFICAR WAHA Y SESIONES
+        waha_url = os.getenv("WAHA_URL", "http://localhost:3000")
+        waha_key = os.getenv("WAHA_KEY", "")
+        waha_ok = False
+        
+        log_mkt("🔍 Verificando salud de WAHA y sesiones (default, principal)...")
+        try:
+            headers = {"Accept": "application/json"}
+            if waha_key:
+                headers["X-Api-Key"] = waha_key
+                
+            res = requests.get(f"{waha_url}/api/sessions?all=true", headers=headers, timeout=10)
+            if res.status_code == 200:
+                sesiones = res.json()
+                sesiones_activas = {s.get('name'): s.get('status') for s in sesiones}
+                
+                # Verificamos que AMBAS sesiones existan y estén en WORKING
+                if sesiones_activas.get('default') == 'WORKING' and sesiones_activas.get('principal') == 'WORKING':
+                    waha_ok = True
+                    log_mkt("✅ WAHA operativo. Sesiones 'default' y 'principal' en línea.")
+                else:
+                    log_mkt(f"⚠️ Alerta: Las sesiones no están óptimas. Estado real: {sesiones_activas}")
+            else:
+                log_mkt(f"⚠️ Alerta: WAHA respondió con error HTTP {res.status_code}")
+        except Exception as e:
+            log_mkt(f"🔥 Error crítico al conectar con WAHA: {e}")
         # ==================================================================
         # 🎯 TAREA 1: MENSAJES DIRECTOS
         # ==================================================================
-        if not config.bot_activo:
+        if not waha_ok:
+            log_mkt("⏸️ TAREA 1 OMITIDA: Bloqueo de seguridad activado (WAHA inestable o desconectado).")
+        elif not config.bot_activo:
             log_mkt("⏸️ TAREA 1 OMITIDA: El Sniper Bot está apagado.")
         elif not tiempo_ok_msg:
             log_mkt(f"⏳ TAREA 1: Aún no pasan los 30 min base (Han pasado {int(min_pasados_msg)} min).")
@@ -253,10 +281,10 @@ def ejecutar_francotirador():
         # ==================================================================
         # 📱 TAREA 2: ESTADOS CON TRAZABILIDAD EXTREMA
         # ==================================================================
-        if not tiempo_ok_est:
+        if not waha_ok:
+            log_mkt("⏸️ TAREA 2 OMITIDA: Bloqueo de seguridad activado (WAHA inestable o desconectado).")
+        elif not tiempo_ok_est:
             log_mkt(f"⏳ TAREA 2 OMITIDA: Aún no pasan los 30 min base (Han pasado {int(min_pasados_est)} min).")
-        elif not dentro_de_horario:
-            log_mkt(f"⏰ TAREA 2 OMITIDA: Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
         else:
             dado_est = random.randint(1, 100)
             if dado_est <= prob_est or es_modo_test:

@@ -117,6 +117,10 @@ def render_clientes():
                                     # Liberar colisiones previas si hay número
                                     if tel_db:
                                         conn.execute(text("UPDATE telefonoscliente SET activo = FALSE WHERE telefono = :t"), {"t": tel_db})
+                                    
+                                    # 👉 NUEVA LÍNEA: Liberar el LID de cualquier registro fantasma previo
+                                    if lid_db:
+                                        conn.execute(text("UPDATE telefonoscliente SET lid = NULL WHERE lid = :l"), {"l": lid_db})
 
                                     # Insertar en tabla maestra
                                     res = conn.execute(text("""
@@ -140,30 +144,53 @@ def render_clientes():
 
     st.divider()
 
-    # --- BUSCADOR Y EDITOR MASIVO ---
+# --- BUSCADOR Y EDITOR MASIVO ---
     st.subheader("🔍 Buscador y Editor Masivo")
-    busqueda = st.text_input("Buscar registro...", placeholder="ID, Nombre, Teléfono, LID, Alias o Etiquetas")
+    
+    # 1. Interfaz de Búsqueda Mejorada en Columnas
+    col_b1, col_b2, col_b3, col_b4 = st.columns([2, 1.5, 1, 1])
+    busqueda = col_b1.text_input("Buscar registro...", placeholder="ID, Nombre, Teléfono, LID, Alias o Etiquetas")
+    filtro_estados = col_b2.multiselect("Filtrar por Estado", options=estados_opciones)
+    filtro_sin_mkt = col_b3.checkbox("🚫 Solo 'Sin Mkt'")
+    filtro_bloqueados = col_b4.checkbox("🔒 Incluir Bloqueados")
 
     busqueda_limpia = "".join(filter(str.isdigit, busqueda))
     term_tel = f"%{busqueda_limpia}%" if busqueda_limpia else f"%{busqueda}%"
     term_gen = f"%{busqueda}%"
 
-    # Consulta adaptada para buscar también por ID de cliente
+    # 2. Consulta adaptada para filtros dinámicos y columna 'activo'
     query = """
-        SELECT c.id_cliente, c.nombre_corto, c.estado, c.excluir_publicidad, c.nombre, c.apellido, c.etiquetas, c.google_id, c.nombre_ia,
+        SELECT c.id_cliente, c.nombre_corto, c.estado, c.excluir_publicidad, c.activo, c.nombre, c.apellido, c.etiquetas, c.google_id, c.nombre_ia,
                (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1) as tel_principal,
                (SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE AND telefono IS NOT NULL) as todos_telefonos
         FROM clientes c
-        WHERE c.activo = TRUE
+        WHERE 1=1
     """
     params = {}
+    
+    # Lógica de Filtros Activos/Inactivos
+    if not filtro_bloqueados:
+        query += " AND c.activo = TRUE"
+
+    # Lógica de Texto General
     if busqueda:
         query += """ AND (
             CAST(c.id_cliente AS TEXT) ILIKE :g OR 
             c.nombre_corto ILIKE :g OR c.nombre ILIKE :g OR c.apellido ILIKE :g OR c.etiquetas ILIKE :g OR c.nombre_ia ILIKE :g
             OR EXISTS (SELECT 1 FROM telefonoscliente t WHERE t.id_cliente = c.id_cliente AND (t.telefono ILIKE :t OR t.lid ILIKE :g OR t.alias ILIKE :g) AND t.activo = TRUE)
         )"""
-        params = {"g": term_gen, "t": term_tel}
+        params["g"] = term_gen
+        params["t"] = term_tel
+
+    # Lógica de Estados (Etapas)
+    if filtro_estados:
+        query += " AND c.estado IN :estados"
+        params["estados"] = tuple(filtro_estados)
+
+    # Lógica de Sin Mkt
+    if filtro_sin_mkt:
+        query += " AND c.excluir_publicidad = TRUE"
+
     query += " ORDER BY c.id_cliente DESC LIMIT 50"
 
     with engine.connect() as conn:
@@ -172,8 +199,10 @@ def render_clientes():
     if not df.empty:
         df_view = df.copy()
         df_view['excluir_publicidad'] = df_view['excluir_publicidad'].fillna(False).astype(bool)
+        df_view['activo'] = df_view['activo'].fillna(True).astype(bool) # Aseguramos la columna activo
         df_view.insert(0, "Seleccionar", False)
 
+        # 3. Editor de Datos actualizado con la columna Activo
         edited_df = st.data_editor(
             df_view,
             key="ed_clientes_main",
@@ -183,7 +212,8 @@ def render_clientes():
                 "nombre_corto": st.column_config.TextColumn("Alias Original", width="medium"),
                 "nombre_ia": st.column_config.TextColumn("Nombre IA", width="medium"),
                 "estado": st.column_config.SelectboxColumn("Estado", options=estados_opciones, width="medium"),
-                "excluir_publicidad": st.column_config.CheckboxColumn("🚫 Sin Mkt", help="Tilda para que el bot no le envíe publicidad"),
+                "excluir_publicidad": st.column_config.CheckboxColumn("🚫 Sin Mkt", help="Tilda para que el bot no envíe publicidad"),
+                "activo": st.column_config.CheckboxColumn("✅ Activo", help="Desmarca para bloquear al cliente"),
                 "tel_principal": st.column_config.TextColumn("Telf. Principal", disabled=True),
                 "todos_telefonos": st.column_config.TextColumn("Todos los Teléfonos", disabled=True, width="large"),
                 "nombre": None, "apellido": None, "google_id": None, "etiquetas": None
@@ -191,18 +221,20 @@ def render_clientes():
             hide_index=True, use_container_width=True
         )
 
+        # 4. Guardado rápido que ahora registra si bloqueaste a alguien
         if st.button("💾 Guardar Cambios Rápidos", type="primary"):
             with engine.begin() as conn:
                 for idx, row in edited_df.iterrows():
                     id_etapa_val = mapa_subgrupo_id.get(row['estado'])
                     nia_val = row['nombre_ia'] if pd.notna(row['nombre_ia']) else ""
                     exc_val = bool(row['excluir_publicidad'])
+                    act_val = bool(row['activo'])
                     
                     conn.execute(text("""
                         UPDATE clientes 
-                        SET nombre_corto=:nc, nombre_ia=:nia, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc 
+                        SET nombre_corto=:nc, nombre_ia=:nia, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc, activo=:act
                         WHERE id_cliente=:id
-                    """), {"nc": row['nombre_corto'], "nia": nia_val, "est": row['estado'], "id_etapa": id_etapa_val, "exc": exc_val, "id": row['id_cliente']})
+                    """), {"nc": row['nombre_corto'], "nia": nia_val, "est": row['estado'], "id_etapa": id_etapa_val, "exc": exc_val, "act": act_val, "id": row['id_cliente']})
             st.success("Cambios guardados.")
             time.sleep(1)
             st.rerun()
