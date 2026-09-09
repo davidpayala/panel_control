@@ -427,22 +427,39 @@ def generar_nombre_ia(nombre_corto, nombre_real):
     salude al cliente, priorizando el nombre real de Google si existe.
     """
     try:
+        # 🚀 SUB-FUNCIÓN VALIDADORA: Filtra nombres genéricos
+        def extraer_nombre_valido(texto):
+            if texto and isinstance(texto, str) and texto.strip():
+                texto_limpio = texto.strip()
+                # 1. Bloqueo de frases exactas genéricas
+                if texto_limpio.lower() == "cliente nuevo":
+                    return ""
+                
+                # 2. Cortamos la primera palabra
+                primer_nombre = texto_limpio.split()[0]
+                
+                # 3. Bloqueo por si la primera palabra es literalmente "Cliente"
+                if primer_nombre.lower() == "cliente":
+                    return ""
+                    
+                return primer_nombre.capitalize()
+            return ""
+
         # Prioridad 1: El primer nombre real registrado en Google Contacts
-        if nombre_real and isinstance(nombre_real, str) and nombre_real.strip():
-            primer_nombre = nombre_real.strip().split()[0]
-            return primer_nombre.capitalize()
+        nombre_1 = extraer_nombre_valido(nombre_real)
+        if nombre_1:
+            return nombre_1
         
         # Prioridad 2: El primer nombre del Alias / Nombre Corto
-        if nombre_corto and isinstance(nombre_corto, str) and nombre_corto.strip():
-            # Limpiamos cosas como "VIP", "Nuevo", etc. si estuvieran en el alias
-            primer_nombre = nombre_corto.strip().split()[0]
-            return primer_nombre.capitalize()
+        nombre_2 = extraer_nombre_valido(nombre_corto)
+        if nombre_2:
+            return nombre_2
             
     except Exception as e:
         print(f"Error al generar nombre IA: {e}")
         
-    # Default si no hay datos
-    return "Amigo"
+    # Default si los nombres eran genéricos o estaban vacíos
+    return ""
 
 # ==============================================================================
 # 🛒 5. FUNCIONES DE WOOCOMMERCE

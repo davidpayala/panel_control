@@ -10,6 +10,7 @@ load_dotenv(ruta_env)
 import requests
 import random
 import time
+import subprocess # 🛠️ NUEVO: Importado para reiniciar el contenedor WAHA
 from datetime import datetime
 from sqlalchemy import text
 from database import engine
@@ -138,6 +139,9 @@ def ejecutar_francotirador():
         prob_msg = obtener_probabilidad(config.intervalo_mensajes)
         prob_est = obtener_probabilidad(config.intervalo_estados)
         prob_fb  = obtener_probabilidad(getattr(config, 'intervalo_fb', '100'))
+        
+        # 🛡️ NUEVO: Límite de mensajes "fríos" diarios configurado en el panel (Por defecto 10 al día = 300 al mes)
+        max_mensajes_nuevos_dia = getattr(config, 'max_mensajes_nuevos_dia', 10) 
 
         if not es_modo_test:
             retraso_minutos = random.randint(1, 25) 
@@ -153,8 +157,21 @@ def ejecutar_francotirador():
             FROM Configuracion_Campanas LIMIT 1
             """)
             tiempos = conn.execute(query_tiempo).fetchone()
+            
+            # Contabilizar los mensajes "nuevos" enviados hoy para no rebasar el límite de Meta
+            query_conteo_nuevos = text("""
+                SELECT COUNT(DISTINCT m.telefono)
+                FROM mensajes m
+                WHERE m.tipo = 'SALIENTE_BOT'
+                  AND m.fecha::date = CURRENT_DATE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM mensajes me
+                      WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
+                  )
+            """)
+            enviados_nuevos_hoy = conn.execute(query_conteo_nuevos).scalar() or 0
 
-        # 🛡️ SEGURO ANTI-TIEMPO NEGATIVO: Si el número es menor a 0, asume que es un error de BD y dispara forzosamente (9999)
+        # 🛡️ SEGURO ANTI-TIEMPO NEGATIVO
         min_pasados_msg = tiempos.min_pasados_msg if tiempos and tiempos.min_pasados_msg >= 0 else 9999
         min_pasados_est = tiempos.min_pasados_est if tiempos and tiempos.min_pasados_est >= 0 else 9999
         min_pasados_fb  = tiempos.min_pasados_fb if tiempos and hasattr(tiempos, 'min_pasados_fb') and tiempos.min_pasados_fb >= 0 else 9999
@@ -166,34 +183,59 @@ def ejecutar_francotirador():
         tiempo_ok_est = es_modo_test or (min_pasados_est >= 10)
         tiempo_ok_fb  = es_modo_test or (min_pasados_fb >= 10)
 
-    # 🛡️ NUEVO: MEDIDA DE SEGURIDAD - VERIFICAR WAHA Y SESIONES
+        # 🛡️ MEDIDA DE SEGURIDAD Y AUTO-RECUPERACIÓN - VERIFICAR WAHA
         waha_url = os.getenv("WAHA_URL", "http://localhost:3000")
         waha_key = os.getenv("WAHA_KEY", "")
         waha_ok = False
         
+        def comprobar_estado_waha():
+            try:
+                headers = {"Accept": "application/json"}
+                if waha_key:
+                    headers["X-Api-Key"] = waha_key
+                res = requests.get(f"{waha_url}/api/sessions?all=true", headers=headers, timeout=10)
+                
+                if res.status_code == 200:
+                    sesiones = res.json()
+                    sesiones_activas = {s.get('name'): s.get('status') for s in sesiones}
+                    if sesiones_activas.get('default') == 'WORKING' and sesiones_activas.get('principal') == 'WORKING':
+                        return True, "WORKING"
+                    return False, f"Las sesiones no están óptimas: {sesiones_activas}"
+                return False, f"WAHA respondió con error HTTP {res.status_code}"
+            except Exception as e:
+                return False, f"Error de red/timeout: {e}"
+
         log_mkt("🔍 Verificando salud de WAHA y sesiones (default, principal)...")
-        try:
-            headers = {"Accept": "application/json"}
-            if waha_key:
-                headers["X-Api-Key"] = waha_key
+        waha_ok, detalle_estado = comprobar_estado_waha()
+
+        if waha_ok:
+            log_mkt("✅ WAHA operativo. Sesiones 'default' y 'principal' en línea.")
+        else:
+            log_mkt(f"⚠️ Alerta: {detalle_estado}. Iniciando protocolo de auto-recuperación...")
+            try:
+                # 2.1 Reiniciar el WAHA
+                log_mkt("♻️ Aplicando reinicio al contenedor WAHA...")
+                subprocess.run(["docker", "restart", "waha"], capture_output=True, text=True, timeout=30)
                 
-            res = requests.get(f"{waha_url}/api/sessions?all=true", headers=headers, timeout=10)
-            if res.status_code == 200:
-                sesiones = res.json()
-                sesiones_activas = {s.get('name'): s.get('status') for s in sesiones}
+                # 2.2 Esperar 1 minuto
+                log_mkt("⏳ Esperando 60 segundos para que WAHA vuelva a levantar...")
+                time.sleep(60)
                 
-                # Verificamos que AMBAS sesiones existan y estén en WORKING
-                if sesiones_activas.get('default') == 'WORKING' and sesiones_activas.get('principal') == 'WORKING':
-                    waha_ok = True
-                    log_mkt("✅ WAHA operativo. Sesiones 'default' y 'principal' en línea.")
+                # 2.3 Revisar de nuevo si funciona
+                log_mkt("🔍 Re-evaluando salud de WAHA tras el reinicio...")
+                waha_ok, detalle_estado = comprobar_estado_waha()
+                
+                # 2.4 Tomar decisión final
+                if waha_ok:
+                    log_mkt("✅ WAHA se recuperó exitosamente. Continuando con las tareas.")
                 else:
-                    log_mkt(f"⚠️ Alerta: Las sesiones no están óptimas. Estado real: {sesiones_activas}")
-            else:
-                log_mkt(f"⚠️ Alerta: WAHA respondió con error HTTP {res.status_code}")
-        except Exception as e:
-            log_mkt(f"🔥 Error crítico al conectar con WAHA: {e}")
+                    log_mkt(f"❌ WAHA sigue fallando tras el reinicio ({detalle_estado}). Saltando Tareas 1 y 2.")
+            except Exception as e:
+                log_mkt(f"🔥 Error crítico al intentar reiniciar WAHA: {e}")
+                waha_ok = False
+
         # ==================================================================
-        # 🎯 TAREA 1: MENSAJES DIRECTOS
+        # 🎯 TAREA 1: MENSAJES DIRECTOS CON RESTRICCIÓN DE CONTACTOS FRÍOS
         # ==================================================================
         if not waha_ok:
             log_mkt("⏸️ TAREA 1 OMITIDA: Bloqueo de seguridad activado (WAHA inestable o desconectado).")
@@ -207,38 +249,86 @@ def ejecutar_francotirador():
             dado_msg = random.randint(1, 100)
             if dado_msg <= prob_msg or es_modo_test:
                 log_mkt(f"▶️ INICIANDO TAREA 1 (Dado: {dado_msg} <= {prob_msg}%)")
+                
                 obreros = [
-                    {"sesion": "principal", "col_prob": "prob_msg_principal", "nombre_vis": "Principal"},
-                    {"sesion": "default", "col_prob": "prob_msg_default", "nombre_vis": "Lentes"}
+                    {"sesion": "principal", "col_prob": "prob_msg_principal", "nombre_vis": "Principal", "limite_nuevos": getattr(config, 'max_nuevos_principal', 10)},
+                    {"sesion": "default", "col_prob": "prob_msg_default", "nombre_vis": "Lentes", "limite_nuevos": getattr(config, 'max_nuevos_default', 10)}
                 ]
                 
                 for obrero in obreros:
+                    # Asignamos el límite individual de esta sesión a la variable de corte
+                    max_mensajes_nuevos_dia = obrero["limite_nuevos"]
+                    
                     with engine.connect() as conn:
-                        query_conteo = text("SELECT COUNT(*) FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess AND fecha::date = CURRENT_DATE")
+                        # Total enviados hoy por esta sesión
+                        query_conteo = text("""
+                            SELECT COUNT(*) FROM mensajes 
+                            WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess 
+                            AND fecha::date = CURRENT_DATE
+                        """)
                         enviados_por_mi = conn.execute(query_conteo, {"sess": obrero["sesion"]}).scalar() or 0
 
                         if enviados_por_mi >= config.max_mensajes_dia:
                             continue
 
+                        # Nuevos contactos impactados hoy por esta sesión
+                        query_conteo_nuevos = text("""
+                            SELECT COUNT(DISTINCT m.telefono)
+                            FROM mensajes m
+                            WHERE m.tipo = 'SALIENTE_BOT'
+                            AND COALESCE(m.session_name, 'default') = :sess
+                            AND m.fecha::date = CURRENT_DATE
+                            AND NOT EXISTS (
+                                SELECT 1 FROM mensajes me
+                                WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
+                            )
+                        """)
+                        enviados_nuevos_mi_sesion = conn.execute(query_conteo_nuevos, {"sess": obrero["sesion"]}).scalar() or 0
+
+                        log_mkt(f"📊 [{obrero['nombre_vis']}] Fríos hoy: {enviados_nuevos_mi_sesion}/{max_mensajes_nuevos_dia} | Total: {enviados_por_mi}/{config.max_mensajes_dia}")
+
                         prod_elegido = buscar_producto_dinamico(conn, obrero['col_prob'])
                         if not prod_elegido: continue
 
+                        # 🧠 Lógica avanzada para detectar clientes calentados vs fríos
                         query_clientes = text("""
-                            SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono 
-                            FROM clientes c
-                            JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
-                            WHERE c.activo = TRUE AND c.estado = 'Sin empezar' AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
-                              AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6
-                              AND t.telefono NOT IN (SELECT telefono FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days')
-                            ORDER BY RANDOM()
-                            LIMIT 50
+                            WITH Prospectos_Random AS (
+                                SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono 
+                                FROM clientes c
+                                JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
+                                WHERE c.activo = TRUE AND c.estado = 'Sin empezar' AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
+                                  AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6
+                                  AND t.telefono NOT IN (SELECT telefono FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days')
+                                ORDER BY RANDOM()
+                                LIMIT 50
+                            )
+                            SELECT 
+                                pr.*,
+                                (SELECT COUNT(*) FROM mensajes m2 WHERE m2.telefono = pr.telefono AND m2.tipo = 'ENTRANTE') as total_entrantes,
+                                (SELECT session_name FROM mensajes m3 WHERE m3.telefono = pr.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1) as ultima_sesion_entrante
+                            FROM Prospectos_Random pr
                         """)
                         clientes_validos = conn.execute(query_clientes).fetchall()
 
                     if not clientes_validos: continue
                     prospectos = list(clientes_validos)
 
-                    for cliente in prospectos[:5]:
+                    for cliente in prospectos:
+                        # -----------------------------------------------------------
+                        # 🛡️ FILTRO DE RESTRICCIÓN META (WHATSAPP)
+                        # -----------------------------------------------------------
+                        es_cliente_frio = (cliente.total_entrantes == 0)
+
+                        if not es_cliente_frio:
+                            # Si ya nos contactó alguna vez, validamos que le toque a ESTA sesión
+                            if cliente.ultima_sesion_entrante != obrero['sesion']:
+                                continue
+                        else:
+                            # Validación independiente por cuenta
+                            if enviados_nuevos_mi_sesion >= max_mensajes_nuevos_dia:
+                                continue
+                        # -----------------------------------------------------------
+
                         norm = normalizar_telefono_maestro(cliente.telefono)
                         if not norm: continue
                         telefono_final = norm['db']
@@ -257,8 +347,13 @@ def ejecutar_francotirador():
                                         INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) 
                                         VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW(), TRUE, :sess)
                                     """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
-                                log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']})!")
-                                break 
+                                
+                                log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']}). Frío: {'Sí' if es_cliente_frio else 'No'}.")
+                                
+                                if es_cliente_frio:
+                                    enviados_nuevos_mi_sesion += 1
+                                    
+                                break  # Disparo exitoso: pasa a evaluar al siguiente obrero
                         else:
                             log_mkt(f"🚫 {telefono_final} NO tiene WhatsApp. Bloqueando contacto y excluyendo de publicidad...")
                             with engine.begin() as conn_purge:
@@ -285,6 +380,8 @@ def ejecutar_francotirador():
             log_mkt("⏸️ TAREA 2 OMITIDA: Bloqueo de seguridad activado (WAHA inestable o desconectado).")
         elif not tiempo_ok_est:
             log_mkt(f"⏳ TAREA 2 OMITIDA: Aún no pasan los 30 min base (Han pasado {int(min_pasados_est)} min).")
+        elif not dentro_de_horario: # 🛠️ NUEVO: Filtro para respetar el horario laboral en estados
+            log_mkt(f"⏰ TAREA 2 OMITIDA: Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
         else:
             dado_est = random.randint(1, 100)
             if dado_est <= prob_est or es_modo_test:

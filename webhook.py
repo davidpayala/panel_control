@@ -24,7 +24,6 @@ def log_info(msg):
 def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
-# 🛠️ CORRECCIÓN: Agregamos buscar_contacto_google a la importación
 try:
     from utils import normalizar_telefono_maestro, crear_en_google, buscar_contacto_google
 except ImportError:
@@ -58,7 +57,6 @@ def aplicar_parche_db():
 
 aplicar_parche_db()
 
-# 🛠️ CORRECCIÓN: Ahora recibe id_cliente y guarda el vínculo en la BD
 def sync_google_fondo(id_cliente, nombre, telefono):
     """Guarda el contacto en Google Contacts de forma asíncrona y lo vincula"""
     if not telefono or "LID_" in str(telefono): 
@@ -71,8 +69,6 @@ def sync_google_fondo(id_cliente, nombre, telefono):
 
         if exito:
             log_info(f"✅ Sincronización Google exitosa para: {nombre} ({tel_google})")
-
-            # Buscar el contacto recién creado para obtener su ID y sus Nombres
             res_g = buscar_contacto_google(norm['db'])
             if res_g and res_g.get('encontrado'):
                 g_id = res_g['google_id']
@@ -143,15 +139,13 @@ def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
         return None
 
 # ==============================================================================
-# 🕵️ FUNCIONES LOCALES (BLINDADAS CONTRA AUTO-VINCULACIÓN)
+# 🕵️ FUNCIONES LOCALES CORREGIDAS
 # ==============================================================================
-def obtener_lid_local(payload):
+# 🛠️ CORRECCIÓN: Se recibe from_me como parámetro para no fallar en la extracción
+def obtener_lid_local(payload, from_me=False):
     try:
-        # 🛡️ Extraemos tu propia identidad del payload para ignorarla
         me_lid = payload.get('me', {}).get('lid', '')
-
-        es_saliente = payload.get('fromMe', False)
-        target = payload.get('to') if es_saliente else payload.get('from')
+        target = payload.get('to') if from_me else payload.get('from')
 
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
@@ -168,14 +162,13 @@ def obtener_lid_local(payload):
         return None
     except: return None
 
-def obtener_telefono_local(payload):
+# 🛠️ CORRECCIÓN: Se recibe from_me robusto para definir bien el target
+def obtener_telefono_local(payload, from_me=False):
     try:
-        # 🛡️ Extraemos tu propio número del payload para ignorarlo
         me_id = payload.get('me', {}).get('id', '')
         me_phone = me_id.split('@')[0] if me_id else ''
 
-        es_saliente = payload.get('fromMe', False)
-        target = payload.get('to') if es_saliente else payload.get('from')
+        target = payload.get('to') if from_me else payload.get('from')
 
         _data = payload.get('_data') or {}
         key = _data.get('key') or {}
@@ -184,7 +177,7 @@ def obtener_telefono_local(payload):
         call_creator = payload.get('callCreator') or _data.get('callCreator') or payload.get('peerJid')
         if call_creator and isinstance(call_creator, str) and ('@s.whatsapp.net' in call_creator or '@c.us' in call_creator):
             num = call_creator.split('@')[0]
-            if num != me_phone: return num  # ESCUDO ANTI-ESPEJO
+            if num != me_phone: return num
 
         candidatos = [
             remote_id, target, key.get('remoteJidAlt'), 
@@ -193,7 +186,7 @@ def obtener_telefono_local(payload):
         for c in candidatos:
             if c and isinstance(c, str) and ('@s.whatsapp.net' in c or '@c.us' in c):
                 num = c.split('@')[0]
-                if num != me_phone: return num  # ESCUDO ANTI-ESPEJO
+                if num != me_phone: return num
 
         user_id = _data.get('id', {}).get('user')
         if user_id and str(user_id).isdigit():
@@ -221,7 +214,6 @@ def resolver_telefono_api(lid, session):
     return None
 
 def obtener_nombre_waha(contact_id, session):
-    """Consulta la API de WAHA para obtener el nombre configurado por el usuario en WhatsApp"""
     if not WAHA_URL or not contact_id: return None
     try:
         url = f"{WAHA_URL.rstrip('/')}/api/contacts/contact"
@@ -241,16 +233,13 @@ def obtener_nombre_waha(contact_id, session):
     return None
 
 # ==============================================================================
-# 🚀 WEBHOOK PRINCIPAL V54 (Fix Vinculación y Extracción Nombres)
+# 🚀 WEBHOOK PRINCIPAL
 # ==============================================================================
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V54 (Smart Sync & Name Fix) ✅", 200
+    return "Webhook V57 (Fix UI Chat Invertido) ✅", 200
 
-# ==============================================================================
-# 🚨 NUEVO ENDPOINT PARA RECIBIR ALERTAS DEL SCRIPT DE MONITORIZACIÓN
-# ==============================================================================
 @app.route('/api/alertas', methods=['POST'])
 def recibir_alerta():
     try:
@@ -262,7 +251,6 @@ def recibir_alerta():
         with engine.begin() as conn:
             p_str = json.dumps(data, ensure_ascii=False)
             session_name = data.get('sesion', 'SISTEMA')
-            # Guardamos la alerta en los logs con un tipo especial "ALERTA_CRITICA"
             conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
                         {"s": session_name, "e": "ALERTA_CRITICA", "p": p_str})
 
@@ -277,7 +265,6 @@ def recibir_mensaje():
         data = request.json
         if not data: return jsonify({"status": "empty"}), 200
 
-        # WAHA a veces envía listas de eventos, otras veces un solo diccionario
         eventos = data if isinstance(data, list) else [data]
 
         for evento in eventos:
@@ -285,102 +272,78 @@ def recibir_mensaje():
             session_name = evento.get('session', 'default')
             payload = evento.get('payload', {})
 
-            # ===============================================================
-            # 🛡️ MEGA-ESCUDO 1: IGNORAR RUIDO DE MOTOR WEBJS
-            # ===============================================================
-            # WEBJS envía 'engine.event' como un duplicado de bajo nivel. 
-            # Lo ignoramos por completo para no procesar ni loguear las cosas dos veces.
+            msg_id_obj = payload.get('id')
+            whatsapp_id = msg_id_obj.get('_serialized') if isinstance(msg_id_obj, dict) else str(msg_id_obj)
+
+            from_me = payload.get('fromMe')
+            if from_me is None:
+                if isinstance(msg_id_obj, dict) and 'fromMe' in msg_id_obj:
+                    from_me = msg_id_obj.get('fromMe')
+                else:
+                    from_me = str(whatsapp_id).startswith('true_') or payload.get('_data', {}).get('id', {}).get('fromMe', False)
+
             if tipo_evento == 'engine.event':
                 continue
 
-            # ===============================================================
-            # 🛡️ MEGA-ESCUDO 2: FILTRO DE ESTADOS Y SISTEMA
-            # ===============================================================
             is_broadcast = (
                 payload.get('from') == 'status@broadcast' or 
                 payload.get('to') == 'status@broadcast' or
                 payload.get('_data', {}).get('id', {}).get('remote') == 'status@broadcast' or
-                'status@broadcast' in str(payload.get('id', ''))
+                'status@broadcast' in str(whatsapp_id)
             )
 
-            # WEBJS a veces oculta el type y subtype dentro de _data
             tipo_msg_waha = payload.get('type') or payload.get('_data', {}).get('type', '')
             subtipo = payload.get('subtype') or payload.get('_data', {}).get('subtype', '')
 
-            # Detectamos notificaciones de seguridad de WhatsApp (como cuenta de empresa o mensajes temporales)
             es_sistema = (
                 tipo_msg_waha in ['notification_template', 'e2e_notification', 'gp2', 'system', 'protocol'] or
                 subtipo in ['biz_me_account_type_is_hosted', 'ephemeral_setting']
             )
 
-            # Si es un estado, mensaje de sistema, o un mensaje 100% vacío (sin texto ni media) lo destruimos
             if is_broadcast or es_sistema or (not payload.get('body') and not payload.get('hasMedia') and tipo_evento != 'call.received'):
                 continue
 
-            # ===============================================================
-            # 📝 PASO 2: GUARDAR EN LOGS (Solo lo importante)
-            # ===============================================================
-            # Determinamos si el mensaje lo enviaste tú (para excluirlo de la tabla logs)
-            from_me = payload.get('fromMe') or payload.get('_data', {}).get('id', {}).get('fromMe') == True
-
-            # Solo guardamos en la pestaña "Logs Webhook" si NO es enviado por ti y NO es un ACK de lectura
             if not from_me and tipo_evento not in ['message.ack']:
                 try:
                     with engine.begin() as conn:
                         p_str = json.dumps(evento, ensure_ascii=False)[:5000]
                         conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
                                     {"s": session_name, "e": tipo_evento, "p": p_str})
-                        # Mantenemos limpia la tabla conservando solo los últimos 50
                         conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 50)"))
                 except Exception as e:
                     log_error(f"Error DB Log Raw: {e}")
 
-            # ===============================================================
-            # 🔄 PASO 3: PROCESAMIENTO DE CONFIRMACIONES (ACKS)
-            # ===============================================================
             if tipo_evento == 'message.ack':
-                msg_id = payload.get('id')
                 ack_status = payload.get('ack') 
                 estado_map = {1: 'enviado', 2: 'recibido', 3: 'leido', 4: 'reproducido'}
                 nuevo_estado = estado_map.get(ack_status, 'pendiente')
                 try:
                     with engine.begin() as conn:
-                        conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), {"e": nuevo_estado, "w": msg_id})
+                        conn.execute(text("UPDATE mensajes SET estado_waha = :e WHERE whatsapp_id = :w"), {"e": nuevo_estado, "w": whatsapp_id})
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
                 except: pass
                 continue 
-            # ===============================================================
-            # ✏️ PASO 3.5: PROCESAMIENTO DE EDICIÓN Y ELIMINACIÓN
-            # ===============================================================
+
             if tipo_evento == 'message.edited':
                 msg_id = payload.get('editedMessageId')
                 new_body = payload.get('body', '')
                 try:
                     with engine.begin() as conn:
-                        # 1. Recuperar el mensaje antiguo de la base de datos
                         old_msg = conn.execute(text("SELECT contenido FROM mensajes WHERE whatsapp_id = :wid"), {"wid": msg_id}).scalar()
-                        
                         if old_msg:
                             import re
-                            
-                            # 2. Separar el texto actual del historial oculto (por si ya fue editado antes)
                             partes = old_msg.split('<!--HISTORIAL-->')
                             texto_previo = partes[0].strip()
                             historial_acumulado = partes[1] if len(partes) > 1 else ""
-                            
-                            # 3. Extraer solo la lista de items viejos para no crear acordeones anidados
                             if historial_acumulado:
                                 m = re.search(r'<div class="items-historial"[^>]*>(.*?)</div>\s*</details>', historial_acumulado, re.DOTALL)
                                 historial_acumulado = m.group(1) if m else ""
 
-                            # 4. Crear el nuevo registro con la hora local actual 
                             ahora_str = datetime.now().strftime("%d/%m %I:%M %p")
                             nuevo_item = f"<div style='margin-bottom: 6px;'><i>{ahora_str}:</i><br><s>{texto_previo}</s></div>"
-                            
                             historial_final = nuevo_item + historial_acumulado
-                            
-                            # 5. Ensamblar el mensaje final con el acordeón HTML nativo
                             nuevo_contenido = f"{new_body}<!--HISTORIAL--><div class='historial-edicion' style='margin-top: 5px; font-size: 11px;'><details style='cursor: pointer; color: #666; background: rgba(0,0,0,0.05); padding: 4px; border-radius: 4px;'><summary style='outline: none; font-weight: bold;'>✏️ Ver historial</summary><div class='items-historial' style='margin-top: 5px; padding-top: 5px; border-top: 1px dashed #ccc; color: #888;'>{historial_final}</div></details></div>"
+                            
                             conn.execute(text("UPDATE mensajes SET contenido = :nuevo WHERE whatsapp_id = :wid"), {"nuevo": nuevo_contenido, "wid": msg_id})
                             conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
                 except Exception as e:
@@ -388,50 +351,29 @@ def recibir_mensaje():
                 continue
 
             if tipo_evento in ['message.revoked', 'message_revoke_everyone']:
-                msg_id = payload.get('id')
                 try:
                     with engine.begin() as conn:
-                        # Añadimos la pastilla roja, asegurándonos de no duplicarla si llegan varios eventos de revoke
                         conn.execute(text("""
                             UPDATE mensajes 
                             SET contenido = contenido || '<br><span style="font-size: 11px; color: #c0392b; background: #fadbd8; padding: 2px 6px; border-radius: 4px; display: inline-block; margin-top: 5px;">🚫 Mensaje eliminado</span>'
                             WHERE whatsapp_id = :wid AND contenido NOT LIKE '%Mensaje eliminado%'
-                        """), {"wid": msg_id})
+                        """), {"wid": whatsapp_id})
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
                 except Exception as e:
                     log_error(f"Error marcando mensaje como eliminado: {e}")
                 continue
-            # ===============================================================
-            # 📩 PASO 4: PROCESAMIENTO DE MENSAJES Y LLAMADAS (WEBJS FIX)
-            # ===============================================================
-            # Ignorar todo lo que no sea recepción de mensajes
+
             if tipo_evento not in ['message', 'message.any', 'message.created', 'call.received']: 
                 continue
-            if payload.get('from') == 'status@broadcast': continue
 
-            # 🛑 FILTRO VITAL WEBJS: Matamos el 'message.any' entrante para evitar 
-            # que la Base de Datos colapse intentando guardar el mismo mensaje 2 veces.
             if tipo_evento == "message.any" and not from_me:
                 continue
-
-            # ===============================================================
-            # 🛡️ ESCUDO ANTI-MENSAJES FANTASMA (SISTEMA WEBJS)
-            # ===============================================================
-            tipo_msg_waha = payload.get('type', '')
-            subtipo = payload.get('_data', {}).get('subtype', '')
-
-            # Ignoramos eventos internos de seguridad, plantillas de negocio y mensajes 100% vacíos
-            es_sistema = (
-                tipo_msg_waha in ['notification_template', 'e2e_notification', 'gp2', 'system'] or
-                subtipo in ['biz_me_account_type_is_hosted']
-            )
-
-            if es_sistema or (not payload.get('body') and not payload.get('hasMedia') and tipo_evento != 'call.received'):
+            if tipo_evento == "message" and from_me:
                 continue
-            # ===============================================================
 
-            wspid_lid = obtener_lid_local(payload)
-            telefono_crudo = obtener_telefono_local(payload)
+            # 🛠️ CORRECCIÓN: Le pasamos from_me a las funciones de abajo
+            wspid_lid = obtener_lid_local(payload, from_me)
+            telefono_crudo = obtener_telefono_local(payload, from_me)
 
             telefono_num = None
             if telefono_crudo:
@@ -441,143 +383,108 @@ def recibir_mensaje():
 
             log_info(f"🏁 Inicio Proceso: Tel={telefono_num} | LID={wspid_lid}")
 
-            # ===============================================================
-            # 📍 FILTRO INTELIGENTE PARA UBICACIONES GOOGLE MAPS (WEBJS)
-            # ===============================================================
             body = "📞 Llamada entrante" if tipo_evento == 'call.received' else payload.get('body', '')
             
             tipo_mensaje_real = payload.get('type') or payload.get('_data', {}).get('type')
             datos_ubicacion = payload.get('location') or payload.get('_data', {}).get('location') or {}
 
             if tipo_mensaje_real == 'location' or datos_ubicacion:
-                # 1. Extraemos las coordenadas o URL si existen
                 lat = datos_ubicacion.get('latitude') or datos_ubicacion.get('lat')
                 lng = datos_ubicacion.get('longitude') or datos_ubicacion.get('lng')
                 url_mapa = datos_ubicacion.get('url') or payload.get('_data', {}).get('loc')
                 
-                if url_mapa:
-                    body = f"📍 Ubicación compartida: {url_mapa}"
-                elif lat and lng:
-                    body = f"📍 Ubicación compartida: https://maps.google.com/?q={lat},{lng}"
-                else:
-                    body = "📍 Ubicación compartida (Google Maps)"
-            
-            # 2. Seguro Anti-Basura: Si el body sigue siendo Base64 (miniatura del mapa)
+                if url_mapa: body = f"📍 Ubicación compartida: {url_mapa}"
+                elif lat and lng: body = f"📍 Ubicación compartida: https://maps.google.com/?q={lat},{lng}"
+                else: body = "📍 Ubicación compartida (Google Maps)"
             elif isinstance(body, str) and body.startswith('/9j/'):
                 body = "📍 [Ubicación o enlace compartido]"
 
-            # ===============================================================
-
+            has_media = payload.get('hasMedia') or tipo_mensaje_real in ['image', 'video', 'audio', 'document', 'sticker', 'ptt']
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
+
+            if has_media and not media_url and WAHA_URL:
+                msg_id_safe = str(whatsapp_id).replace('@', '%40')
+                media_url = f"{WAHA_URL.rstrip('/')}/api/{session_name}/messages/{msg_id_safe}/download"
+
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
-
-            if archivo_bytes:
+            if archivo_bytes: 
                 archivo_bytes = comprimir_imagen_waha(archivo_bytes)
+            
+            if has_media and not body: 
+                body = "📷 Archivo Multimedia" if archivo_bytes else "📷 [Multimedia enviada]"
 
-            if archivo_bytes and not body: body = "📷 Archivo Multimedia"
-
-            tipo_msg = 'SALIENTE' if payload.get('fromMe') else 'ENTRANTE'
-            whatsapp_id = payload.get('id')
+            # 🛠️ CORRECCIÓN: Asignamos explícitamente SALIENTE_BOT para que el Streamlit panel lo ubique del lado derecho
+            tipo_msg = 'SALIENTE_BOT' if from_me else 'ENTRANTE'
+            
             reply_id = (payload.get('replyTo') or {}).get('id')
             reply_content = (payload.get('replyTo') or {}).get('body')
 
-            # --- LÓGICA INTELIGENTE DE NOMBRES (CORREGIDA) ---
             wsp_id_contact = payload.get('from') if tipo_msg == 'ENTRANTE' else payload.get('to')
-
-            # 1. Buscar el nombre en todas las posibles rutas de WAHA
             _data = payload.get('_data') or {}
             nombre_wsp = payload.get('pushName') or _data.get('notifyName') or _data.get('pushname') or _data.get('name')
 
-            # 2. Si no viene en el mensaje, consultar a la API de WAHA
             if not nombre_wsp and wsp_id_contact:
                 nombre_wsp = obtener_nombre_waha(wsp_id_contact, session_name)
 
-            # 3. Determinar Nombre Corto y Nombre IA
             nombre_corto_final = nombre_wsp if nombre_wsp and nombre_wsp.strip() else "Cliente Nuevo"
             nombre_ia_final = nombre_corto_final.split()[0] if nombre_corto_final != "Cliente Nuevo" else ""
-
-            # 4. 🚀 ALIAS FUTURO: Reservado para cuando WAHA libere el soporte
-            alias_final = None
-
             id_cliente_final = None
 
             try:
                 with engine.begin() as conn:
-                    # ===============================================================
-                    # 🚀 PASO 2: NUEVO MOTOR DE RESOLUCIÓN USANDO 'TelefonosCliente'
-                    # ===============================================================
-
-                    # 1. Intentamos forzar la resolución del número si solo tenemos LID
                     if wspid_lid and not telefono_num:
                         tel_api = resolver_telefono_api(wspid_lid, session_name)
                         if tel_api:
                             norm_api = normalizar_telefono_maestro(tel_api)
                             telefono_num = norm_api.get('db') if isinstance(norm_api, dict) else norm_api
 
-                    # 2. Consultar existencia priorizando la tabla TelefonosCliente
                     cliente_tel = conn.execute(text("SELECT id_cliente FROM telefonoscliente WHERE telefono = :t LIMIT 1"), {"t": telefono_num}).fetchone() if telefono_num else None
                     cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM telefonoscliente WHERE lid = :lid LIMIT 1"), {"lid": wspid_lid}).fetchone() if wspid_lid else None
 
-                    # Fallback de compatibilidad (por si quedan LIDs antiguos en la tabla Clientes)
                     if not cliente_lid and wspid_lid:
                         cliente_lid = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE whatsapp_internal_id = :lid LIMIT 1"), {"lid": wspid_lid}).fetchone()
                     if not cliente_tel and telefono_num:
                         cliente_tel = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE telefono = :t LIMIT 1"), {"t": telefono_num}).fetchone()
 
-                    # --- ESCENARIO 1: COLISIÓN (Existen ambos separados) -> FUSIÓN AUTOMÁTICA ---
+                    # Escenario 1: Colisión y Fusión
                     if cliente_tel and cliente_lid and cliente_tel.id_cliente != cliente_lid.id_cliente:
                         viejo_tel = cliente_lid.telefono
-
-                        # Transferir mensajes al número real o al LID
                         if telefono_num:
                             conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o OR telefono=:lid_str"), {"n": telefono_num, "o": viejo_tel, "lid_str": wspid_lid})
-
-                        # Trasladar el LID a la lista de teléfonos del cliente verídico
                         conn.execute(text("""
-                            UPDATE telefonoscliente 
-                            SET id_cliente = :new, es_principal = FALSE, lid = :lid, alias = :alias 
+                            UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE, lid = :lid, alias = :alias 
                             WHERE id_cliente = :old
                         """), {"new": cliente_tel.id_cliente, "old": cliente_lid.id_cliente, "lid": wspid_lid, "alias": nombre_corto_final})
-
-                        # Matar al clon
                         conn.execute(text("UPDATE Clientes SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=NULL WHERE id_cliente=:old"), {"old": cliente_lid.id_cliente})
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:new"), {"new": cliente_tel.id_cliente})
-
                         id_cliente_final = cliente_tel.id_cliente
 
-                    # --- ESCENARIO 2: Solo existe el cliente por Teléfono ---
+                    # Escenario 2: Teléfono existe
                     elif cliente_tel:
                         id_cliente_final = cliente_tel.id_cliente
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
-
-                        # Inyectar el LID y Alias nuevo al teléfono existente
                         if wspid_lid:
                             conn.execute(text("""
-                                UPDATE telefonoscliente SET lid = :lid, alias = :alias 
-                                WHERE id_cliente = :id AND telefono = :t
+                                UPDATE telefonoscliente SET lid = :lid, alias = :alias WHERE id_cliente = :id AND telefono = :t
                             """), {"lid": wspid_lid, "alias": nombre_corto_final, "id": id_cliente_final, "t": telefono_num})
 
-                    # --- ESCENARIO 3: Solo existe el cliente por LID ---
+                    # Escenario 3: LID existe
                     elif cliente_lid:
                         id_cliente_final = cliente_lid.id_cliente
                         viejo_tel = cliente_lid.telefono
-
                         if telefono_num and viejo_tel != telefono_num:
-                            # ¡Descubrimos su número real! Lo actualizamos
                             conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o OR telefono=:lid_str"), {"n": telefono_num, "o": viejo_tel, "lid_str": wspid_lid})
                             conn.execute(text("""
-                                UPDATE telefonoscliente SET telefono=:n, lid=:lid, alias=:alias 
-                                WHERE id_cliente=:id AND (telefono=:o OR lid=:lid)
+                                UPDATE telefonoscliente SET telefono=:n, lid=:lid, alias=:alias WHERE id_cliente=:id AND (telefono=:o OR lid=:lid)
                             """), {"n": telefono_num, "lid": wspid_lid, "alias": nombre_corto_final, "o": viejo_tel, "id": id_cliente_final})
                             conn.execute(text("UPDATE Clientes SET telefono=:n, activo=TRUE WHERE id_cliente=:id"), {"n": telefono_num, "id": id_cliente_final})
                         else:
                             conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": id_cliente_final})
                             conn.execute(text("UPDATE telefonoscliente SET alias=:alias WHERE id_cliente=:id AND lid=:lid"), {"alias": nombre_corto_final, "id": id_cliente_final, "lid": wspid_lid})
 
-                    # --- ESCENARIO 4: Prospecto 100% Nuevo ---
+                    # Escenario 4: Nuevo contacto
                     else:
                         try:
-                            # 1. Crear en tabla Clientes (Solo datos maestros)
                             res = conn.execute(text("""
                                 INSERT INTO Clientes (telefono, nombre_corto, nombre_ia, estado, id_etapa, activo, fecha_registro) 
                                 VALUES (:t, :n, :nia, 'Sin empezar', (SELECT id_etapa FROM EtapasCliente WHERE LOWER(TRIM(subgrupo)) = 'sin empezar' LIMIT 1), TRUE, NOW()) 
@@ -585,73 +492,75 @@ def recibir_mensaje():
                             """), {"t": telefono_num, "n": nombre_corto_final, "nia": nombre_ia_final}).fetchone()
                             id_cliente_final = res.id_cliente
 
-                            # 2. Registrar en tabla TelefonosCliente (Aquí vive el LID y el ALIAS)
                             conn.execute(text("""
                                 INSERT INTO telefonoscliente (id_cliente, telefono, lid, alias, es_principal, activo)
                                 VALUES (:id, :t, :lid, :alias, TRUE, TRUE)
                             """), {"id": id_cliente_final, "t": telefono_num, "lid": wspid_lid, "alias": nombre_corto_final})
 
-                            # 3. Sincronizar Google (Solo si conseguimos número real)
                             if telefono_num:
                                 threading.Thread(target=sync_google_fondo, args=(id_cliente_final, nombre_corto_final, telefono_num)).start()
 
                         except Exception as e:
-                            # Fallback ultra-seguro por si hubo condición de carrera
                             if "UniqueViolation" in str(e):
-                                if telefono_num:
-                                    id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
-                                else:
-                                    id_cliente_final = conn.execute(text("SELECT id_cliente FROM telefonoscliente WHERE lid = :lid"), {"lid": wspid_lid}).scalar()
-                            else:
-                                raise e
+                                if telefono_num: id_cliente_final = conn.execute(text("SELECT id_cliente FROM Clientes WHERE telefono = :t"), {"t": telefono_num}).scalar()
+                                else: id_cliente_final = conn.execute(text("SELECT id_cliente FROM telefonoscliente WHERE lid = :lid"), {"lid": wspid_lid}).scalar()
+                            else: raise e
 
-                    # ===============================================================
-                    # 🕵️ RASTREADOR DE CLIENTES ANÓNIMOS (Mantenido intacto)
-                    # ===============================================================
-                    if wspid_lid and not telefono_num and tipo_msg == 'ENTRANTE':
-                        trace_data = {
-                            "1_raw_waha": payload,
-                            "2_waha_resolucion": "La API de WAHA no devolvió un número válido." if not locals().get('tel_api') else locals().get('tel_api'),
-                            "3_registro_panel": {
-                                "id_cliente": id_cliente_final,
-                                "campo_whatsapp_internal_id": wspid_lid, # Referencia
-                                "campo_telefono": "NULL (Anónimo)",
-                                "tabla": "Clientes y TelefonosCliente"
-                            },
-                            "4_intento_google": "Sincronización abortada de forma segura (sin número)."
-                        }
-                        p_trace_str = json.dumps(trace_data, ensure_ascii=False)
-                        conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
-                                    {"s": session_name, "e": "TRACE_LID_ANONIMO", "p": p_trace_str})
-
-                    # ===============================================================
-                    # REGISTRO DEL MENSAJE (Se vincula al destino correcto: número o LID)
-                    # ===============================================================
                     if id_cliente_final:
                         t_msg = telefono_num if telefono_num else wspid_lid
-
                         existe = conn.execute(text("SELECT 1 FROM mensajes WHERE whatsapp_id=:wid"), {"wid": whatsapp_id}).scalar()
+                        
+                        is_echo = False
+                        fue_insertado = False
+
                         if not existe:
+                            # 🛠️ CORRECCIÓN: Ahora evalúa SALIENTE_BOT o SALIENTE_PANEL de manera inteligente
+                            if tipo_msg == 'SALIENTE_BOT':
+                                match = conn.execute(text("""
+                                    SELECT id_mensaje FROM mensajes 
+                                    WHERE telefono = :t AND tipo IN ('SALIENTE_BOT', 'SALIENTE_PANEL') AND whatsapp_id IS NULL 
+                                      AND contenido = :txt AND fecha >= NOW() - INTERVAL '15 minutes'
+                                    LIMIT 1
+                                """), {"t": t_msg, "txt": body}).scalar()
+                                
+                                if match:
+                                    conn.execute(text("UPDATE mensajes SET whatsapp_id = :wid, estado_waha = 'enviado' WHERE id_mensaje = :idm"), {"wid": whatsapp_id, "idm": match})
+                                    existe = True
+                                    log_info("🔗 Mensaje saliente de Bot fusionado correctamente con el Webhook.")
+
+                            elif tipo_msg == 'ENTRANTE':
+                                is_echo = conn.execute(text("""
+                                    SELECT 1 FROM mensajes 
+                                    WHERE telefono = :t AND tipo IN ('SALIENTE_BOT', 'SALIENTE_PANEL') 
+                                      AND contenido = :txt AND fecha >= NOW() - INTERVAL '15 minutes'
+                                    LIMIT 1
+                                """), {"t": t_msg, "txt": body}).scalar()
+                                
+                                if is_echo:
+                                    log_info(f"🚫 Fantasma WEBJS bloqueado. Ignorando eco entrante: {body[:20]}")
+
+                        if not existe and not is_echo:
+                            # 🛠️ CORRECCIÓN: "leido" debe comprobar SALIENTE_BOT (fue renombrado)
                             conn.execute(text("""
                                 INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content, estado_waha, session_name)
-                                VALUES (:t, :tipo, :txt, NOW(), :leido, :d, :wid, :rid, :rbody, :est, :sess)
+                                VALUES (:t, :tipo, :txt, NOW() - INTERVAL '5 hours', :leido, :d, :wid, :rid, :rbody, :est, :sess)
                             """), {
-                                "t": t_msg, "tipo": tipo_msg, "txt": body, "leido": (tipo_msg == 'SALIENTE'), "d": archivo_bytes,
+                                "t": t_msg, "tipo": tipo_msg, "txt": body, "leido": (tipo_msg == 'SALIENTE_BOT'), "d": archivo_bytes,
                                 "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
                             })
+                            fue_insertado = True
+
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
 
-                        # --- LÓGICA DE DETECCIÓN ZOMBIE ---
-                        if tipo_msg == 'ENTRANTE':
+                        if fue_insertado and tipo_msg == 'ENTRANTE':
                             texto_limpio = body.strip().lower()
 
                             if archivo_bytes or "archivo multimedia" in texto_limpio:
                                 conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                             else:
                                 es_clave = conn.execute(text("SELECT 1 FROM respuestas_automaticas WHERE LOWER(frase_clave) = :t LIMIT 1"), {"t": texto_limpio}).scalar()
-
                                 if es_clave:
-                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = NOW() WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = (NOW() - INTERVAL '5 hours') WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                 else:
                                     conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
             except Exception as e:

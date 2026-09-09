@@ -28,6 +28,10 @@ def render_compras():
             
             with c_filtros:
                 st.markdown("**Configuración del Reporte**")
+                
+                # --- NUEVO BUSCADOR ---
+                buscador = st.text_input("🔍 Buscar por SKU o Producto:", placeholder="Escribe para buscar...")
+                
                 col_f1, col_f2 = st.columns(2)
                 col_f3, col_f4 = st.columns(2)
                 
@@ -121,6 +125,14 @@ def render_compras():
         if not df_reco.empty:
             df_reco['sku'] = df_reco['sku'].astype(str).str.strip()
             
+            # --- NUEVO FILTRO DE BÚSQUEDA ---
+            if buscador:
+                termino = buscador.lower()
+                df_reco = df_reco[
+                    df_reco['sku'].str.lower().str.contains(termino, na=False) |
+                    df_reco['nombre'].str.lower().str.contains(termino, na=False)
+                ]
+            
             # Filtro Macrocategoría
             if filtro_macro != "Todas":
                 df_reco = df_reco[df_reco['macro_categoria'] == filtro_macro]
@@ -180,7 +192,6 @@ def render_compras():
             hide_index=True,
             use_container_width=True
         )
-
     # -------------------------------------------------------------------------
     # B) REGISTRAR PEDIDO (CON HISTÓRICO Y MEMORIA DE COSTOS)
     # -------------------------------------------------------------------------
