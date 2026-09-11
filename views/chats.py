@@ -290,7 +290,7 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # --- NUEVA CONSULTA MAESTRA (100% DEPENDIENTE DE TELEFONOSCLIENTE) ---[cite: 1]
+                # --- NUEVA CONSULTA MAESTRA (100% DEPENDIENTE DE TELEFONOSCLIENTE) ---
                 query = f"""
                     WITH chat_summary AS (
                         -- 1. Agrupar la tabla pesada de mensajes PRIMERO (súper rápido)
@@ -430,7 +430,7 @@ def render_chat():
                     else:
                         info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
 
-                # 2. AUTO-RESOLUCIÓN LIDs INTELIGENTE (100% Migrado a telefonoscliente)[cite: 1, 2]
+                # 2. AUTO-RESOLUCIÓN LIDs INTELIGENTE (100% Migrado a telefonoscliente)
                 tc_principal = None
                 if es_cliente:
                     with engine.connect() as conn:
@@ -460,7 +460,7 @@ def render_chat():
                                         t_conn.execute(text("UPDATE telefonoscliente SET telefono=:n WHERE id_telefono=:idt"), {"n": real_db, "idt": tc_principal.id_telefono})
                                 st.rerun()  
 
-                # 3. MARCAR COMO LEÍDO EN BD Y WHATSAPP[cite: 1]
+                # 3. MARCAR COMO LEÍDO EN BD Y WHATSAPP
                 with engine.connect() as conn:
                     conn.commit() 
                     tels_condition = """
@@ -659,7 +659,9 @@ def render_chat():
                             html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
                             ultima_fecha = fecha_msg
 
-                        es_mio = (m['tipo'] == 'SALIENTE')
+                        # 🔥 CORRECCIÓN: Ampliamos la condición para que incluya todos los orígenes de salida
+                        es_mio = m['tipo'] in ['SALIENTE', 'SALIENTE_BOT', 'SALIENTE_PANEL']
+                        
                         clase_row = "msg-row msg-mio" if es_mio else "msg-row msg-otro"
                         clase_bub = "b-mio" if es_mio else "b-otro"
                         hora = m['fecha'].strftime("%H:%M") if pd.notna(m['fecha']) else ""

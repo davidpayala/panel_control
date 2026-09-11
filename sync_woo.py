@@ -34,6 +34,12 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     pagina = 1
     while True:
         resp = wcapi.get("products", params={"per_page": 100, "page": pagina})
+        
+        # NUEVO: Validar que WordPress nos haya dejado entrar antes de procesar
+        if resp.status_code not in [200, 201]:
+            print(f"❌ ERROR LEYENDO WOOCOMMERCE: (HTTP {resp.status_code}) - Revisa tus permisos.")
+            break
+            
         items = resp.json()
         if not items: 
             break
@@ -133,10 +139,14 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
         for i in range(0, len(paquete_simples), lote_tamano):
             lote = paquete_simples[i:i + lote_tamano]
             try:
-                wcapi.post("products/batch", {"update": lote})
-                simples_enviados_ok += len(lote)
+                resp = wcapi.post("products/batch", {"update": lote})
+                # NUEVO: Validar respuesta de la API explícitamente
+                if resp.status_code in [200, 201]:
+                    simples_enviados_ok += len(lote)
+                else:
+                    print(f"❌ WooCommerce rechazó el lote simples (HTTP {resp.status_code}): {resp.text}")
             except Exception as e:
-                print(f"❌ Error en lote simples: {e}")
+                print(f"❌ Error de red en lote simples: {e}")
 
     # Variaciones
     lotes_variaciones = []
@@ -158,10 +168,14 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
         print(f"🚀 Enviando variaciones a {nombre_tienda}...")
         for parent_id, paq_v in lotes_variaciones:
             try:
-                wcapi.post(f"products/{parent_id}/variations/batch", {"update": paq_v})
-                vars_enviados_ok += len(paq_v)
+                resp = wcapi.post(f"products/{parent_id}/variations/batch", {"update": paq_v})
+                # NUEVO: Validar respuesta de la API explícitamente
+                if resp.status_code in [200, 201]:
+                    vars_enviados_ok += len(paq_v)
+                else:
+                    print(f"❌ WooCommerce rechazó el padre #{parent_id} (HTTP {resp.status_code}): {resp.text}")
             except Exception as e:
-                print(f"❌ Error en variaciones del padre #{parent_id}: {e}")
+                print(f"❌ Error de red en variaciones del padre #{parent_id}: {e}")
 
     # =========================================================================
     # 4. CÁLCULO DE PORCENTAJES RESUMIDOS (Punto 2 del usuario)

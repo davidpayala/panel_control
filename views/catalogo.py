@@ -301,7 +301,8 @@ def render_catalogo():
                     col_img, col_form = st.columns([1, 3])
                     with col_img:
                         if foto_mostrar: 
-                            st.image(foto_mostrar, caption=f"Foto {'Variante' if foto_v and foto_v!='nan' else 'Portada'}", use_column_width=True)
+                            # 👇 AQUÍ ESTÁ LA PRIMERA CORRECCIÓN (use_container_width=True)
+                            st.image(foto_mostrar, caption=f"Foto {'Variante' if foto_v and foto_v!='nan' else 'Portada'}", use_container_width=True)
                         else: 
                             st.info("Sin foto")
 
@@ -361,8 +362,6 @@ def render_catalogo():
                                 # =====================================================================
                                 # 💡 AUTO-PARCHE DE BASE DE DATOS (ACTUALIZACIÓN EN CASCADA)
                                 # =====================================================================
-                                # Modifica temporalmente la BD para que los estantes o ventas históricas 
-                                # actualicen el SKU solos si tú lo cambias aquí.
                                 try:
                                     with engine.begin() as conn_patch:
                                         conn_patch.execute(text("ALTER TABLE Stock_Ubicaciones DROP CONSTRAINT IF EXISTS stock_ubicaciones_sku_fkey;"))
@@ -499,7 +498,8 @@ def render_catalogo():
 
                 c_inf1, c_inf2 = st.columns([1, 3])
                 with c_inf1:
-                    if p_info.url_imagen: st.image(p_info.url_imagen, use_column_width=True)
+                    # 👇 AQUÍ ESTÁ LA SEGUNDA CORRECCIÓN (use_container_width=True)
+                    if p_info.url_imagen: st.image(p_info.url_imagen, use_container_width=True)
                     else: st.caption("Sin foto")
                 with c_inf2:
                     st.markdown(f"**Línea:** `{p_info.macro_categoria}` | **Subcat:** `{p_info.categoria}` | **Marca:** `{p_info.marca}`\n\n**Modelo y Color:** `{p_info.modelo} - {p_info.nombre}`")

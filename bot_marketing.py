@@ -250,25 +250,39 @@ def ejecutar_francotirador():
             if dado_msg <= prob_msg or es_modo_test:
                 log_mkt(f"▶️ INICIANDO TAREA 1 (Dado: {dado_msg} <= {prob_msg}%)")
                 
+                # 🛠️ CORRECCIÓN 1: Independencia real de límites totales y nuevos para cada sesión
                 obreros = [
-                    {"sesion": "principal", "col_prob": "prob_msg_principal", "nombre_vis": "Principal", "limite_nuevos": getattr(config, 'max_nuevos_principal', 10)},
-                    {"sesion": "default", "col_prob": "prob_msg_default", "nombre_vis": "Lentes", "limite_nuevos": getattr(config, 'max_nuevos_default', 10)}
+                    {
+                        "sesion": "principal", 
+                        "col_prob": "prob_msg_principal", 
+                        "nombre_vis": "Principal", 
+                        "limite_nuevos": getattr(config, 'max_nuevos_principal', getattr(config, 'max_mensajes_nuevos_dia', 10)),
+                        "limite_total": getattr(config, 'max_mensajes_principal', config.max_mensajes_dia)
+                    },
+                    {
+                        "sesion": "default", 
+                        "col_prob": "prob_msg_default", 
+                        "nombre_vis": "Lentes", 
+                        "limite_nuevos": getattr(config, 'max_nuevos_default', getattr(config, 'max_mensajes_nuevos_dia', 10)),
+                        "limite_total": getattr(config, 'max_mensajes_default', config.max_mensajes_dia)
+                    }
                 ]
                 
                 for obrero in obreros:
-                    # Asignamos el límite individual de esta sesión a la variable de corte
                     max_mensajes_nuevos_dia = obrero["limite_nuevos"]
+                    max_mensajes_dia_sesion = obrero["limite_total"]
                     
                     with engine.connect() as conn:
-                        # Total enviados hoy por esta sesión
+                        # 🛠️ CORRECCIÓN 2: Usar COUNT(DISTINCT telefono) evita contar clones si el webhook duplicó el registro
                         query_conteo = text("""
-                            SELECT COUNT(*) FROM mensajes 
+                            SELECT COUNT(DISTINCT telefono) FROM mensajes 
                             WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess 
-                            AND fecha::date = CURRENT_DATE
+                            AND fecha >= CURRENT_DATE
                         """)
                         enviados_por_mi = conn.execute(query_conteo, {"sess": obrero["sesion"]}).scalar() or 0
 
-                        if enviados_por_mi >= config.max_mensajes_dia:
+                        if enviados_por_mi >= max_mensajes_dia_sesion:
+                            log_mkt(f"🚫 [{obrero['nombre_vis']}] Límite total diario alcanzado ({enviados_por_mi}/{max_mensajes_dia_sesion}).")
                             continue
 
                         # Nuevos contactos impactados hoy por esta sesión
@@ -277,7 +291,7 @@ def ejecutar_francotirador():
                             FROM mensajes m
                             WHERE m.tipo = 'SALIENTE_BOT'
                             AND COALESCE(m.session_name, 'default') = :sess
-                            AND m.fecha::date = CURRENT_DATE
+                            AND m.fecha >= CURRENT_DATE
                             AND NOT EXISTS (
                                 SELECT 1 FROM mensajes me
                                 WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
@@ -285,7 +299,7 @@ def ejecutar_francotirador():
                         """)
                         enviados_nuevos_mi_sesion = conn.execute(query_conteo_nuevos, {"sess": obrero["sesion"]}).scalar() or 0
 
-                        log_mkt(f"📊 [{obrero['nombre_vis']}] Fríos hoy: {enviados_nuevos_mi_sesion}/{max_mensajes_nuevos_dia} | Total: {enviados_por_mi}/{config.max_mensajes_dia}")
+                        log_mkt(f"📊 [{obrero['nombre_vis']}] Fríos hoy: {enviados_nuevos_mi_sesion}/{max_mensajes_nuevos_dia} | Total: {enviados_por_mi}/{max_mensajes_dia_sesion}")
 
                         prod_elegido = buscar_producto_dinamico(conn, obrero['col_prob'])
                         if not prod_elegido: continue
@@ -320,8 +334,9 @@ def ejecutar_francotirador():
                         es_cliente_frio = (cliente.total_entrantes == 0)
 
                         if not es_cliente_frio:
-                            # Si ya nos contactó alguna vez, validamos que le toque a ESTA sesión
-                            if cliente.ultima_sesion_entrante != obrero['sesion']:
+                            # 🛠️ CORRECCIÓN 3: Rescate de clientes antiguos asumiendo 'default' si la columna era NULL
+                            ultima_ses = cliente.ultima_sesion_entrante or 'default'
+                            if ultima_ses != obrero['sesion']:
                                 continue
                         else:
                             # Validación independiente por cuenta
@@ -349,10 +364,6 @@ def ejecutar_francotirador():
                                     """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
                                 
                                 log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']}). Frío: {'Sí' if es_cliente_frio else 'No'}.")
-                                
-                                if es_cliente_frio:
-                                    enviados_nuevos_mi_sesion += 1
-                                    
                                 break  # Disparo exitoso: pasa a evaluar al siguiente obrero
                         else:
                             log_mkt(f"🚫 {telefono_final} NO tiene WhatsApp. Bloqueando contacto y excluyendo de publicidad...")

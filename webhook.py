@@ -302,14 +302,15 @@ def recibir_mensaje():
 
             if is_broadcast or es_sistema or (not payload.get('body') and not payload.get('hasMedia') and tipo_evento != 'call.received'):
                 continue
-
-            if not from_me and tipo_evento not in ['message.ack']:
+            # 🔥 CORRECCIÓN: Quitamos el "not from_me" para obligar a registrar los mensajes salientes de la IA
+            if tipo_evento not in ['message.ack']:
                 try:
                     with engine.begin() as conn:
                         p_str = json.dumps(evento, ensure_ascii=False)[:5000]
                         conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
                                     {"s": session_name, "e": tipo_evento, "p": p_str})
-                        conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 50)"))
+                        # Aumentamos el límite temporal a 150 para que no borre los logs tan rápido mientras depuramos
+                        conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 150)"))
                 except Exception as e:
                     log_error(f"Error DB Log Raw: {e}")
 
@@ -524,9 +525,14 @@ def recibir_mensaje():
                                 """), {"t": t_msg, "txt": body}).scalar()
                                 
                                 if match:
-                                    conn.execute(text("UPDATE mensajes SET whatsapp_id = :wid, estado_waha = 'enviado' WHERE id_mensaje = :idm"), {"wid": whatsapp_id, "idm": match})
+                                    # CORRECCIÓN: Agregamos archivo_data = COALESCE(archivo_data, :d) para inyectar la foto
+                                    conn.execute(text("""
+                                        UPDATE mensajes 
+                                        SET whatsapp_id = :wid, estado_waha = 'enviado', archivo_data = COALESCE(archivo_data, :d) 
+                                        WHERE id_mensaje = :idm
+                                    """), {"wid": whatsapp_id, "idm": match, "d": archivo_bytes})
                                     existe = True
-                                    log_info("🔗 Mensaje saliente de Bot fusionado correctamente con el Webhook.")
+                                    log_info("🔗 Mensaje saliente fusionado (¡Imagen rescatada!).")
 
                             elif tipo_msg == 'ENTRANTE':
                                 is_echo = conn.execute(text("""
@@ -540,10 +546,10 @@ def recibir_mensaje():
                                     log_info(f"🚫 Fantasma WEBJS bloqueado. Ignorando eco entrante: {body[:20]}")
 
                         if not existe and not is_echo:
-                            # 🛠️ CORRECCIÓN: "leido" debe comprobar SALIENTE_BOT (fue renombrado)
+                            # CORRECCIÓN: Se cambió a NOW() puro sin restar horas
                             conn.execute(text("""
                                 INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content, estado_waha, session_name)
-                                VALUES (:t, :tipo, :txt, NOW() - INTERVAL '5 hours', :leido, :d, :wid, :rid, :rbody, :est, :sess)
+                                VALUES (:t, :tipo, :txt, NOW(), :leido, :d, :wid, :rid, :rbody, :est, :sess)
                             """), {
                                 "t": t_msg, "tipo": tipo_msg, "txt": body, "leido": (tipo_msg == 'SALIENTE_BOT'), "d": archivo_bytes,
                                 "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
@@ -560,7 +566,7 @@ def recibir_mensaje():
                             else:
                                 es_clave = conn.execute(text("SELECT 1 FROM respuestas_automaticas WHERE LOWER(frase_clave) = :t LIMIT 1"), {"t": texto_limpio}).scalar()
                                 if es_clave:
-                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = (NOW() - INTERVAL '5 hours') WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = NOW() WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                 else:
                                     conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
             except Exception as e:
