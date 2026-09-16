@@ -246,140 +246,149 @@ def ejecutar_francotirador():
         elif not dentro_de_horario:
             log_mkt(f"⏰ TAREA 1 OMITIDA: Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
         else:
-            dado_msg = random.randint(1, 100)
-            if dado_msg <= prob_msg or es_modo_test:
-                log_mkt(f"▶️ INICIANDO TAREA 1 (Dado: {dado_msg} <= {prob_msg}%)")
+            log_mkt("▶️ INICIANDO TAREA 1: Evaluando líneas de envío independientes...")
+            
+            # 🛠️ CORRECCIÓN 1: Extraemos límites totales y probabilidades de forma individual por línea
+            obreros = [
+                {
+                    "sesion": "principal", 
+                    "col_prob": "prob_msg_principal", 
+                    "nombre_vis": "Principal", 
+                    "limite_nuevos": getattr(config, 'max_nuevos_principal', getattr(config, 'max_mensajes_nuevos_dia', 10)),
+                    "limite_total": getattr(config, 'max_mensajes_principal', config.max_mensajes_dia),
+                    "probabilidad": obtener_probabilidad(getattr(config, 'intervalo_mensajes_principal', config.intervalo_mensajes))
+                },
+                {
+                    "sesion": "default", 
+                    "col_prob": "prob_msg_default", 
+                    "nombre_vis": "Lentes", 
+                    "limite_nuevos": getattr(config, 'max_nuevos_default', getattr(config, 'max_mensajes_nuevos_dia', 10)),
+                    "limite_total": getattr(config, 'max_mensajes_default', config.max_mensajes_dia),
+                    "probabilidad": obtener_probabilidad(getattr(config, 'intervalo_mensajes_default', config.intervalo_mensajes))
+                }
+            ]
+            
+            for obrero in obreros:
+                limite_nuevos_sesion = obrero["limite_nuevos"]
+                limite_total_sesion = obrero["limite_total"]
+                prob_sesion = obrero["probabilidad"]
                 
-                # 🛠️ CORRECCIÓN 1: Independencia real de límites totales y nuevos para cada sesión
-                obreros = [
-                    {
-                        "sesion": "principal", 
-                        "col_prob": "prob_msg_principal", 
-                        "nombre_vis": "Principal", 
-                        "limite_nuevos": getattr(config, 'max_nuevos_principal', getattr(config, 'max_mensajes_nuevos_dia', 10)),
-                        "limite_total": getattr(config, 'max_mensajes_principal', config.max_mensajes_dia)
-                    },
-                    {
-                        "sesion": "default", 
-                        "col_prob": "prob_msg_default", 
-                        "nombre_vis": "Lentes", 
-                        "limite_nuevos": getattr(config, 'max_nuevos_default', getattr(config, 'max_mensajes_nuevos_dia', 10)),
-                        "limite_total": getattr(config, 'max_mensajes_default', config.max_mensajes_dia)
-                    }
-                ]
-                
-                for obrero in obreros:
-                    max_mensajes_nuevos_dia = obrero["limite_nuevos"]
-                    max_mensajes_dia_sesion = obrero["limite_total"]
+                # 🎲 CORRECCIÓN 2: Dado independiente para cada celular
+                dado_msg = random.randint(1, 100)
+                if dado_msg > prob_sesion and not es_modo_test:
+                    log_mkt(f"🎲 [{obrero['nombre_vis']}] SALTADO: El dado cayó en {dado_msg} (Requerido: <= {prob_sesion}%).")
+                    continue
                     
-                    with engine.connect() as conn:
-                        # 🛠️ CORRECCIÓN 2: Usar COUNT(DISTINCT telefono) evita contar clones si el webhook duplicó el registro
-                        query_conteo = text("""
-                            SELECT COUNT(DISTINCT telefono) FROM mensajes 
-                            WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = :sess 
-                            AND fecha >= CURRENT_DATE
-                        """)
-                        enviados_por_mi = conn.execute(query_conteo, {"sess": obrero["sesion"]}).scalar() or 0
+                log_mkt(f"🎯 [{obrero['nombre_vis']}] APROBADO: El dado cayó en {dado_msg} (Requerido: <= {prob_sesion}%).")
+                
+                with engine.connect() as conn:
+                    # Total enviados hoy filtrando de forma estricta por el session_name exacto
+                    query_conteo = text("""
+                        SELECT COUNT(DISTINCT telefono) FROM mensajes 
+                        WHERE tipo = 'SALIENTE_BOT' 
+                        AND TRIM(COALESCE(session_name, 'default')) = TRIM(:sess) 
+                        AND fecha >= CURRENT_DATE
+                    """)
+                    enviados_por_mi = conn.execute(query_conteo, {"sess": obrero["sesion"]}).scalar() or 0
 
-                        if enviados_por_mi >= max_mensajes_dia_sesion:
-                            log_mkt(f"🚫 [{obrero['nombre_vis']}] Límite total diario alcanzado ({enviados_por_mi}/{max_mensajes_dia_sesion}).")
+                    if enviados_por_mi >= limite_total_sesion:
+                        log_mkt(f"🚫 [{obrero['nombre_vis']}] Límite total diario alcanzado ({enviados_por_mi}/{limite_total_sesion}).")
+                        continue
+
+                    # Nuevos contactos impactados hoy por esta sesión específica
+                    query_conteo_nuevos = text("""
+                        SELECT COUNT(DISTINCT m.telefono)
+                        FROM mensajes m
+                        WHERE m.tipo = 'SALIENTE_BOT'
+                        AND TRIM(COALESCE(m.session_name, 'default')) = TRIM(:sess)
+                        AND m.fecha >= CURRENT_DATE
+                        AND NOT EXISTS (
+                            SELECT 1 FROM mensajes me
+                            WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
+                        )
+                    """)
+                    enviados_nuevos_mi_sesion = conn.execute(query_conteo_nuevos, {"sess": obrero["sesion"]}).scalar() or 0
+
+                    # 🛠️ CORRECCIÓN 3: Despliegue visual mostrando el límite total individual en el log
+                    log_mkt(f"📊 [{obrero['nombre_vis']}] Fríos hoy: {enviados_nuevos_mi_sesion}/{limite_nuevos_sesion} | Totales hoy: {enviados_por_mi}/{limite_total_sesion}")
+
+                    prod_elegido = buscar_producto_dinamico(conn, obrero['col_prob'])
+                    if not prod_elegido: continue
+
+                    # 🧠 Lógica avanzada para detectar clientes calentados vs fríos
+                    query_clientes = text("""
+                        WITH Prospectos_Random AS (
+                            SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono 
+                            FROM clientes c
+                            JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
+                            WHERE c.activo = TRUE AND c.estado = 'Sin empezar' AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
+                              AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6
+                              AND t.telefono NOT IN (SELECT telefono FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days')
+                            ORDER BY RANDOM()
+                            LIMIT 50
+                        )
+                        SELECT 
+                            pr.*,
+                            (SELECT COUNT(*) FROM mensajes m2 WHERE m2.telefono = pr.telefono AND m2.tipo = 'ENTRANTE') as total_entrantes,
+                            (SELECT session_name FROM mensajes m3 WHERE m3.telefono = pr.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1) as ultima_sesion_entrante
+                        FROM Prospectos_Random pr
+                    """)
+                    clientes_validos = conn.execute(query_clientes).fetchall()
+
+                if not clientes_validos: continue
+                prospectos = list(clientes_validos)
+
+                for cliente in prospectos:
+                    # -----------------------------------------------------------
+                    # 🛡️ FILTRO DE RESTRICCIÓN META (WHATSAPP)
+                    # -----------------------------------------------------------
+                    es_cliente_frio = (cliente.total_entrantes == 0)
+
+                    if not es_cliente_frio:
+                        # Rescate de clientes antiguos asumiendo 'default' si la columna era NULL
+                        ultima_ses = cliente.ultima_sesion_entrante or 'default'
+                        if ultima_ses != obrero['sesion']:
                             continue
+                    else:
+                        # Validación independiente por cuenta
+                        if enviados_nuevos_mi_sesion >= limite_nuevos_sesion:
+                            continue
+                    # -----------------------------------------------------------
 
-                        # Nuevos contactos impactados hoy por esta sesión
-                        query_conteo_nuevos = text("""
-                            SELECT COUNT(DISTINCT m.telefono)
-                            FROM mensajes m
-                            WHERE m.tipo = 'SALIENTE_BOT'
-                            AND COALESCE(m.session_name, 'default') = :sess
-                            AND m.fecha >= CURRENT_DATE
-                            AND NOT EXISTS (
-                                SELECT 1 FROM mensajes me
-                                WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
-                            )
-                        """)
-                        enviados_nuevos_mi_sesion = conn.execute(query_conteo_nuevos, {"sess": obrero["sesion"]}).scalar() or 0
+                    norm = normalizar_telefono_maestro(cliente.telefono)
+                    if not norm: continue
+                    telefono_final = norm['db']
+                    
+                    if verificar_numero_waha(telefono_final) is True:
+                        saludo = random.choice(["Hola", "¡Hola!", "¡Qué tal", "Saludos", "Buen día"])
+                        nom_ia = cliente.nombre_ia.strip() if cliente.nombre_ia else ""
+                        cabecera = f"{saludo} {nom_ia} 👋" if nom_ia else "¡Hola! 👋"
 
-                        log_mkt(f"📊 [{obrero['nombre_vis']}] Fríos hoy: {enviados_nuevos_mi_sesion}/{max_mensajes_nuevos_dia} | Total: {enviados_por_mi}/{max_mensajes_dia_sesion}")
+                        cuerpo_ia = generar_texto_producto_ia(prod_elegido, es_estado=False, cliente_info={"etiquetas": cliente.etiquetas or ""})
+                        mensaje_completo = f"{cabecera}\n\n{cuerpo_ia}"
 
-                        prod_elegido = buscar_producto_dinamico(conn, obrero['col_prob'])
-                        if not prod_elegido: continue
-
-                        # 🧠 Lógica avanzada para detectar clientes calentados vs fríos
-                        query_clientes = text("""
-                            WITH Prospectos_Random AS (
-                                SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono 
-                                FROM clientes c
-                                JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
-                                WHERE c.activo = TRUE AND c.estado = 'Sin empezar' AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
-                                  AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6
-                                  AND t.telefono NOT IN (SELECT telefono FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days')
-                                ORDER BY RANDOM()
-                                LIMIT 50
-                            )
-                            SELECT 
-                                pr.*,
-                                (SELECT COUNT(*) FROM mensajes m2 WHERE m2.telefono = pr.telefono AND m2.tipo = 'ENTRANTE') as total_entrantes,
-                                (SELECT session_name FROM mensajes m3 WHERE m3.telefono = pr.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1) as ultima_sesion_entrante
-                            FROM Prospectos_Random pr
-                        """)
-                        clientes_validos = conn.execute(query_clientes).fetchall()
-
-                    if not clientes_validos: continue
-                    prospectos = list(clientes_validos)
-
-                    for cliente in prospectos:
-                        # -----------------------------------------------------------
-                        # 🛡️ FILTRO DE RESTRICCIÓN META (WHATSAPP)
-                        # -----------------------------------------------------------
-                        es_cliente_frio = (cliente.total_entrantes == 0)
-
-                        if not es_cliente_frio:
-                            # 🛠️ CORRECCIÓN 3: Rescate de clientes antiguos asumiendo 'default' si la columna era NULL
-                            ultima_ses = cliente.ultima_sesion_entrante or 'default'
-                            if ultima_ses != obrero['sesion']:
-                                continue
-                        else:
-                            # Validación independiente por cuenta
-                            if enviados_nuevos_mi_sesion >= max_mensajes_nuevos_dia:
-                                continue
-                        # -----------------------------------------------------------
-
-                        norm = normalizar_telefono_maestro(cliente.telefono)
-                        if not norm: continue
-                        telefono_final = norm['db']
-                        
-                        if verificar_numero_waha(telefono_final) is True:
-                            saludo = random.choice(["Hola", "¡Hola!", "¡Qué tal", "Saludos", "Buen día"])
-                            nom_ia = cliente.nombre_ia.strip() if cliente.nombre_ia else ""
-                            cabecera = f"{saludo} {nom_ia} 👋" if nom_ia else "¡Hola! 👋"
-
-                            cuerpo_ia = generar_texto_producto_ia(prod_elegido, es_estado=False, cliente_info={"etiquetas": cliente.etiquetas or ""})
-                            mensaje_completo = f"{cabecera}\n\n{cuerpo_ia}"
-
-                            if enviar_mensaje_whatsapp(telefono_final, mensaje_completo, prod_elegido['url_imagen'], session=obrero['sesion']):
-                                with engine.begin() as conn_save:
-                                    conn_save.execute(text("""
-                                        INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) 
-                                        VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW(), TRUE, :sess)
-                                    """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
-                                
-                                log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']}). Frío: {'Sí' if es_cliente_frio else 'No'}.")
-                                break  # Disparo exitoso: pasa a evaluar al siguiente obrero
-                        else:
-                            log_mkt(f"🚫 {telefono_final} NO tiene WhatsApp. Bloqueando contacto y excluyendo de publicidad...")
-                            with engine.begin() as conn_purge:
-                                conn_purge.execute(text("""
-                                    UPDATE clientes 
-                                    SET excluir_publicidad = TRUE, activo = FALSE, estado = 'Sin WhatsApp' 
-                                    WHERE id_cliente = :idc
-                                """), {"idc": cliente.id_cliente})
-                                conn_purge.execute(text("""
-                                    UPDATE telefonoscliente 
-                                    SET activo = FALSE 
-                                    WHERE id_cliente = :idc AND telefono = :t
-                                """), {"idc": cliente.id_cliente, "t": cliente.telefono})
-            else:
-                log_mkt(f"🎲 TAREA 1 SALTADA: El dado cayó en {dado_msg} (Requerido: <= {prob_msg}%).")
+                        if enviar_mensaje_whatsapp(telefono_final, mensaje_completo, prod_elegido['url_imagen'], session=obrero['sesion']):
+                            with engine.begin() as conn_save:
+                                conn_save.execute(text("""
+                                    INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) 
+                                    VALUES (:idc, :t, 'SALIENTE_BOT', :c, NOW(), TRUE, :sess)
+                                """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
+                            
+                            log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']}). Frío: {'Sí' if es_cliente_frio else 'No'}.")
+                            break  # Disparo exitoso: pasa a evaluar al siguiente obrero
+                    else:
+                        log_mkt(f"🚫 {telefono_final} NO tiene WhatsApp. Bloqueando contacto y excluyendo de publicidad...")
+                        with engine.begin() as conn_purge:
+                            conn_purge.execute(text("""
+                                UPDATE clientes 
+                                SET excluir_publicidad = TRUE, activo = FALSE, estado = 'Sin WhatsApp' 
+                                WHERE id_cliente = :idc
+                            """), {"idc": cliente.id_cliente})
+                            conn_purge.execute(text("""
+                                UPDATE telefonoscliente 
+                                SET activo = FALSE 
+                                WHERE id_cliente = :idc AND telefono = :t
+                            """), {"idc": cliente.id_cliente, "t": cliente.telefono})
 
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_mensajes = NOW() WHERE id = :id"), {"id": config.id})

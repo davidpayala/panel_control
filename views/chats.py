@@ -28,7 +28,8 @@ except ImportError:
 def mostrar_resumen_compras_chat(telefono_activo):
     st.markdown("##### 🛍️ Historial de Compras")
     
-    # --- NUEVA CONSULTA DE HISTORIAL ---
+    # --- NUEVA CONSULTA DE HISTORIAL CORREGIDA ---
+    # Ahora evalúa si el "telefono_activo" coincide con el ID del cliente, su teléfono o su LID
     query = """
         SELECT v.fecha_venta, d.descripcion as producto, 
                COALESCE(p.categoria, d.macro_categoria, 'Otros') as categoria, 
@@ -38,7 +39,11 @@ def mostrar_resumen_compras_chat(telefono_activo):
         LEFT JOIN Variantes var ON d.sku = var.sku
         LEFT JOIN Productos p ON var.id_producto = p.id_producto
         JOIN Clientes c ON v.id_cliente = c.id_cliente
-        WHERE (c.telefono = :t OR EXISTS (SELECT 1 FROM telefonoscliente tc WHERE tc.id_cliente = c.id_cliente AND tc.telefono = :t))
+        WHERE (
+            CAST(c.id_cliente AS VARCHAR) = :t OR 
+            c.telefono = :t OR 
+            EXISTS (SELECT 1 FROM telefonoscliente tc WHERE tc.id_cliente = c.id_cliente AND (tc.telefono = :t OR tc.lid = :t))
+        )
           AND v.anulado = FALSE
         ORDER BY v.fecha_venta DESC
     """
@@ -777,54 +782,52 @@ def render_chat():
                 with c_num:
                     if es_cliente:
                         with engine.connect() as conn:
-                            # 1. Traemos toda la fila para evaluar las prioridades
                             tels_data = pd.read_sql(text("""
                                 SELECT telefono, alias, lid 
                                 FROM telefonoscliente 
                                 WHERE id_cliente = :id AND activo = TRUE
                             """), conn, params={"id": int(chat_actual)})
                         
+                        # --- NUEVO FLUJO CORREGIDO PARA SELECCIÓN DE NÚMEROS ---
                         opciones_envio = {}
-                        for _, row in tels_data.iterrows():
-                            t = row['telefono']
-                            a = row['alias']
-                            l = row['lid']
-                            
-                            # PRIORIDAD 1: Si hay teléfono, ignoramos el LID como opción separada
-                            if pd.notna(t) and str(t).strip() != "":
-                                valor_destino = str(t).strip()
-                                a_str = str(a).strip() if pd.notna(a) else ""
-                                # Si tiene alias, lo mostramos al lado del número para más claridad
-                                label_mostrar = f"📱 {valor_destino}" + (f" ({a_str})" if a_str else "")
-                                opciones_envio[valor_destino] = label_mostrar
-                            
-                            # PRIORIDADES 2 y 3: No hay teléfono, pero sí existe un LID
-                            elif pd.notna(l) and str(l).strip() != "":
-                                valor_destino = str(l).strip()
-                                a_str = str(a).strip() if pd.notna(a) else ""
-                                
-                                if a_str:
-                                    # Prioridad 2: Mostramos el Alias
-                                    label_mostrar = f"🕵️‍♂️ {a_str} (Anónimo)"
-                                else:
-                                    # Prioridad 3: Mostramos el LID feo porque no queda de otra
-                                    label_mostrar = f"🕵️‍♂️ {valor_destino}"
-                                    
-                                opciones_envio[valor_destino] = label_mostrar
+                        mapeo_entrante = {} # Sirve para enlazar LIDs con sus teléfonos reales si los tienen
 
-                        # Fallback por si el tel_defecto (el último que nos escribió) no estaba en la tabla
+                        for _, row in tels_data.iterrows():
+                            t = str(row['telefono']).strip() if pd.notna(row['telefono']) else ""
+                            a = str(row['alias']).strip() if pd.notna(row['alias']) else ""
+                            l = str(row['lid']).strip() if pd.notna(row['lid']) else ""
+                            
+                            valor_destino = None
+                            
+                            # PRIORIDAD 1: Si hay teléfono, es la única opción de esta fila
+                            if t != "":
+                                valor_destino = t
+                                label_mostrar = f"📱 {t}" + (f" ({a})" if a else "")
+                                opciones_envio[valor_destino] = label_mostrar
+                                
+                                # Si entra un msj por el LID o Teléfono de esta fila, apuntará al Teléfono
+                                mapeo_entrante[t] = valor_destino
+                                if l != "":
+                                    mapeo_entrante[l] = valor_destino
+                            
+                            # PRIORIDADES 2 y 3: No hay teléfono, usamos el LID
+                            elif l != "":
+                                valor_destino = l
+                                label_mostrar = f"🕵️‍♂️ {a} (Anónimo)" if a else f"🕵️‍♂️ {l}"
+                                opciones_envio[valor_destino] = label_mostrar
+                                mapeo_entrante[l] = valor_destino
+
+                        # Corregimos tel_defecto por si es un LID pero la fila ya tiene un teléfono
+                        if tel_defecto in mapeo_entrante:
+                            tel_defecto = mapeo_entrante[tel_defecto]
+
+                        # Fallback por si el tel_defecto (el número externo foráneo) no estaba en la tabla
                         if tel_defecto and tel_defecto not in opciones_envio:
                             opciones_envio[tel_defecto] = f"📱 {tel_defecto}"
-                            
-                        # Si por alguna razón la tabla estaba vacía
-                        if not opciones_envio:
-                            fallback = tel_defecto if tel_defecto else str(chat_actual)
-                            opciones_envio[fallback] = f"📱 {fallback}"
                             
                         lista_valores = list(opciones_envio.keys())
                         idx_tel = lista_valores.index(tel_defecto) if tel_defecto in lista_valores else 0
                         
-                        # 2. El selectbox usa 'format_func' para mostrar el label bonito, pero internamente devuelve el valor_destino
                         telefono_destino = st.selectbox(
                             "Enviar a:", 
                             options=lista_valores, 
@@ -836,6 +839,7 @@ def render_chat():
                     else:
                         telefono_destino = tel_defecto or chat_actual
                         st.text_input("Enviar a:", value=telefono_destino, disabled=True, label_visibility="collapsed")
+                
                 with c_sel:
                     sesion_elegida = st.selectbox(
                         "Línea de envío:", 
@@ -859,14 +863,12 @@ def render_chat():
                     else:
                         st.error(f"Error al enviar: {res}")
 
-                # --- 🛠️ NUEVA SECCIÓN EXPANSIBLE: OPCIONES ADICIONALES (AL FINAL DEL CHAT) ---
+                # --- 🛠️ OPCIONES ADICIONALES (AL FINAL DEL CHAT) ---
                 st.write("")
                 with st.expander("🛠️ Opciones Adicionales", expanded=False):
-                    # 1. Agregamos la tercera pestaña para el Historial de Compras
                     tab_info_dir, tab_galeria_img, tab_compras = st.tabs(["🏠 Dirección Principal", "🖼️ Galería de Imágenes", "🛍️ Historial de Compras"])
                     
                     with tab_info_dir:
-                        # Dos espacios al final de la línea generan un <br> limpio en Markdown
                         texto_cobro = f"  \n**⚠️ Monto por cobrar:** S/ {pendiente_pago:.2f}" if pendiente_pago > 0 else ""
                         
                         if dir_info:
@@ -910,12 +912,11 @@ def render_chat():
                         else:
                             st.caption("No se han compartido imágenes en este chat todavía.")
 
-                    # 2. Inyectamos la función del historial de compras en la nueva pestaña
                     with tab_compras:
-                        # Usamos info.telefono porque chat_actual a veces guarda el ID del cliente
-                        # y nuestra función de utils necesita el número de teléfono para buscar en base de datos.
-                        tel_para_compras = info.telefono if info else chat_actual
-                        mostrar_resumen_compras_chat(str(tel_para_compras))
+                        # Ahora pasamos directamente chat_actual en lugar de info.telefono.
+                        # La consulta SQL que mejoramos arriba detectará automáticamente qué es 
+                        # y hará el cruce exacto en la base de datos sin importar si el valor es un LID.
+                        mostrar_resumen_compras_chat(str(chat_actual))
 
             except Exception as e:
                 st.error(f"Error detallado en el chat: {str(e)}")

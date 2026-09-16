@@ -57,7 +57,7 @@ def render_tab_general(config):
         est_counts = {str(row[0]): int(row[1]) for row in conn.execute(text("""
             SELECT TRIM(LOWER(COALESCE(session_name, 'principal'))) as sesion, COUNT(*) as total
             FROM Historial_Estados 
-            WHERE (fecha_publicacion - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
+            WHERE fecha_publicacion >= CURRENT_DATE
             GROUP BY 1
         """)).fetchall()}
 
@@ -65,31 +65,33 @@ def render_tab_general(config):
         fb_counts = {str(row[0]): int(row[1]) for row in conn.execute(text("""
             SELECT TRIM(LOWER(COALESCE(pagina, 'general'))) as pagina, COUNT(*) as total
             FROM Historial_Facebook 
-            WHERE (fecha - INTERVAL '5 hours')::date = (NOW() - INTERVAL '5 hours')::date
+            WHERE fecha >= CURRENT_DATE
             GROUP BY 1
         """)).fetchall()}
 
-        # Mensajes Totales Enviados Hoy (General)
+        # 🛠️ CORRECCIÓN 1: Mensajes Totales usando COUNT(DISTINCT) y TRIM() sin desfase horario
         env_principal = conn.execute(text("""
-            SELECT COUNT(*) FROM mensajes 
-            WHERE tipo = 'SALIENTE_BOT' AND session_name = 'principal' 
-              AND fecha::date = (NOW() - INTERVAL '5 hours')::date
+            SELECT COUNT(DISTINCT telefono) FROM mensajes 
+            WHERE tipo = 'SALIENTE_BOT' 
+              AND TRIM(COALESCE(session_name, 'principal')) = 'principal' 
+              AND fecha >= CURRENT_DATE
         """)).scalar() or 0
         
         env_lentes = conn.execute(text("""
-            SELECT COUNT(*) FROM mensajes 
-            WHERE tipo = 'SALIENTE_BOT' AND COALESCE(session_name, 'default') = 'default' 
-              AND fecha::date = (NOW() - INTERVAL '5 hours')::date
+            SELECT COUNT(DISTINCT telefono) FROM mensajes 
+            WHERE tipo = 'SALIENTE_BOT' 
+              AND TRIM(COALESCE(session_name, 'default')) = 'default' 
+              AND fecha >= CURRENT_DATE
         """)).scalar() or 0
 
-        # Mensajes Nuevos/Fríos Enviados Hoy (Restricción Meta) Desglosados por Sesión
+        # 🛠️ CORRECCIÓN 2: Mensajes Nuevos/Fríos aplicando TRIM() en el agrupamiento
         query_nuevos_sesion = text("""
             SELECT 
-                COALESCE(m.session_name, 'default') AS sesion,
+                TRIM(COALESCE(m.session_name, 'default')) AS sesion,
                 COUNT(DISTINCT m.telefono) AS total_nuevos
             FROM mensajes m
             WHERE m.tipo = 'SALIENTE_BOT' 
-              AND m.fecha::date = CURRENT_DATE
+              AND m.fecha >= CURRENT_DATE
               AND NOT EXISTS (
                   SELECT 1 FROM mensajes me 
                   WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
@@ -102,7 +104,7 @@ def render_tab_general(config):
         row_avance = conn.execute(text("""
             WITH enviados_recientes AS (
                 SELECT DISTINCT telefono FROM mensajes 
-                WHERE tipo = 'SALIENTE_BOT' AND fecha > (NOW() - INTERVAL '60 days')
+                WHERE tipo = 'SALIENTE_BOT' AND fecha >= (CURRENT_DATE - INTERVAL '60 days')
             )
             SELECT 
                 SUM(CASE WHEN er.telefono IS NOT NULL THEN 1 ELSE 0 END), 
@@ -115,18 +117,22 @@ def render_tab_general(config):
               AND c.estado = 'Sin empezar' 
               AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6;
         """)).fetchone()
-        
+
     a_enviados = int(row_avance[0]) if row_avance and row_avance[0] else 0
     b_pendientes = int(row_avance[1]) if row_avance and row_avance[1] else 0
     total_habilitados = a_enviados + b_pendientes
     c_porcentaje = (a_enviados / total_habilitados * 100.0) if total_habilitados > 0 else 0.0
 
-    # Extracción de valores de mensajes fríos independientes
+# Extracción de valores de mensajes fríos independientes
     nuevos_principal = nuevos_counts.get('principal', 0)
     nuevos_lentes = nuevos_counts.get('default', 0)
     
     max_nuevos_pri = getattr(config, 'max_nuevos_principal', 10) if config else 10
     max_nuevos_len = getattr(config, 'max_nuevos_default', 10) if config else 10
+
+    # 🛠️ NUEVO: Extracción de límites TOTALES independientes (heredando el general si falla)
+    max_tot_pri = getattr(config, 'max_mensajes_principal', getattr(config, 'max_mensajes_dia', 10)) if config else 10
+    max_tot_len = getattr(config, 'max_mensajes_default', getattr(config, 'max_mensajes_dia', 10)) if config else 10
 
     # --- UI MÉTRICAS ---
     st.write("")
@@ -145,11 +151,18 @@ def render_tab_general(config):
 
     st.write("")
     st.markdown("**📨 Mensajes Directos Totales (DMs) Enviados Hoy**")
-    # (El código sigue normal hacia abajo...)
     c_m1, c_m2 = st.columns(2)
-    max_dia = config.max_mensajes_dia if config else 10
-    c_m1.metric("Avance DMs (Principal)", f"{env_principal} / {max_dia}")
-    c_m2.metric("Avance DMs (Lentes)", f"{env_lentes} / {max_dia}")
+    
+    # 🛠️ CORRECCIÓN: Uso de variables separadas y barras de progreso para totales
+    with c_m1:
+        st.metric("Avance DMs (Principal)", f"{env_principal} / {max_tot_pri}")
+        prog_tot_pri = min(env_principal / max_tot_pri, 1.0) if max_tot_pri > 0 else 0.0
+        st.progress(prog_tot_pri)
+
+    with c_m2:
+        st.metric("Avance DMs (Lentes)", f"{env_lentes} / {max_tot_len}")
+        prog_tot_len = min(env_lentes / max_tot_len, 1.0) if max_tot_len > 0 else 0.0
+        st.progress(prog_tot_len)
 
     st.write("")
     st.markdown("**📱 Estados de WhatsApp & 📘 Facebook**")
@@ -246,40 +259,55 @@ def render_tab_general(config):
                     })
             st.success("✅ Descripciones guardadas.")
 # ==============================================================================
-# 💬 PESTAÑA 2: MENSAJES
+# 💬 2PESTAÑA: CONFIGURACIÓN DE MENSAJES
 # ==============================================================================
 def render_tab_mensajes(config):
     st.subheader("💬 Configuración de Mensajes Directos")
     
     with st.form("form_config_mensajes"):
-        st.markdown("**⚙️ Límites Generales y Tiempos**")
-        c_max, c_freq = st.columns(2)
-        nuevo_max = c_max.number_input("📈 Límite TOTAL (Por cuenta)", min_value=1, max_value=500, value=config.max_mensajes_dia if config else 10)
-        val_actual_msg = int(config.intervalo_mensajes) if config and str(config.intervalo_mensajes).isdigit() else 100
-        nuevo_int_msg = c_freq.number_input("🎲 Probabilidad (Cada 30 min):", min_value=0, max_value=100, value=val_actual_msg)
+        st.markdown("**📱 Cuenta 1: KM (Principal)**")
+        c_p1, c_p2, c_p3 = st.columns(3)
+        
+        # Leemos el nuevo valor, si no existe o es NULL, heredamos el antiguo valor general
+        nuevo_max_pri = c_p1.number_input("Límite Total (Principal)", min_value=1, max_value=500, value=getattr(config, 'max_mensajes_principal', getattr(config, 'max_mensajes_dia', 10)))
+        nuevo_max_frios_pri = c_p2.number_input("Límite Fríos (Principal)", min_value=1, max_value=300, value=getattr(config, 'max_nuevos_principal', 10))
+        
+        val_prob_pri = getattr(config, 'intervalo_mensajes_principal', config.intervalo_mensajes) if config else 100
+        val_prob_pri = int(val_prob_pri) if str(val_prob_pri).isdigit() else 100
+        nuevo_int_pri = c_p3.number_input("Probabilidad (Principal) %", min_value=0, max_value=100, value=val_prob_pri)
 
-        st.markdown("**🧊 Límite de Contactos Nuevos (Mensajes Fríos)**")
-        c_frios_pri, c_frios_len = st.columns(2)
-        nuevo_max_frios_pri = c_frios_pri.number_input("Límite Fríos (Principal)", min_value=1, max_value=300, value=getattr(config, 'max_nuevos_principal', 10))
-        nuevo_max_frios_len = c_frios_len.number_input("Límite Fríos (Lentes)", min_value=1, max_value=300, value=getattr(config, 'max_nuevos_default', 10))
+        st.divider()
+        st.markdown("**👓 Cuenta 2: Lentes (Default)**")
+        c_l1, c_l2, c_l3 = st.columns(3)
+        
+        nuevo_max_len = c_l1.number_input("Límite Total (Lentes)", min_value=1, max_value=500, value=getattr(config, 'max_mensajes_default', getattr(config, 'max_mensajes_dia', 10)))
+        nuevo_max_frios_len = c_l2.number_input("Límite Fríos (Lentes)", min_value=1, max_value=300, value=getattr(config, 'max_nuevos_default', 10))
+        
+        val_prob_len = getattr(config, 'intervalo_mensajes_default', config.intervalo_mensajes) if config else 100
+        val_prob_len = int(val_prob_len) if str(val_prob_len).isdigit() else 100
+        nuevo_int_len = c_l3.number_input("Probabilidad (Lentes) %", min_value=0, max_value=100, value=val_prob_len)
 
         if st.form_submit_button("💾 Guardar Parámetros de Mensajes", type="primary") and config:
             with engine.begin() as conn_w:
                 conn_w.execute(text("""
                     UPDATE Configuracion_Campanas 
-                    SET max_mensajes_dia = :maxm, 
+                    SET max_mensajes_principal = :max_tot_pri, 
+                        max_mensajes_default = :max_tot_len,
                         max_nuevos_principal = :max_pri, 
                         max_nuevos_default = :max_len, 
-                        intervalo_mensajes = :int_msg 
+                        intervalo_mensajes_principal = :int_pri,
+                        intervalo_mensajes_default = :int_len
                     WHERE id = :id
                 """), {
-                    "maxm": nuevo_max, 
+                    "max_tot_pri": nuevo_max_pri,
+                    "max_tot_len": nuevo_max_len,
                     "max_pri": nuevo_max_frios_pri, 
                     "max_len": nuevo_max_frios_len, 
-                    "int_msg": str(nuevo_int_msg), 
+                    "int_pri": str(nuevo_int_pri), 
+                    "int_len": str(nuevo_int_len),
                     "id": config.id
                 })
-            st.toast("✅ Parámetros de mensajes actualizados.")
+            st.toast("✅ Parámetros independientes actualizados.")
             st.rerun()
 
     st.divider()
@@ -293,7 +321,12 @@ def render_tab_mensajes(config):
             column_config={"id": None, "macro_categoria": st.column_config.TextColumn("Línea Mayor", disabled=True), "subcategoria": st.column_config.TextColumn("Subcategoría", disabled=True), "prob_msg_principal": st.column_config.NumberColumn("Principal %", min_value=0, max_value=100, step=5), "prob_msg_default": st.column_config.NumberColumn("Lentes %", min_value=0, max_value=100, step=5)},
             hide_index=True, key="editor_prob_msg", use_container_width=True
         )
-        mostrar_indicador_suma(df_edit_msg, 'prob_msg_principal', 'prob_msg_default')
+        
+        # Validar si existe la función mostrar_indicador_suma antes de llamarla para evitar errores visuales
+        try:
+            mostrar_indicador_suma(df_edit_msg, 'prob_msg_principal', 'prob_msg_default')
+        except NameError:
+            pass 
         
         if st.button("💾 Guardar Probabilidades (Mensajes)", type="primary"):
             with engine.begin() as conn:
@@ -311,7 +344,6 @@ def render_tab_mensajes(config):
                 conn.execute(text("UPDATE Configuracion_Campanas SET prompt_dm = :pdm"), {"pdm": p_dm})
             st.toast("✅ ¡Personalidad actualizada!")
             st.rerun()
-
 # ==============================================================================
 # 📱 PESTAÑA 3: ESTADOS
 # ==============================================================================

@@ -91,9 +91,11 @@ def render_compras():
                         GROUP BY d.sku
                     )
                     SELECT
+                        p.id_producto, -- 🆕 AGREGADO: Necesario para poder actualizar el producto
                         v.sku,
                         COALESCE(p.macro_categoria, 'Lentes') as macro_categoria,
                         p.marca || ' ' || p.modelo || ' - ' || COALESCE(p.nombre, '') || ' (' || v.medida || ')' as nombre,
+                        p.nombre_proveedor, -- 🆕 NUEVO CAMPO AÑADIDO
                         v.stock_interno,
                         v.stock_externo,
                         COALESCE(v.stock_transito, 0) as stock_transito,
@@ -156,7 +158,7 @@ def render_compras():
             
             df_reco = df_reco.sort_values(by='sugerencia_compra', ascending=False)
 
-        # 5. VISUALIZACIÓN
+        # 5. VISUALIZACIÓN Y EDICIÓN
         st.divider()
         col_res_txt, col_res_btn = st.columns([3, 1])
         with col_res_txt:
@@ -168,30 +170,68 @@ def render_compras():
             if not df_reco.empty:
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_reco.to_excel(writer, index=False, sheet_name='SugerenciaCompra')
+                    # Quitamos el ID de producto para que no salga en el Excel descargable
+                    df_excel = df_reco.drop(columns=['id_producto'], errors='ignore')
+                    df_excel.to_excel(writer, index=False, sheet_name='SugerenciaCompra')
                 st.download_button("📥 Descargar Excel", data=buffer.getvalue(), file_name=f"Compras_{date.today()}.xlsx", use_container_width=True)
 
-        st.dataframe(
-            df_reco,
-            column_config={
-                "sku": "SKU",
-                "macro_categoria": "Línea",
-                "nombre": st.column_config.TextColumn("Producto", width="large"),
-                "costo_compra": st.column_config.NumberColumn("Últ. Costo", format="S/ %.2f"),
-                "importacion": None,
-                "url_compra": st.column_config.LinkColumn("Enlace Compra", display_text="Ver Link"),
-                "stock_interno": st.column_config.NumberColumn("En Mano", format="%d"),
-                "stock_transito": st.column_config.NumberColumn("En Camino", format="%d"),
-                "stock_externo": st.column_config.NumberColumn("En Proveedor", format="%d"),
-                "venta_year_3": st.column_config.NumberColumn(str(y3), format="%d"),
-                "venta_year_2": st.column_config.NumberColumn(str(y2), format="%d"),
-                "venta_year_1": st.column_config.NumberColumn(str(y1), format="%d"),
-                "sugerencia_compra": st.column_config.NumberColumn("⚠️ Sugerido", format="%d"),
-                "demanda_historica": st.column_config.ProgressColumn("Demanda Hist.", format="%d", min_value=0, max_value=int(df_reco['demanda_historica'].max()) if not df_reco.empty else 10),
-            },
-            hide_index=True,
-            use_container_width=True
-        )
+        if not df_reco.empty:
+            with st.form("form_sugerencias_compra"):
+                # 🛡️ Bloqueamos todas las columnas excepto la del proveedor
+                columnas_bloqueadas = [col for col in df_reco.columns if col != 'nombre_proveedor']
+
+                df_editado = st.data_editor(
+                    df_reco,
+                    column_config={
+                        "id_producto": None, # Lo ocultamos de la vista, solo sirve para la base de datos
+                        "sku": "SKU",
+                        "macro_categoria": "Línea",
+                        "nombre": st.column_config.TextColumn("Producto", width="large"),
+                        "nombre_proveedor": st.column_config.TextColumn("📝 Nombre Proveedor"), # ✏️ Columna Editable
+                        "costo_compra": st.column_config.NumberColumn("Últ. Costo", format="S/ %.2f"),
+                        "importacion": None,
+                        "url_compra": st.column_config.LinkColumn("Enlace Compra", display_text="Ver Link"),
+                        "stock_interno": st.column_config.NumberColumn("En Mano", format="%d"),
+                        "stock_transito": st.column_config.NumberColumn("En Camino", format="%d"),
+                        "stock_externo": st.column_config.NumberColumn("En Proveedor", format="%d"),
+                        "venta_year_3": st.column_config.NumberColumn(str(y3), format="%d"),
+                        "venta_year_2": st.column_config.NumberColumn(str(y2), format="%d"),
+                        "venta_year_1": st.column_config.NumberColumn(str(y1), format="%d"),
+                        "sugerencia_compra": st.column_config.NumberColumn("⚠️ Sugerido", format="%d"),
+                        "demanda_historica": st.column_config.ProgressColumn("Demanda Hist.", format="%d", min_value=0, max_value=int(df_reco['demanda_historica'].max()) if not df_reco.empty else 10),
+                    },
+                    hide_index=True,
+                    disabled=columnas_bloqueadas, # Aplicamos el bloqueo para evitar dañar otros datos por accidente
+                    use_container_width=True
+                )
+                
+                # Botón para consolidar los cambios en la Base de Datos
+                if st.form_submit_button("💾 Guardar Proveedores", type="primary", use_container_width=True):
+                    try:
+                        with engine.begin() as conn_w:
+                            # Comparamos lo que se editó vs lo original para actualizar solo lo necesario
+                            for idx, row in df_editado.iterrows():
+                                # 🔧 CORRECCIÓN: Usamos .loc para buscar la fila por su ID de índice correcto
+                                val_original = df_reco.loc[idx, 'nombre_proveedor']
+                                val_nuevo = row['nombre_proveedor']
+                                
+                                # Solo guardamos si el usuario escribió algo nuevo o lo borró
+                                if val_original != val_nuevo:
+                                    conn_w.execute(text("""
+                                        UPDATE Productos 
+                                        SET nombre_proveedor = :prov 
+                                        WHERE id_producto = :idp
+                                    """), {
+                                        "prov": val_nuevo if pd.notna(val_nuevo) else "", 
+                                        "idp": int(row['id_producto'])
+                                    })
+                        st.success("✅ Nombres de proveedores guardados correctamente en el catálogo matriz.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al guardar proveedores: {e}")
+        else:
+            st.info("No se encontraron productos con los filtros actuales.")
+            
     # -------------------------------------------------------------------------
     # B) REGISTRAR PEDIDO (CON HISTÓRICO Y MEMORIA DE COSTOS)
     # -------------------------------------------------------------------------
