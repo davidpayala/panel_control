@@ -407,7 +407,27 @@ def recibir_mensaje():
                 msg_id_safe = str(whatsapp_id).replace('@', '%40')
                 media_url = f"{WAHA_URL.rstrip('/')}/api/{session_name}/messages/{msg_id_safe}/download"
 
+            # 1. Intentamos descargar la imagen por HTTP normal
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
+            
+            # 🔥 2. CORRECCIÓN: Si falla la descarga web, rescatamos el Base64 que WAHA incluye en el payload
+            if not archivo_bytes and has_media:
+                import base64
+                b64_str = payload.get('_data', {}).get('body')
+                
+                # A veces viene en el body, a veces en el jpegThumbnail
+                if not b64_str or not isinstance(b64_str, str):
+                    b64_str = payload.get('_data', {}).get('message', {}).get('imageMessage', {}).get('jpegThumbnail')
+                
+                # Si encontramos un Base64 válido de imagen (empieza con /9j/ que es JPG)
+                if isinstance(b64_str, str) and b64_str.startswith('/9j/'):
+                    try:
+                        archivo_bytes = base64.b64decode(b64_str)
+                        log_info("📥 ¡Imagen rescatada con éxito usando el Base64 interno de WAHA!")
+                    except Exception as e:
+                        log_error(f"Error decodificando base64: {e}")
+
+            # 3. Comprimimos la imagen final
             if archivo_bytes: 
                 archivo_bytes = comprimir_imagen_waha(archivo_bytes)
             
