@@ -44,7 +44,7 @@ def vista_productos():
             with engine.connect() as conn:
                 q_inv = """
                     SELECT 
-                        v.sku, v.id_producto, 
+                        v.sku, v.id_producto, v.precio,
                         CASE 
                             WHEN p.macro_categoria ILIKE 'peluca%' OR v.sku ILIKE 'WB-%' OR v.sku ILIKE 'WIG-%' THEN 'Pelucas'
                             ELSE 'Lentes'
@@ -234,6 +234,29 @@ def vista_productos():
                     except Exception as e:
                         trans.rollback()
                         st.error(f"Error al guardar: {e}")
+
+        # Este bloque debe estar alineado con la variable cambios_inv
+        if not df_calc.empty:
+            st.divider()
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                st.markdown(f"**{len(df_calc)} productos filtrados.** ¿Deseas exportarlos para WhatsApp?")
+                
+            with col2:
+                if st.button("📄 Preparar PDF"):
+                    with st.spinner("Generando catálogo y descargando imágenes..."):
+                        try:
+                            # Pasamos df_calc, que contiene el color y ahora el precio
+                            pdf_buffer = utils.generar_pdf_catalogo(df_calc)
+                            st.download_button(
+                                label="📥 Descargar PDF",
+                                data=pdf_buffer,
+                                file_name="Catalogo_Filtro.pdf",
+                                mime="application/pdf"
+                            )
+                        except Exception as e:
+                            st.error(f"Error al generar el PDF: {e}")
     # ==============================================================================
     # --- PESTAÑA 1B: IMPORTAR STOCK EXTERNO (CSV) ---
     # ==============================================================================

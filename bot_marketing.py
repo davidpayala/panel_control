@@ -338,6 +338,16 @@ def ejecutar_francotirador():
                 if not clientes_validos: continue
                 prospectos = list(clientes_validos)
 
+                # 🛠️ NUEVO: Contadores de diagnóstico para auditar los saltos silenciosos
+                descartes = {
+                    "otra_sesion": 0, 
+                    "limite_frios_alcanzado": 0, 
+                    "formato_invalido": 0, 
+                    "sin_waha": 0,
+                    "error_api": 0
+                }
+                disparo_exitoso = False
+
                 for cliente in prospectos:
                     # -----------------------------------------------------------
                     # 🛡️ FILTRO DE RESTRICCIÓN META (WHATSAPP)
@@ -348,15 +358,20 @@ def ejecutar_francotirador():
                         # Rescate de clientes antiguos asumiendo 'default' si la columna era NULL
                         ultima_ses = cliente.ultima_sesion_entrante or 'default'
                         if ultima_ses != obrero['sesion']:
+                            descartes["otra_sesion"] += 1
                             continue
                     else:
                         # Validación independiente por cuenta
                         if enviados_nuevos_mi_sesion >= limite_nuevos_sesion:
+                            descartes["limite_frios_alcanzado"] += 1
                             continue
                     # -----------------------------------------------------------
 
                     norm = normalizar_telefono_maestro(cliente.telefono)
-                    if not norm: continue
+                    if not norm: 
+                        descartes["formato_invalido"] += 1
+                        continue
+                        
                     telefono_final = norm['db']
                     
                     if verificar_numero_waha(telefono_final) is True:
@@ -375,8 +390,12 @@ def ejecutar_francotirador():
                                 """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
                             
                             log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']}). Frío: {'Sí' if es_cliente_frio else 'No'}.")
+                            disparo_exitoso = True
                             break  # Disparo exitoso: pasa a evaluar al siguiente obrero
+                        else:
+                            descartes["error_api"] += 1
                     else:
+                        descartes["sin_waha"] += 1
                         log_mkt(f"🚫 {telefono_final} NO tiene WhatsApp. Bloqueando contacto y excluyendo de publicidad...")
                         with engine.begin() as conn_purge:
                             conn_purge.execute(text("""
@@ -389,6 +408,17 @@ def ejecutar_francotirador():
                                 SET activo = FALSE 
                                 WHERE id_cliente = :idc AND telefono = :t
                             """), {"idc": cliente.id_cliente, "t": cliente.telefono})
+
+                # 🛠️ NUEVO: Reporte de diagnóstico si el lote falló por completo
+                if not disparo_exitoso:
+                    log_mkt(
+                        f"⚠️ [{obrero['nombre_vis']}] Lote de {len(prospectos)} prospectos fallido. "
+                        f"Descartes -> Otra Sesión (Warm): {descartes['otra_sesion']} | "
+                        f"Formato Inválido: {descartes['formato_invalido']} | "
+                        f"Sin WhatsApp: {descartes['sin_waha']} | "
+                        f"Bloqueo por Fríos: {descartes['limite_frios_alcanzado']} | "
+                        f"Error API: {descartes['error_api']}"
+                    )
 
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_mensajes = NOW() WHERE id = :id"), {"id": config.id})

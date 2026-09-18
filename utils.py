@@ -15,6 +15,11 @@ from datetime import datetime
 import time
 from io import BytesIO
 from PIL import Image
+import io
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
 # ==============================================================================
 # CONFIGURACIÓN GENERAL
 # ==============================================================================
@@ -267,10 +272,14 @@ def obtener_perfil_waha(telefono):
         if r.status_code == 200: return r.json()
     except: pass
     return None
-
+    
 def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default"):
-    """Envía texto simple o imagen soportando LIDs"""
+    """Envía texto simple o imagen soportando LIDs y auto-convirtiendo WEBP"""
     import requests
+    import base64
+    from PIL import Image
+    import io
+    
     if not WAHA_URL: return False
     
     try:
@@ -289,16 +298,45 @@ def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default
         
         if url_imagen:
             url = f"{WAHA_URL.rstrip('/')}/api/sendImage"
-            payload = {"session": session, "chatId": chat_id, "file": {"url": url_imagen}, "caption": mensaje}
+            
+            # 🛠️ NUEVO: Auto-conversión de WebP a JPEG al vuelo
+            if ".webp" in url_imagen.lower():
+                try:
+                    img_response = requests.get(url_imagen, timeout=10)
+                    if img_response.status_code == 200:
+                        img = Image.open(io.BytesIO(img_response.content)).convert("RGB")
+                        buffered = io.BytesIO()
+                        img.save(buffered, format="JPEG", quality=85)
+                        img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                        
+                        payload = {
+                            "session": session, 
+                            "chatId": chat_id, 
+                            "file": {"mimetype": "image/jpeg", "data": img_b64}, 
+                            "caption": mensaje
+                        }
+                    else:
+                        print(f"🔥 Error descargando WEBP ({img_response.status_code})", flush=True)
+                        return False
+                except Exception as e:
+                    print(f"🔥 Error procesando imagen WEBP: {e}", flush=True)
+                    return False
+            else:
+                # Flujo normal para JPG o PNG
+                payload = {"session": session, "chatId": chat_id, "file": {"url": url_imagen}, "caption": mensaje}
         else:
             url = f"{WAHA_URL.rstrip('/')}/api/sendText"
             payload = {"session": session, "chatId": chat_id, "text": mensaje}
             
-        # ⏳ Paciencia aumentada a 45s para imágenes pesadas
         r = requests.post(url, json=payload, headers=headers, timeout=45)
-        return r.status_code in [200, 201]
+        
+        if r.status_code not in [200, 201]:
+            print(f"🔥 Error WAHA ({r.status_code}) en '{session}': {r.text}", flush=True)
+            return False
+            
+        return True
     except Exception as e:
-        print(f"⚠️ Error al enviar WSP (utils): {e}")
+        print(f"⚠️ Excepción al enviar WSP (utils): {e}", flush=True)
         return False
 
 def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_type, session="default"):
@@ -1337,3 +1375,73 @@ def ejecutar_auditoria_bidireccional_woo(tienda_url, wc_key, wc_secret):
 
     except Exception as e:
         yield {"estado": "error", "msg": str(e)}
+
+def generar_pdf_catalogo(df_filtrado):
+    """
+    Genera un PDF agrupado por color con fotos, nombres y precios centrados.
+    Retorna un objeto BytesIO listo para ser descargado en Streamlit.
+    """
+    buffer = io.BytesIO()
+    # Configuramos el documento con márgenes
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    elementos = []
+
+    # Estilos de texto (centrados)
+    styles = getSampleStyleSheet()
+    estilo_titulo_color = ParagraphStyle(name='TituloColor', parent=styles['Heading1'], alignment=TA_CENTER, textColor='#333333', spaceAfter=15)
+    estilo_nombre = ParagraphStyle(name='NombreProd', parent=styles['Heading2'], alignment=TA_CENTER, spaceAfter=5)
+    estilo_detalles = ParagraphStyle(name='Detalles', parent=styles['Normal'], alignment=TA_CENTER, textColor='#555555')
+    estilo_precio = ParagraphStyle(name='Precio', parent=styles['Heading3'], alignment=TA_CENTER, textColor='#2e7d32')
+
+    # 1. Asegurar que haya un color, si es Nulo le ponemos uno genérico
+    if 'color_principal' not in df_filtrado.columns:
+        df_filtrado['color_principal'] = "General"
+    df_filtrado['color_principal'] = df_filtrado['color_principal'].fillna('Otros')
+
+    # 2. Agrupar el DataFrame por color
+    agrupado = df_filtrado.groupby('color_principal')
+
+    for color, grupo in agrupado:
+        # Título Separador por Color
+        elementos.append(Paragraph(f"--- CATÁLOGO: COLOR {str(color).upper()} ---", estilo_titulo_color))
+        elementos.append(Spacer(1, 10))
+
+        for _, row in grupo.iterrows():
+            # Nombre del producto (Marca + Modelo + Nombre)
+            nombre = f"{row.get('marca', '')} {row.get('modelo', '')} - {row.get('nombre', '')}".strip()
+            elementos.append(Paragraph(nombre, estilo_nombre))
+            
+            # Imagen Central
+            url_img = row.get('url_imagen')
+            if url_img and isinstance(url_img, str) and url_img.startswith('http'):
+                try:
+                    # Descargamos la imagen temporalmente para inyectarla al PDF
+                    req = requests.get(url_img, timeout=5)
+                    img_stream = io.BytesIO(req.content)
+                    # Forzamos tamaño proporcional (ej: 200x200 max)
+                    img = RLImage(img_stream, width=200, height=200, kind='proportional')
+                    img.hAlign = 'CENTER'
+                    elementos.append(img)
+                except Exception:
+                    elementos.append(Paragraph("(Imagen no disponible)", estilo_detalles))
+            else:
+                elementos.append(Paragraph("(Sin imagen)", estilo_detalles))
+
+            elementos.append(Spacer(1, 8))
+
+            # Detalles (SKU y Medida)
+            detalles = f"SKU: {row.get('sku', '')} | Medida: {row.get('medida', '')}"
+            elementos.append(Paragraph(detalles, estilo_detalles))
+            elementos.append(Spacer(1, 3))
+
+            # Precio
+            precio = float(row.get('precio', 0.0))
+            elementos.append(Paragraph(f"Precio: S/ {precio:.2f}", estilo_precio))
+            
+            # Espaciado gigante entre un producto y otro
+            elementos.append(Spacer(1, 40)) 
+
+    # Construimos el PDF
+    doc.build(elementos)
+    buffer.seek(0)
+    return buffer
