@@ -274,18 +274,31 @@ def obtener_perfil_waha(telefono):
     return None
     
 def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default"):
-    """Envía texto simple o imagen soportando LIDs y auto-convirtiendo WEBP"""
+    """Envía WSP con auto-conversión WEBP, bypass de WebJS y Fallback a texto puro"""
     import requests
     import base64
-    from PIL import Image
     import io
+    from PIL import Image
     
+    try:
+        from database import engine
+        from sqlalchemy import text
+    except ImportError:
+        engine = None
+
+    def registrar_error_waha(msg):
+        print(msg, flush=True)
+        if engine:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("INSERT INTO logs_marketing (fecha, mensaje) VALUES (NOW(), :m)"), {"m": msg})
+            except: pass
+
     if not WAHA_URL: return False
     
     try:
         telefono_str = str(telefono)
         
-        # 🛡️ ENRUTAMIENTO INTELIGENTE: LID vs Número Normal
         if telefono_str.startswith("LID_"):
             chat_id = f"{telefono_str.replace('LID_', '')}@lid"
         else:
@@ -296,10 +309,11 @@ def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
+        # =================================================================
+        # 🟢 INTENTO 1: ENVIAR MENSAJE CON IMAGEN
+        # =================================================================
         if url_imagen:
-            url = f"{WAHA_URL.rstrip('/')}/api/sendImage"
-            
-            # 🛠️ NUEVO: Auto-conversión de WebP a JPEG al vuelo
+            img_payload = None
             if ".webp" in url_imagen.lower():
                 try:
                     img_response = requests.get(url_imagen, timeout=10)
@@ -309,34 +323,49 @@ def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default
                         img.save(buffered, format="JPEG", quality=85)
                         img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
                         
-                        payload = {
+                        # 🛠️ EL TRUCO: Empaquetar como Data URI en el campo 'url'
+                        data_uri = f"data:image/jpeg;base64,{img_b64}"
+                        img_payload = {
                             "session": session, 
                             "chatId": chat_id, 
-                            "file": {"mimetype": "image/jpeg", "data": img_b64}, 
+                            "file": {"url": data_uri}, 
                             "caption": mensaje
                         }
                     else:
-                        print(f"🔥 Error descargando WEBP ({img_response.status_code})", flush=True)
-                        return False
+                        registrar_error_waha(f"🔥 Error descargando WEBP (HTTP {img_response.status_code}).")
                 except Exception as e:
-                    print(f"🔥 Error procesando imagen WEBP: {e}", flush=True)
-                    return False
+                    registrar_error_waha(f"🔥 Falló la conversión WEBP a JPG: {e}")
             else:
-                # Flujo normal para JPG o PNG
-                payload = {"session": session, "chatId": chat_id, "file": {"url": url_imagen}, "caption": mensaje}
-        else:
-            url = f"{WAHA_URL.rstrip('/')}/api/sendText"
-            payload = {"session": session, "chatId": chat_id, "text": mensaje}
+                img_payload = {"session": session, "chatId": chat_id, "file": {"url": url_imagen}, "caption": mensaje}
             
-        r = requests.post(url, json=payload, headers=headers, timeout=45)
+            if img_payload:
+                # 🚀 Redirigir dinámicamente el tráfico multimedia al motor NOWEB (Puerto 3001)
+                waha_noweb_url = WAHA_URL.replace('3000', '3001')
+                url_send = f"{waha_noweb_url.rstrip('/')}/api/sendImage"
+                
+                r = requests.post(url_send, json=img_payload, headers=headers, timeout=45)
+
+                if r.status_code in [200, 201]:
+                    return True # Éxito total con imagen
+                else:
+                    registrar_error_waha(f"⚠️ WAHA rechazó IMAGEN ({r.status_code}) por bug del motor. Aplicando Fallback a texto...")
+                    # No retornamos False aquí. Dejamos que el código continúe al Intento 2.
+
+        # =================================================================
+        # 🟡 INTENTO 2: FALLBACK (RESCATE SOLO CON TEXTO)
+        # =================================================================
+        url_send = f"{WAHA_URL.rstrip('/')}/api/sendText"
+        payload_text = {"session": session, "chatId": chat_id, "text": mensaje}
+        
+        r = requests.post(url_send, json=payload_text, headers=headers, timeout=45)
         
         if r.status_code not in [200, 201]:
-            print(f"🔥 Error WAHA ({r.status_code}) en '{session}': {r.text}", flush=True)
+            registrar_error_waha(f"🔥 WAHA RECHAZÓ EL TEXTO ({r.status_code}) en sesión '{session}': {r.text}")
             return False
             
         return True
     except Exception as e:
-        print(f"⚠️ Excepción al enviar WSP (utils): {e}", flush=True)
+        registrar_error_waha(f"⚠️ Excepción general al enviar WSP: {e}")
         return False
 
 def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_type, session="default"):

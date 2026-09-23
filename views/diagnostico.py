@@ -385,7 +385,7 @@ def render_diagnostico():
         st.info("Visualiza en tiempo real las operaciones del bot. Ahora conectado de forma nativa a PostgreSQL (sin archivos de texto locales).")
         
         c_filtro, c_btn_log = st.columns([8, 2])
-        filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimas 2 horas", "Hoy", "Última semana"], horizontal=True)
+        filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimas 2 horas", "Hoy", "Últimas 24h"], horizontal=True)
         
         if c_btn_log.button("🔄 Refrescar Logs", key="btn_refresh_mkt"):
             st.rerun()
@@ -396,7 +396,7 @@ def render_diagnostico():
         elif filtro_tiempo == "Hoy":
             condicion_tiempo = "fecha::date = CURRENT_DATE"
         else:
-            condicion_tiempo = "fecha >= NOW() - INTERVAL '7 days'"
+            condicion_tiempo = "fecha >= NOW() - INTERVAL '24 hours'"
         
         try:
             # Auto-creación de tabla de contingencia
