@@ -206,34 +206,40 @@ def render_tab_general(config):
     st.write("")
     st.markdown("**🎉 Fechas Festivas y Eventos Especiales**")
     with engine.connect() as conn:
-        df_fest = pd.read_sql(text("SELECT id, fecha, nombre_evento, descripcion, activo FROM Festividades ORDER BY fecha ASC"), conn)
+        # Se extrae día, mes y anticipación
+        df_fest = pd.read_sql(text("SELECT id, dia, mes, dias_anticipacion, nombre_evento, descripcion, activo FROM Festividades ORDER BY mes ASC, dia ASC"), conn)
 
     df_edit_fest = st.data_editor(
         df_fest,
         column_config={
             "id": None,
-            "fecha": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD", required=True),
-            "nombre_evento": st.column_config.TextColumn("Evento (ej: Aniversario)", required=True),
+            "dia": st.column_config.NumberColumn("Día", min_value=1, max_value=31, required=True),
+            "mes": st.column_config.NumberColumn("Mes", min_value=1, max_value=12, required=True),
+            "dias_anticipacion": st.column_config.NumberColumn("Días Anticipación", min_value=0, required=True, help="Días antes del evento en que la IA empezará a usarlo"),
+            "nombre_evento": st.column_config.TextColumn("Evento (ej: Halloween)", required=True),
             "descripcion": st.column_config.TextColumn("Instrucción IA"),
             "activo": st.column_config.CheckboxColumn("Activo")
         },
         num_rows="dynamic", hide_index=True, key="editor_fest", use_container_width=True
     )
+    
     if st.button("💾 Guardar Fechas Festivas", type="primary"):
         with engine.begin() as conn_f:
             conn_f.execute(text("DELETE FROM Festividades"))
             for idx, row in df_edit_fest.iterrows():
-                if pd.notna(row['fecha']) and pd.notna(row['nombre_evento']):
+                if pd.notna(row['dia']) and pd.notna(row['mes']) and pd.notna(row['nombre_evento']):
                     conn_f.execute(text("""
-                        INSERT INTO Festividades (fecha, nombre_evento, descripcion, activo) 
-                        VALUES (:f, :nom, :desc, :act)
+                        INSERT INTO Festividades (dia, mes, dias_anticipacion, nombre_evento, descripcion, activo) 
+                        VALUES (:d, :m, :ant, :nom, :desc, :act)
                     """), {
-                        "f": row['fecha'], 
+                        "d": int(row['dia']), 
+                        "m": int(row['mes']), 
+                        "ant": int(row['dias_anticipacion']) if pd.notna(row['dias_anticipacion']) else 0,
                         "nom": row['nombre_evento'], 
                         "desc": row['descripcion'] if pd.notna(row['descripcion']) else "", 
                         "act": bool(row['activo'])
                     })
-        st.success("✅ Calendario actualizado.")
+        st.success("✅ Calendario festivo actualizado.")
 
     st.write("")
     st.markdown("**📝 Descripciones de Subcategorías (Lectura IA)**")

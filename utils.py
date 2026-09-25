@@ -893,38 +893,6 @@ def buscar_producto_aleatorio_en_stock(conn, macro_categoria, subcategorias_perm
 
     return None
 
-def obtener_festividad_cercana():
-    """
-    Calcula si hay una festividad comercial importante en los próximos 20 días en Perú.
-    """
-    hoy = datetime.now().date()
-    
-    festividades = [
-        {"mes": 2, "dia": 14, "nombre": "San Valentín / Día del Amor"},
-        {"mes": 5, "dia": 10, "nombre": "Día de la Madre"}, # Fecha comercial aprox
-        {"mes": 6, "dia": 15, "nombre": "Día del Padre"},   # Fecha comercial aprox
-        {"mes": 7, "dia": 28, "nombre": "Fiestas Patrias de Perú"},
-        {"mes": 10, "dia": 31, "nombre": "Halloween y el Día de la Canción Criolla"},
-        {"mes": 12, "dia": 25, "nombre": "Navidad"},
-        {"mes": 12, "dia": 31, "nombre": "Año Nuevo"}
-    ]
-    
-    for fest in festividades:
-        # Asumimos el año actual para el cálculo
-        fecha_fest = datetime(hoy.year, fest["mes"], fest["dia"]).date()
-        diferencia = (fecha_fest - hoy).days
-        
-        # Si la festividad ya pasó este año, evaluamos el próximo
-        if diferencia < 0:
-            fecha_fest = datetime(hoy.year + 1, fest["mes"], fest["dia"]).date()
-            diferencia = (fecha_fest - hoy).days
-
-        # Si estamos a 20 días o menos de la fecha clave, alertamos a la IA
-        if 0 <= diferencia <= 20:
-            return f"🚨 CONTEXTO DE TEMPORADA OBLIGATORIO: Estamos a {diferencia} días de {fest['nombre']}. Adapta el tono de tu mensaje sutilmente a esta festividad para generar más deseo de compra."
-            
-    return "" # Días normales sin festividades
-
 def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
     """
     Genera copys persuasivos con IA local (Ollama).
@@ -968,8 +936,9 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
     enlace_compra = str(enlace_tienda).strip() if enlace_tienda and str(enlace_tienda).strip() != "" else f"https://{tienda_actual}/producto/{sku}"
     txt_precio = f"a solo S/ {precio}" if precio else ""
 
-    # 3. Contextos Adicionales (Festividades, CRM y Enfoque Psicológico DB)
-    contexto_festividad = obtener_festividad_cercana()
+    # 3. Contextos Adicionales (Festividades dinámicas, CRM y Enfoque Psicológico DB)
+    # 🛠️ CORRECCIÓN: Ahora lee los eventos calculados por SQL en marketing.py
+    contexto_festividad = producto.get('contexto_ia_extra', '')
     
     notas_crm = ""
     if cliente_info and cliente_info.get('etiquetas'):

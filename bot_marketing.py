@@ -110,8 +110,34 @@ def buscar_producto_dinamico(conn, col_probabilidad):
         
     if prod:
         producto_dict = dict(prod._mapping)
-        producto_dict['contexto_ia_extra'] = f"REGLA DE ORO: ESTE PRODUCTO ES UN/UNA {producto_dict.get('macro_categoria', '').upper()}. HABLA ESTRICTAMENTE DE ESA CATEGORÍA."
+        contexto_base = f"REGLA DE ORO: ESTE PRODUCTO ES UN/UNA {producto_dict.get('macro_categoria', '').upper()}. HABLA ESTRICTAMENTE DE ESA CATEGORÍA."
+        
+        # 🛠️ NUEVO: Motor de fechas cruzadas (Soporta múltiples eventos simultáneos)
+        query_eventos = text("""
+            SELECT nombre_evento, descripcion
+            FROM Festividades
+            WHERE activo = TRUE
+              AND (
+                  -- Verifica en el año actual (ej. Navidad el 25/12 y hoy es 15/12)
+                  CURRENT_DATE BETWEEN (make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, mes, dia) - (dias_anticipacion * INTERVAL '1 day'))::date 
+                                   AND make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int, mes, dia)
+                  OR
+                  -- Verifica por cruce de fin de año (ej. Evento el 01/01 y hoy es 30/12 del año anterior)
+                  CURRENT_DATE BETWEEN (make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, mes, dia) - (dias_anticipacion * INTERVAL '1 day'))::date 
+                                   AND make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int + 1, mes, dia)
+              )
+        """)
+        
+        eventos = conn.execute(query_eventos).fetchall()
+        
+        if eventos:
+            # Concatena todos los eventos detectados para inyectarlos juntos
+            texto_eventos = " | ".join([f"[{e.nombre_evento}: {e.descripcion}]" for e in eventos])
+            contexto_base += f" EVENTOS ACTUALES DETECTADOS (Cruza y adapta el mensaje a estos eventos si aplica): {texto_eventos}"
+            
+        producto_dict['contexto_ia_extra'] = contexto_base
         return producto_dict
+        
     return None
 
 # ==============================================================================
