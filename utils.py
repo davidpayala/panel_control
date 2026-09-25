@@ -16,8 +16,8 @@ import time
 from io import BytesIO
 from PIL import Image
 import io
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 # ==============================================================================
@@ -1406,71 +1406,123 @@ def ejecutar_auditoria_bidireccional_woo(tienda_url, wc_key, wc_secret):
         yield {"estado": "error", "msg": str(e)}
 
 def generar_pdf_catalogo(df_filtrado):
-    """
-    Genera un PDF agrupado por color con fotos, nombres y precios centrados.
-    Retorna un objeto BytesIO listo para ser descargado en Streamlit.
-    """
     buffer = io.BytesIO()
-    # Configuramos el documento con márgenes
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    # A4 con márgenes de 25. Ancho utilizable = 545. Alto utilizable = 791
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=25, leftMargin=25, topMargin=25, bottomMargin=25)
     elementos = []
 
-    # Estilos de texto (centrados)
     styles = getSampleStyleSheet()
-    estilo_titulo_color = ParagraphStyle(name='TituloColor', parent=styles['Heading1'], alignment=TA_CENTER, textColor='#333333', spaceAfter=15)
-    estilo_nombre = ParagraphStyle(name='NombreProd', parent=styles['Heading2'], alignment=TA_CENTER, spaceAfter=5)
-    estilo_detalles = ParagraphStyle(name='Detalles', parent=styles['Normal'], alignment=TA_CENTER, textColor='#555555')
-    estilo_precio = ParagraphStyle(name='Precio', parent=styles['Heading3'], alignment=TA_CENTER, textColor='#2e7d32')
+    estilo_titulo = ParagraphStyle(
+        name='TituloColor', parent=styles['Heading1'], alignment=TA_CENTER, 
+        textColor='#FFFFFF', backColor='#333333', spaceBefore=20, spaceAfter=20, fontSize=18
+    )
+    # Aumentamos ligeramente los tamaños de fuente al tener más espacio
+    estilo_nombre = ParagraphStyle(name='NombreProd', parent=styles['Heading2'], alignment=TA_CENTER, fontSize=12, leading=14)
+    estilo_detalles = ParagraphStyle(name='Detalles', parent=styles['Normal'], alignment=TA_CENTER, textColor='#666666', fontSize=10)
+    estilo_precio = ParagraphStyle(name='Precio', parent=styles['Heading3'], alignment=TA_CENTER, textColor='#2e7d32', fontSize=14, spaceBefore=8)
 
-    # 1. Asegurar que haya un color, si es Nulo le ponemos uno genérico
     if 'color_principal' not in df_filtrado.columns:
         df_filtrado['color_principal'] = "General"
     df_filtrado['color_principal'] = df_filtrado['color_principal'].fillna('Otros')
-
-    # 2. Agrupar el DataFrame por color
     agrupado = df_filtrado.groupby('color_principal')
 
     for color, grupo in agrupado:
-        # Título Separador por Color
-        elementos.append(Paragraph(f"--- CATÁLOGO: COLOR {str(color).upper()} ---", estilo_titulo_color))
-        elementos.append(Spacer(1, 10))
+        # 1. HOJA INDEPENDIENTE PARA EL TÍTULO
+        elementos.append(Spacer(1, 300))
+        elementos.append(Paragraph(f"CATÁLOGO: COLOR {str(color).upper()}", estilo_titulo))
+        elementos.append(PageBreak())
 
+        # 2. PROCESAMIENTO DE PRODUCTOS
+        productos_color = []
         for _, row in grupo.iterrows():
-            # Nombre del producto (Marca + Modelo + Nombre)
-            nombre = f"{row.get('marca', '')} {row.get('modelo', '')} - {row.get('nombre', '')}".strip()
-            elementos.append(Paragraph(nombre, estilo_nombre))
+            celda = []
             
-            # Imagen Central
+            # --- MEJORA DE RESOLUCIÓN DE IMAGEN ---
             url_img = row.get('url_imagen')
+            img_flowable = Paragraph("(Sin imagen)", estilo_detalles)
             if url_img and isinstance(url_img, str) and url_img.startswith('http'):
                 try:
-                    # Descargamos la imagen temporalmente para inyectarla al PDF
                     req = requests.get(url_img, timeout=5)
-                    img_stream = io.BytesIO(req.content)
-                    # Forzamos tamaño proporcional (ej: 200x200 max)
-                    img = RLImage(img_stream, width=200, height=200, kind='proportional')
-                    img.hAlign = 'CENTER'
-                    elementos.append(img)
+                    if req.status_code == 200:
+                        img_pil = Image.open(io.BytesIO(req.content))
+                        if img_pil.mode in ("RGBA", "P"):
+                            img_pil = img_pil.convert("RGB")
+                        
+                        # Subimos la resolución a 400x400px y la calidad a 85
+                        img_pil.thumbnail((400, 400), Image.Resampling.LANCZOS)
+                        img_compressed = io.BytesIO()
+                        img_pil.save(img_compressed, format="JPEG", quality=85, optimize=True)
+                        img_compressed.seek(0)
+                        
+                        # Renderizamos más grande en el PDF (230x230 puntos)
+                        img_flowable = RLImage(img_compressed, width=230, height=230, kind='proportional')
+                        img_flowable.hAlign = 'CENTER'
                 except Exception:
-                    elementos.append(Paragraph("(Imagen no disponible)", estilo_detalles))
-            else:
-                elementos.append(Paragraph("(Sin imagen)", estilo_detalles))
-
-            elementos.append(Spacer(1, 8))
-
-            # Detalles (SKU y Medida)
-            detalles = f"SKU: {row.get('sku', '')} | Medida: {row.get('medida', '')}"
-            elementos.append(Paragraph(detalles, estilo_detalles))
-            elementos.append(Spacer(1, 3))
-
-            # Precio
-            precio = float(row.get('precio', 0.0))
-            elementos.append(Paragraph(f"Precio: S/ {precio:.2f}", estilo_precio))
+                    img_flowable = Paragraph("(Error visual)", estilo_detalles)
             
-            # Espaciado gigante entre un producto y otro
-            elementos.append(Spacer(1, 40)) 
+            celda.append(img_flowable)
+            celda.append(Spacer(1, 12))
 
-    # Construimos el PDF
+            # --- TEXTOS ---
+            nombre = f"{row.get('marca', '')} {row.get('modelo', '')} - {row.get('nombre', 'Producto')}".strip()
+            celda.append(Paragraph(nombre, estilo_nombre))
+            
+            # --- LÓGICA DIÁMETRO (mm) vs LARGO (cm) ---
+            macro = str(row.get('macro_categoria', row.get('categoria', ''))).strip().lower()
+            val_medida = str(row.get('medida', '')).strip()
+            val_diam = str(row.get('diametro', '')).strip()
+
+            # Si es peluca (asociada a pelucat.pe)
+            if 'peluca' in macro:
+                if val_medida and val_medida.lower() != 'nan':
+                    # Limpiamos si el usuario ya había escrito "cm" en la BD para evitar "50cm cm"
+                    med_clean = val_medida.lower().replace('cm', '').strip()
+                    med_final = f"{med_clean} cm"
+                else:
+                    med_final = "Estándar"
+                etiqueta = "Largo"
+            # Si es Lente de contacto (asociado a kmlentes.pe)
+            else:
+                if val_diam and val_diam.lower() != 'nan':
+                    med_clean = val_diam.lower().replace('mm', '').strip()
+                    med_final = f"{med_clean} mm"
+                else:
+                    med_final = "Estándar"
+                etiqueta = "Diámetro"
+
+            detalles = f"SKU: {row.get('sku', 'N/A')} | {etiqueta}: {med_final}"
+            celda.append(Paragraph(detalles, estilo_detalles))
+            
+            precio = float(row.get('precio', 0.0))
+            celda.append(Paragraph(f"Precio: S/ {precio:.2f}", estilo_precio))
+
+            productos_color.append(celda)
+
+        # 3. PAGINACIÓN ESTRICTA (4 ÍTEMS POR HOJA: 2 Columnas x 2 Filas)
+        for i in range(0, len(productos_color), 4):
+            pagina_items = productos_color[i:i+4]
+            
+            tabla_datos = []
+            for j in range(0, len(pagina_items), 2):
+                fila = pagina_items[j:j+2]
+                if len(fila) == 1:
+                    fila.append([]) # Celda vacía si es impar
+                tabla_datos.append(fila)
+
+            # Altura fija de 380 puntos para dividir la hoja exactamente en 2 filas
+            t = Table(tabla_datos, colWidths=[272.5, 272.5], rowHeights=[380] * len(tabla_datos))
+            t.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), # Centramos verticalmente en su bloque
+                ('PADDING', (0,0), (-1,-1), 10),
+            ]))
+            
+            elementos.append(t)
+            elementos.append(PageBreak())
+
+    if elementos and isinstance(elementos[-1], PageBreak):
+        elementos.pop()
+
     doc.build(elementos)
     buffer.seek(0)
     return buffer

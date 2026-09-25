@@ -79,31 +79,36 @@ def vista_productos():
 
         def formatear_detalles(row):
             partes = []
-            macro = str(row.get('macro_categoria', '')).strip()
+            macro = str(row.get('macro_categoria', '')).strip().lower()
 
-            if macro == 'Pelucas':
-                if pd.notna(row['color_principal']) and str(row['color_principal']).strip().lower() != 'nan':
-                    partes.append(f"🎨 {row['color_principal']}")
-                
-                largo = str(row['medida']).strip() if pd.notna(row['medida']) and str(row['medida']).strip() not in ['', 'nan', '0.0'] else str(row['diametro'])
-                if largo and largo.lower() != 'nan' and _clean_flt(largo) > 0:
-                    txt_largo = largo if 'cm' in largo.lower() else f"{largo}cm"
-                    partes.append(f"📏 Largo: {txt_largo}")
+            # 1. Etiqueta de Color
+            color = str(row.get('color_principal', '')).strip()
+            if color and color.lower() not in ['nan', 'none', '']:
+                partes.append(f"🎨 {color}")
+
+            # 2. Etiqueta de Medida (Largo en cm vs Diámetro en mm)
+            if 'peluca' in macro:
+                largo = str(row.get('medida', '')).strip()
+                if largo and largo.lower() not in ['nan', '0', '0.0', '']:
+                    # Limpiamos duplicados de "cm" si ya venían de la BD
+                    largo_clean = largo.lower().replace('cm', '').strip()
+                    partes.append(f"📏 Largo: {largo_clean} cm")
             else:
-                if pd.notna(row['color_principal']) and str(row['color_principal']).strip().lower() != 'nan':
-                    partes.append(str(row['color_principal']))
-                if pd.notna(row['diametro']) and _clean_flt(row['diametro']) > 0:
-                    partes.append(f"Dia:{row['diametro']}")
-                if pd.notna(row['medida']) and str(row['medida']).strip().lower() not in ['', 'nan']:
-                    partes.append(f"Med:{row['medida']}")
+                diametro = str(row.get('diametro', '')).strip()
+                if diametro and diametro.lower() not in ['nan', '0', '0.0', '']:
+                    diam_clean = diametro.lower().replace('mm', '').strip()
+                    partes.append(f"📏 Diám: {diam_clean} mm")
 
-            return " | ".join(partes) if partes else "Estandar"
+            return " | ".join(partes) if partes else "Estándar"
 
         df_calc['detalles_info'] = df_calc.apply(formatear_detalles, axis=1)
 
+        # --- SECCIÓN VISUAL DE BÚSQUEDA Y FILTROS ---
         with st.container(border=True):
-            st.markdown("##### 🔍 Filtros Avanzados de Búsqueda")
-            c_mac, c_cat, c_stk, c_txt, c_btn = st.columns([1.5, 1.5, 1.5, 2.5, 1])
+            st.markdown("##### 🔍 Búsqueda Rápida")
+            
+            # FILTROS PRINCIPALES (Siempre visibles)
+            c_mac, c_cat, c_txt, c_btn = st.columns([1.5, 1.5, 3, 1])
             
             with c_btn:
                 st.write("") 
@@ -111,7 +116,7 @@ def vista_productos():
                     if 'df_inventario' in st.session_state: del st.session_state['df_inventario']
                     st.rerun()
 
-            lineas_disp = ["Todas"] + sorted(df_calc['macro_categoria'].unique().tolist())
+            lineas_disp = ["Todas"] + sorted(df_calc['macro_categoria'].dropna().unique().tolist())
             filtro_macro = c_mac.selectbox("📂 Línea Mayor:", lineas_disp)
             if filtro_macro != "Todas":
                 df_calc = df_calc[df_calc['macro_categoria'] == filtro_macro]
@@ -121,31 +126,70 @@ def vista_productos():
             if filtro_cat != "Todas":
                 df_calc = df_calc[df_calc['categoria'] == filtro_cat]
 
-            filtro_stk = c_stk.selectbox("📦 Estado Almacén:", [
-                "Todos", 
-                "Con Stock (>0)", 
-                "Sin Stock (0)", 
-                "En Camino (>0)",
-                "⚠️ Stock Sobrante (Pendiente Asignar)"
-            ])
-            if filtro_stk == "Con Stock (>0)": df_calc = df_calc[df_calc['stock_interno'] > 0]
-            elif filtro_stk == "Sin Stock (0)": df_calc = df_calc[df_calc['stock_interno'] <= 0]
-            elif filtro_stk == "En Camino (>0)": df_calc = df_calc[df_calc['stock_transito'] > 0]
-            elif filtro_stk == "⚠️ Stock Sobrante (Pendiente Asignar)":
-                # LÓGICA DE AUDITORÍA: Stock físico es mayor a lo que has guardado en los estantes
-                df_calc = df_calc[(df_calc['stock_interno'] > 0) & (df_calc['stock_interno'] > df_calc['stock_asignado'])]
+            filtro_txt = c_txt.text_input("🔎 Búsqueda Libre:", placeholder="SKU, Marca, Modelo o Color...")
 
-            filtro_txt = c_txt.text_input("🔎 Búsqueda Libre:", placeholder="SKU, Marca, Modelo o Ubicación...")
+            # FILTROS SECUNDARIOS (Ocultos en desplegable)
+            with st.expander("🛠️ Filtros Adicionales / Búsqueda Avanzada"):
+                # 🆕 Cambiamos a 5 columnas para dar espacio a la Medida
+                cf_col, cf_dia, cf_med, cf_stk_int, cf_stk_ext = st.columns(5)
+                
+                # Filtro por Color
+                colores_disp = ["Todos"] + sorted(df_calc['color_principal'].dropna().astype(str).unique().tolist())
+                filtro_color = cf_col.selectbox("🎨 Color:", colores_disp)
+                if filtro_color != "Todos":
+                    df_calc = df_calc[df_calc['color_principal'] == filtro_color]
+                
+                # Filtro por Diámetro
+                diametros_disp = ["Todos"] + sorted(df_calc['diametro'].dropna().astype(str).unique().tolist())
+                filtro_dia = cf_dia.selectbox("📏 Diámetro:", diametros_disp)
+                if filtro_dia != "Todos":
+                    df_calc = df_calc[df_calc['diametro'].astype(str) == filtro_dia]
+
+                # 🆕 Filtro por Medida (Graduación o Largo)
+                medidas_crudas = df_calc['medida'].dropna().astype(str).unique().tolist()
+                medidas_disp = sorted([m for m in medidas_crudas if m.strip().lower() not in ['nan', 'none', '']])
+                
+                opciones_medida = ["Todas", "Medida Cero (0.00)", "Con Medida (≠ 0)"] + medidas_disp
+                filtro_med = cf_med.selectbox("👁️ Medida:", opciones_medida)
+                
+                valores_cero = ['0', '0.0', '0.00', 'nan', 'none', '']
+                if filtro_med == "Medida Cero (0.00)":
+                    df_calc = df_calc[df_calc['medida'].astype(str).str.strip().str.lower().isin(valores_cero)]
+                elif filtro_med == "Con Medida (≠ 0)":
+                    df_calc = df_calc[~df_calc['medida'].astype(str).str.strip().str.lower().isin(valores_cero)]
+                elif filtro_med != "Todas":
+                    df_calc = df_calc[df_calc['medida'].astype(str) == filtro_med]
+
+                # Filtro: Stock Interno
+                filtro_stk = cf_stk_int.selectbox("📦 Almacén Local:", [
+                    "Todos", "Con Stock (>0)", "Sin Stock (0)", "En Camino (>0)", "⚠️ Stock Sobrante"
+                ])
+                if filtro_stk == "Con Stock (>0)": df_calc = df_calc[df_calc['stock_interno'] > 0]
+                elif filtro_stk == "Sin Stock (0)": df_calc = df_calc[df_calc['stock_interno'] <= 0]
+                elif filtro_stk == "En Camino (>0)": df_calc = df_calc[df_calc['stock_transito'] > 0]
+                elif filtro_stk == "⚠️ Stock Sobrante":
+                    df_calc = df_calc[(df_calc['stock_interno'] > 0) & (df_calc['stock_interno'] > df_calc['stock_asignado'])]
+                
+                # Filtro: Stock Externo
+                filtro_stk_ext = cf_stk_ext.selectbox("🏢 Stock Externo:", [
+                    "Todos", "Con Stock (>0)", "Sin Stock (0)"
+                ])
+                if filtro_stk_ext == "Con Stock (>0)": df_calc = df_calc[df_calc['stock_externo'] > 0]
+                elif filtro_stk_ext == "Sin Stock (0)": df_calc = df_calc[df_calc['stock_externo'] <= 0]
+
+            # Aplicar búsqueda libre por texto
             if filtro_txt:
                 f = filtro_txt.lower()
                 df_calc = df_calc[
                     df_calc['nombre_completo'].str.lower().str.contains(f, na=False) |
                     df_calc['sku'].str.lower().str.contains(f, na=False) |
+                    df_calc['color_principal'].str.lower().str.contains(f, na=False) |
                     df_calc['ubicacion_antigua'].str.lower().str.contains(f, na=False) |
                     df_calc['ubicacion_nueva'].str.lower().str.contains(f, na=False) |
                     df_calc['importacion'].str.lower().str.contains(f, na=False)
                 ]
 
+        # --- PREPARACIÓN DEL DATAFRAME FINAL PARA EL EDITOR ---
         df_final = df_calc[[
             'url_imagen', 'sku', 'id_producto', 'linea_corta', 'categoria', 'nombre_completo', 
             'detalles_info', 'stock_interno', 'stock_externo', 'stock_transito',

@@ -2,7 +2,7 @@
 env/
 .env
 token_google
-credentials.json
+token.json
 __pycache__/
 *.pyc
 .sessions/
