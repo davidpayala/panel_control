@@ -130,80 +130,133 @@ def render_estadisticas():
             df_stk_cat = df_stock.groupby('Categoría', as_index=False)['Stock'].sum() if macro_filtro_stk == "Todas" else df_stock[df_stock['Macrocategoría'] == macro_filtro_stk].groupby('Categoría', as_index=False)['Stock'].sum()
             st.dataframe(df_stk_cat, use_container_width=True, hide_index=True)
             st.bar_chart(df_stk_cat.set_index('Categoría')['Stock'])
-
-    # ==========================================================================
-    # 4. EVOLUCIÓN HISTÓRICA DEL STOCK (¡DESACOPLADO POR LLAVE COMPUESTA!)
+# ==========================================================================
+    # 4. EVOLUCIÓN HISTÓRICA (Híbrido: Movimientos pasados + CRON actual/futuro)
     # ==========================================================================
     st.subheader("📊 Evolución del Stock Histórico")
-    
-    query_mov = text("""
-        SELECT 
+
+    # 1. HISTÓRICO ANTIGUO MEJORADO (Antes de Septiembre 2026)
+    # Toma la última foto mensual de stock_nuevo registrada en movimientos para cada producto
+    query_old = text("""
+        SELECT DISTINCT ON (DATE_TRUNC('month', m.fecha)::DATE, m.sku)
             DATE_TRUNC('month', m.fecha)::DATE AS "Mes",
+            m.sku AS "SKU",
             CASE 
                 WHEN prod.macro_categoria ILIKE 'peluca%' OR m.sku ILIKE 'WB-%' OR m.sku ILIKE 'WIG-%' THEN 'Pelucas'
                 WHEN m.sku IS NULL THEN 'Otros'
                 ELSE 'Lentes'
             END AS "Macrocategoría",
             COALESCE(prod.categoria, 'Otros') AS "Categoría",
-            SUM(COALESCE(m.stock_nuevo, 0) - COALESCE(m.stock_anterior, 0)) AS "Neto"
+            m.stock_nuevo AS "Stock"
         FROM movimientos m
         LEFT JOIN variantes var ON m.sku = var.sku
         LEFT JOIN productos prod ON var.id_producto = prod.id_producto
-        WHERE m.fecha IS NOT NULL
-        GROUP BY 1, 2, 3
-        ORDER BY 1 ASC;
+        WHERE m.fecha IS NOT NULL AND m.fecha < '2026-09-01'
+        ORDER BY DATE_TRUNC('month', m.fecha)::DATE, m.sku, m.fecha DESC;
     """)
+
+    # 2. HISTÓRICO NUEVO AUTOMATIZADO (Desde Septiembre 2026 en adelante)
+    query_new = text("""
+        SELECT 
+            h.mes::DATE AS "Mes",
+            CASE 
+                WHEN prod.macro_categoria ILIKE 'peluca%' OR h.sku ILIKE 'WB-%' OR h.sku ILIKE 'WIG-%' THEN 'Pelucas'
+                WHEN h.sku IS NULL THEN 'Otros'
+                ELSE 'Lentes'
+            END AS "Macrocategoría",
+            COALESCE(prod.categoria, 'Otros') AS "Categoría",
+            SUM(h.stock) AS "Stock"
+        FROM stock_mensual_historico h
+        LEFT JOIN variantes var ON h.sku = var.sku
+        LEFT JOIN productos prod ON var.id_producto = prod.id_producto
+        WHERE h.mes >= '2026-09-01'
+        GROUP BY 1, 2, 3
+        ORDER BY h.mes ASC;
+    """)
+
     with engine.connect() as conn:
-        df_mov = pd.read_sql(query_mov, conn)
+        df_old_raw = pd.read_sql(query_old, conn)
+        # Try/Except por si en el futuro hay cortes de permisos; evita que todo el panel colapse
+        try:
+            df_new = pd.read_sql(query_new, conn)
+        except Exception:
+            df_new = pd.DataFrame()
 
-    if not df_mov.empty and not df_stock.empty:
-        df_mov['Mes'] = pd.to_datetime(df_mov['Mes'])
+    # --- Procesar línea de tiempo antigua ---
+    if not df_old_raw.empty:
+        df_old_raw['Mes'] = pd.to_datetime(df_old_raw['Mes'])
+        df_old_raw['Cat_Compuesta'] = df_old_raw['Macrocategoría'] + " -> " + df_old_raw['Categoría']
         
-        # 1. CREACIÓN DE LA LLAVE COMPUESTA ANTI-HOMONIMIA
-        df_mov['Cat_Compuesta'] = df_mov['Macrocategoría'] + " -> " + df_mov['Categoría']
+        df_pivot_old = df_old_raw.pivot_table(
+            index='Mes', columns=['Cat_Compuesta', 'SKU'], values='Stock', aggfunc='last'
+        )
+        # Forzar el relleno ffill hasta agosto de 2026
+        rango_old = pd.date_range(start=df_pivot_old.index.min(), end=pd.to_datetime('2026-08-01'), freq='MS')
+        df_pivot_old = df_pivot_old.reindex(rango_old).ffill().fillna(0)
+        df_old = df_pivot_old.T.groupby(level='Cat_Compuesta').sum().T
+    else:
+        df_old = pd.DataFrame()
+
+    # --- Procesar línea de tiempo nueva ---
+    if not df_new.empty:
+        df_new['Mes'] = pd.to_datetime(df_new['Mes'])
+        df_new['Cat_Compuesta'] = df_new['Macrocategoría'] + " -> " + df_new['Categoría']
+        df_new_pivot = df_new.pivot_table(
+            index='Mes', columns='Cat_Compuesta', values='Stock', aggfunc='sum'
+        ).fillna(0)
+    else:
+        df_new_pivot = pd.DataFrame()
+
+    # --- FUSIONAR PASADO Y PRESENTE ---
+    df_acumulado = pd.concat([df_old, df_new_pivot]).fillna(0)
+
+    # --- INYECCIÓN DE LA VERDAD ABSOLUTA (Mes Actual) ---
+    if not df_stock.empty:
         df_stock['Cat_Compuesta'] = df_stock['Macrocategoría'] + " -> " + df_stock['Categoría']
-
-        df_pivot = df_mov.pivot_table(index='Mes', columns='Cat_Compuesta', values='Neto', aggfunc='sum').fillna(0)
-        stock_actual_serie = df_stock.set_index('Cat_Compuesta')['Stock']
-
-        for cat in stock_actual_serie.index:
-            if cat not in df_pivot.columns: df_pivot[cat] = 0.0
-
-        movimientos_totales = df_pivot.sum()
-        stock_base = stock_actual_serie.fillna(0) - movimientos_totales.fillna(0)
+        stock_actual_agrupado = df_stock.groupby('Cat_Compuesta')['Stock'].sum()
         
-        df_acumulado = df_pivot.cumsum() + stock_base
+        # Si no había data histórica, creamos el df con el mes actual
+        if df_acumulado.empty:
+            df_acumulado = pd.DataFrame(index=[pd.Timestamp.today().replace(day=1)])
+            
+        # Reindexamos uniendo todo sin espacios y rellenando meses faltantes
+        rango_total = pd.date_range(start=df_acumulado.index.min(), end=pd.Timestamp.today().replace(day=1), freq='MS')
+        df_acumulado = df_acumulado.reindex(rango_total).ffill().fillna(0)
+        
+        mes_actual_str = pd.Timestamp.today().strftime('%Y - %m')
         df_acumulado.index = df_acumulado.index.strftime('%Y - %m')
         
-        col_e1, col_e2 = st.columns([1, 2])
-        macro_evo_sel = col_e1.selectbox("📂 Aislar Curva por Línea Mayor:", ["Todas", "Lentes", "Pelucas", "Otros"], key="evo_mac_sel")
-        
-        todas_compuestas = sorted(df_acumulado.columns.tolist())
+        # Sobreescribimos la estimación del último mes en el gráfico con el stock vivo
+        for cat in stock_actual_agrupado.index:
+            if cat not in df_acumulado.columns:
+                df_acumulado[cat] = 0.0
+            df_acumulado.loc[mes_actual_str, cat] = stock_actual_agrupado[cat]
 
-        if macro_evo_sel != "Todas":
-            opciones_grafico = [c for c in todas_compuestas if c.startswith(f"{macro_evo_sel} -> ")]
-        else:
-            opciones_grafico = todas_compuestas
-            
-        default_grafico = [c for c in opciones_grafico if not c.startswith("Otros -> ")]
-        if not default_grafico and opciones_grafico: default_grafico = opciones_grafico
+    # --- RENDERIZADO DE INTERFAZ ---
+    col_e1, col_e2 = st.columns([1, 2])
+    macro_evo_sel = col_e1.selectbox("📂 Aislar Curva por Línea Mayor:", ["Todas", "Lentes", "Pelucas", "Otros"], key="evo_mac_sel")
+    
+    todas_compuestas = sorted(df_acumulado.columns.tolist()) if not df_acumulado.empty else []
 
-        # 2. SELECTOR MÚLTIPLE INTELIGENTE CON FORMATEADOR VISUAL
-        categorias_seleccionadas = col_e2.multiselect(
-            "📑 Subcategorías a graficar en el tiempo:",
-            options=opciones_grafico,
-            default=default_grafico,
-            format_func=lambda x: f"[{x.split(' -> ')[0]}] {x.split(' -> ')[1]}" if macro_evo_sel == "Todas" else x.split(" -> ")[1]
-        )
-        
-        if categorias_seleccionadas:
-            st.line_chart(df_acumulado[categorias_seleccionadas])
-            with st.expander("🔍 Ver tabla detallada de la evolución del stock"):
-                # Limpiamos los títulos de la tabla para que sea legible en Excel
-                df_render_tabla = df_acumulado[categorias_seleccionadas].copy()
-                df_render_tabla.columns = [c.replace(" -> ", " -> ") for c in df_render_tabla.columns]
-                st.dataframe(df_render_tabla, use_container_width=True)
-        else:
-            st.warning("⚠️ Selecciona al menos una subcategoría.")
+    if macro_evo_sel != "Todas":
+        opciones_grafico = [c for c in todas_compuestas if c.startswith(f"{macro_evo_sel} -> ")]
     else:
-        st.info("Aún no hay suficientes movimientos de inventario registrados.")
+        opciones_grafico = todas_compuestas
+        
+    default_grafico = [c for c in opciones_grafico if not c.startswith("Otros -> ")]
+    if not default_grafico and opciones_grafico: default_grafico = opciones_grafico
+
+    categorias_seleccionadas = col_e2.multiselect(
+        "📑 Subcategorías a graficar en el tiempo:",
+        options=opciones_grafico,
+        default=default_grafico,
+        format_func=lambda x: f"[{x.split(' -> ')[0]}] {x.split(' -> ')[1]}" if macro_evo_sel == "Todas" else x.split(" -> ")[1]
+    )
+    
+    if categorias_seleccionadas:
+        st.line_chart(df_acumulado[categorias_seleccionadas])
+        with st.expander("🔍 Ver tabla detallada de la evolución del stock"):
+            df_render_tabla = df_acumulado[categorias_seleccionadas].copy()
+            st.dataframe(df_render_tabla, use_container_width=True)
+    else:
+        st.warning("⚠️ Selecciona al menos una subcategoría.")

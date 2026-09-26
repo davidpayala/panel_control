@@ -71,33 +71,43 @@ def main():
         # ==========================================
         # 🚨 MONITOREO DE WHATSAPP EN TIEMPO REAL
         # ==========================================
-        try:
-            import requests
-            waha_url = os.getenv("WAHA_URL", "http://localhost:3000")
-            waha_key = os.getenv("WAHA_KEY", "")
-            
-            headers = {"Accept": "application/json"}
-            if waha_key:
-                headers["X-Api-Key"] = waha_key
+        import requests
+        
+        # Definir ambas instancias de WAHA
+        waha_url_3000 = os.getenv("WAHA_URL", "http://localhost:3000")
+        waha_url_3001 = os.getenv("WAHA_URL_ESTADOS", "http://localhost:3001")
+        waha_key = os.getenv("WAHA_KEY", "")
+        
+        headers = {"Accept": "application/json"}
+        if waha_key:
+            headers["X-Api-Key"] = waha_key
+
+        instancias_waha = [
+            {"nombre": "Principal (3000)", "url": waha_url_3000},
+            {"nombre": "Estados (3001)", "url": waha_url_3001}
+        ]
+
+        # Monitorear cada instancia de forma independiente
+        for instancia in instancias_waha:
+            try:
+                res = requests.get(f"{instancia['url']}/api/sessions?all=true", headers=headers, timeout=2)
                 
-            # Hacemos ping directo a WAHA con un timeout corto de 2 segundos
-            res = requests.get(f"{waha_url}/api/sessions?all=true", headers=headers, timeout=2)
-            
-            if res.status_code == 200:
-                sesiones = res.json()
-                for sesion in sesiones:
-                    estado = sesion.get('status')
-                    nombre_sesion = sesion.get('name')
-                    
-                    if estado == "SCAN_QR_CODE":
-                        st.error(f"🚨 **¡WHATSAPP DESVINCULADO!**\n\nLa sesión **{nombre_sesion}** pide código QR. Ve al menú Opciones o a WAHA para escanearlo y reconectar.")
-                    elif estado in ["FAILED", "STOPPED"]:
-                        st.error(f"⚠️ **FALLO DE SESIÓN**\n\nLa sesión **{nombre_sesion}** está colapsada ({estado}). El motor intentará reiniciarla en breve.")
-            else:
-                 st.error("🚨 **ALERTA CRÍTICA**\n\nLa API de WAHA no responde. Revisa el contenedor.")
-        except requests.exceptions.RequestException:
-            # Si lanza excepción, el contenedor de Docker está apagado
-            st.error("🚨 **SISTEMA CAÍDO**\n\nEl contenedor WAHA está apagado o inaccesible.")
+                if res.status_code == 200:
+                    sesiones = res.json()
+                    for sesion in sesiones:
+                        estado = sesion.get('status')
+                        nombre_sesion = sesion.get('name')
+                        
+                        if estado == "SCAN_QR_CODE":
+                            st.error(f"🚨 **QR REQUERIDO: {instancia['nombre']}**\n\nLa sesión **{nombre_sesion}** se desvinculó. Escanéalo en Opciones o WAHA para reconectar.")
+                        elif estado in ["FAILED", "STOPPED"]:
+                            st.error(f"⚠️ **FALLO DE SESIÓN: {instancia['nombre']}**\n\nLa sesión **{nombre_sesion}** está colapsada ({estado}).")
+                else:
+                    st.error(f"🚨 **ALERTA CRÍTICA: {instancia['nombre']}**\n\nLa API no responde (Status {res.status_code}).")
+            except requests.exceptions.RequestException:
+                # Si lanza excepción, el contenedor Docker de ese puerto está apagado
+                puerto = instancia['url'].split(':')[-1]
+                st.error(f"🚨 **CONTENEDOR CAÍDO: {instancia['nombre']}**\n\nEl contenedor WAHA del puerto {puerto} está apagado o inaccesible.")
             
         # ==========================================
         # 🔔 BANDEJA DE AVISOS DEL SERVIDOR (INBOX)
