@@ -152,7 +152,7 @@ def main():
         except Exception:
             pass
 
-        # ==========================================
+# ==========================================
         # 🔄 RADAR DE ACTUALIZACIONES DE WAHA
         # ==========================================
         @st.cache_data(ttl=43200) # Revisa silenciosamente solo 1 vez cada 12 horas
@@ -181,7 +181,8 @@ def main():
             except:
                 return None # Si no hay internet o falla, ignorar silenciosamente
 
-        alerta_update = verificar_actualizacion_waha(waha_url, waha_key)
+        # CORRECCIÓN: Usamos waha_url_3000 en lugar del antiguo waha_url
+        alerta_update = verificar_actualizacion_waha(waha_url_3000, waha_key)
         if alerta_update:
             st.warning(alerta_update)
         # ==========================================
