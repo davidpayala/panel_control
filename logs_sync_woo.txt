@@ -2,7 +2,7 @@
 📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
 
 ==============================================================
-🌐 [2026-09-26 12:00:02] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
+🌐 [2026-10-04 08:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
 ==============================================================
 📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
 🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
@@ -13,10 +13,106 @@
 📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
    • Lotes Simples:  100% completado (904/904)
    • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:05:07
+   • Tiempo tomado:  0:04:42
 
 ==============================================================
-🌐 [2026-09-26 12:05:09] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
+🌐 [2026-10-04 08:04:44] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
+==============================================================
+📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
+🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
+  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
+🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
+🚀 Enviando variaciones a Pelucas (pelucat.pe)...
+
+📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
+   • Lotes Simples:  100% completado (2050/2050)
+   • Variaciones:    100% completado (2/2)
+   • Tiempo tomado:  0:02:53
+
+🎉 ¡Orquestación de inventario completada!
+⏳ Extrayendo inventario maestro unificado de PostgreSQL...
+📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
+
+==============================================================
+🌐 [2026-10-04 12:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
+==============================================================
+📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
+🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
+  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
+🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
+🚀 Enviando variaciones a Lentes (kmlentes.pe)...
+
+📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
+   • Lotes Simples:  100% completado (904/904)
+   • Variaciones:    100% completado (884/884)
+   • Tiempo tomado:  0:04:35
+
+==============================================================
+🌐 [2026-10-04 12:04:36] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
+==============================================================
+📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
+🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
+  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
+🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
+🚀 Enviando variaciones a Pelucas (pelucat.pe)...
+
+📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
+   • Lotes Simples:  100% completado (2050/2050)
+   • Variaciones:    100% completado (2/2)
+   • Tiempo tomado:  0:02:50
+
+🎉 ¡Orquestación de inventario completada!
+⏳ Extrayendo inventario maestro unificado de PostgreSQL...
+📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
+
+==============================================================
+🌐 [2026-10-04 16:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
+==============================================================
+📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
+🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
+  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
+🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
+🚀 Enviando variaciones a Lentes (kmlentes.pe)...
+
+📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
+   • Lotes Simples:  100% completado (904/904)
+   • Variaciones:    100% completado (884/884)
+   • Tiempo tomado:  0:04:28
+
+==============================================================
+🌐 [2026-10-04 16:04:29] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
+==============================================================
+📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
+🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
+  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
+🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
+🚀 Enviando variaciones a Pelucas (pelucat.pe)...
+
+📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
+   • Lotes Simples:  100% completado (2050/2050)
+   • Variaciones:    100% completado (2/2)
+   • Tiempo tomado:  0:02:53
+
+🎉 ¡Orquestación de inventario completada!
+⏳ Extrayendo inventario maestro unificado de PostgreSQL...
+📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
+
+==============================================================
+🌐 [2026-10-04 20:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
+==============================================================
+📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
+🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
+  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
+🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
+🚀 Enviando variaciones a Lentes (kmlentes.pe)...
+
+📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
+   • Lotes Simples:  100% completado (904/904)
+   • Variaciones:    100% completado (884/884)
+   • Tiempo tomado:  0:04:48
+
+==============================================================
+🌐 [2026-10-04 20:04:50] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
 ==============================================================
 📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
 🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
@@ -34,167 +130,7 @@
 📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
 
 ==============================================================
-🌐 [2026-09-26 16:00:02] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:05:05
-
-==============================================================
-🌐 [2026-09-26 16:05:07] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:55
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-26 20:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:05:28
-
-==============================================================
-🌐 [2026-09-26 20:05:29] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:52
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-26 23:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:41
-
-==============================================================
-🌐 [2026-09-26 23:04:42] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:40
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-27 08:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:54
-
-==============================================================
-🌐 [2026-09-27 08:04:55] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:45
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-27 12:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:58
-
-==============================================================
-🌐 [2026-09-27 12:04:59] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:49
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-27 16:00:02] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
+🌐 [2026-10-04 23:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
 ==============================================================
 📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
 🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
@@ -208,103 +144,7 @@
    • Tiempo tomado:  0:04:38
 
 ==============================================================
-🌐 [2026-09-27 16:04:40] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:50
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-27 20:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:41
-
-==============================================================
-🌐 [2026-09-27 20:04:43] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:48
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-27 23:00:02] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:27
-
-==============================================================
-🌐 [2026-09-27 23:04:29] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:50
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-28 08:00:02] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:05:07
-
-==============================================================
-🌐 [2026-09-28 08:05:09] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
+🌐 [2026-10-04 23:04:39] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
 ==============================================================
 📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
 🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
@@ -322,7 +162,7 @@
 📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
 
 ==============================================================
-🌐 [2026-09-28 12:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
+🌐 [2026-10-05 08:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
 ==============================================================
 📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
 🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
@@ -333,42 +173,10 @@
 📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
    • Lotes Simples:  100% completado (904/904)
    • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:10:34
+   • Tiempo tomado:  0:04:54
 
 ==============================================================
-🌐 [2026-09-28 12:10:36] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:55
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-28 16:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:25:47
-
-==============================================================
-🌐 [2026-09-28 16:25:48] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
+🌐 [2026-10-05 08:04:55] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
 ==============================================================
 📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
 🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
@@ -379,326 +187,6 @@
 📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
    • Lotes Simples:  100% completado (2050/2050)
    • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:48
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-29 08:00:02] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:55
-
-==============================================================
-🌐 [2026-09-29 08:04:57] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:47
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-29 12:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:53
-
-==============================================================
-🌐 [2026-09-29 12:04:55] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:53
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-29 16:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:34
-
-==============================================================
-🌐 [2026-09-29 16:04:36] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:53
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-29 20:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:43
-
-==============================================================
-🌐 [2026-09-29 20:04:44] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:49
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-29 23:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:04:40
-
-==============================================================
-🌐 [2026-09-29 23:04:41] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:49
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-30 08:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:05:25
-
-==============================================================
-🌐 [2026-09-30 08:05:27] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:47
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-30 12:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:06:33
-
-==============================================================
-🌐 [2026-09-30 12:06:34] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:54
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-30 16:00:02] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:05:18
-
-==============================================================
-🌐 [2026-09-30 16:05:21] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:53
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-30 20:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:05:16
-
-==============================================================
-🌐 [2026-09-30 20:05:18] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:41
-
-🎉 ¡Orquestación de inventario completada!
-⏳ Extrayendo inventario maestro unificado de PostgreSQL...
-📦 Reparto local listo -> LENTES: 1788 SKUs | PELUCAS: 2052 SKUs.
-
-==============================================================
-🌐 [2026-09-30 23:00:01] INICIANDO SINCRONIZACIÓN PARA: LENTES (KMLENTES.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Lentes (kmlentes.pe)...
-🔗 Mapeo de Lentes (kmlentes.pe) listo. SKUs totales detectados en la Web: 1788.
-  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.
-🚀 Enviando 904 simples a Lentes (kmlentes.pe)...
-🚀 Enviando variaciones a Lentes (kmlentes.pe)...
-
-📊 RESUMEN DE TAREAS PARA LENTES (KMLENTES.PE):
-   • Lotes Simples:  100% completado (904/904)
-   • Variaciones:    100% completado (884/884)
-   • Tiempo tomado:  0:05:12
-
-==============================================================
-🌐 [2026-09-30 23:05:14] INICIANDO SINCRONIZACIÓN PARA: PELUCAS (PELUCAT.PE)
-==============================================================
-📥 Descargando y mapeando catálogo web de Pelucas (pelucat.pe)...
-🔗 Mapeo de Pelucas (pelucat.pe) listo. SKUs totales detectados en la Web: 2058.
-  ⚠️ [FALTA EN BD]:  6 SKUs de la web no están registrados en PostgreSQL.
-🚀 Enviando 2050 simples a Pelucas (pelucat.pe)...
-🚀 Enviando variaciones a Pelucas (pelucat.pe)...
-
-📊 RESUMEN DE TAREAS PARA PELUCAS (PELUCAT.PE):
-   • Lotes Simples:  100% completado (2050/2050)
-   • Variaciones:    100% completado (2/2)
-   • Tiempo tomado:  0:02:48
+   • Tiempo tomado:  0:02:57
 
 🎉 ¡Orquestación de inventario completada!

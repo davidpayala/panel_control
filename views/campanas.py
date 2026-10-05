@@ -451,6 +451,129 @@ def render_tab_facebook(config):
                 conn.execute(text("UPDATE Configuracion_Campanas SET prompt_fb = :pfb"), {"pfb": p_fb})
             st.toast("✅ ¡Personalidad FB actualizada!")
             st.rerun()
+# ==============================================================================
+# 🧟 PESTAÑA 5: ZOMBIES
+# ==============================================================================
+def render_tab_zombies(config):
+    st.subheader("🧟 Configuración de Reactivación Zombie")
+    
+    # --- 1. CONFIGURACIÓN DE NIVELES ZOMBIE ---
+    with st.form("form_config_zombies"):
+        st.markdown("**⚙️ Límites y Probabilidades por Nivel**")
+        st.caption("Controla cuántos mensajes se envían por día y la probabilidad de disparo según la antigüedad del Zombie.")
+        
+        c1, c2, c3 = st.columns(3)
+        
+        with c1:
+            st.markdown("**Lvl 1 (Mismo Día)**")
+            m_z1 = st.number_input("Límite Diario Lvl 1", min_value=0, value=getattr(config, 'max_zombies_lvl1', 10))
+            p_z1 = st.number_input("Probabilidad Lvl 1 (%)", min_value=0, max_value=100, value=getattr(config, 'prob_zombie_lvl1', 10))
+            
+        with c2:
+            st.markdown("**Lvl 2 (Día Siguiente)**")
+            m_z2 = st.number_input("Límite Diario Lvl 2", min_value=0, value=getattr(config, 'max_zombies_lvl2', 10))
+            p_z2 = st.number_input("Probabilidad Lvl 2 (%)", min_value=0, max_value=100, value=getattr(config, 'prob_zombie_lvl2', 20))
+            
+        with c3:
+            st.markdown("**Lvl 3 (Semana)**")
+            m_z3 = st.number_input("Límite Diario Lvl 3", min_value=0, value=getattr(config, 'max_zombies_lvl3', 10))
+            p_z3 = st.number_input("Probabilidad Lvl 3 (%)", min_value=0, max_value=100, value=getattr(config, 'prob_zombie_lvl3', 30))
+            
+        if st.form_submit_button("💾 Guardar Parámetros Zombie", type="primary") and config:
+            with engine.begin() as conn_w:
+                conn_w.execute(text("""
+                    UPDATE Configuracion_Campanas 
+                    SET max_zombies_lvl1 = :m1, prob_zombie_lvl1 = :p1,
+                        max_zombies_lvl2 = :m2, prob_zombie_lvl2 = :p2,
+                        max_zombies_lvl3 = :m3, prob_zombie_lvl3 = :p3
+                    WHERE id = :id
+                """), {"m1": m_z1, "p1": p_z1, "m2": m_z2, "p2": p_z2, "m3": m_z3, "p3": p_z3, "id": config.id})
+            st.toast("✅ Parámetros Zombie actualizados.")
+            st.rerun()
+
+    st.divider()
+
+    # --- 2. PROBABILIDADES POR SUBCATEGORÍA ---
+    st.markdown("**🎯 Probabilidad de Envío por Subcategoría (Zombies)**")
+    with engine.connect() as conn:
+        df_prob_zom = pd.read_sql(text("SELECT id, macro_categoria, subcategoria, prob_zombie_principal, prob_zombie_default FROM Subcategorias_Sistema ORDER BY macro_categoria, subcategoria"), conn)
+    
+    if not df_prob_zom.empty:
+        df_edit_zom = st.data_editor(
+            df_prob_zom,
+            column_config={
+                "id": None, 
+                "macro_categoria": st.column_config.TextColumn("Línea Mayor", disabled=True), 
+                "subcategoria": st.column_config.TextColumn("Subcategoría", disabled=True), 
+                "prob_zombie_principal": st.column_config.NumberColumn("Principal %", min_value=0, max_value=100, step=5), 
+                "prob_zombie_default": st.column_config.NumberColumn("Lentes %", min_value=0, max_value=100, step=5)
+            },
+            hide_index=True, key="editor_prob_zom", use_container_width=True
+        )
+        
+        try:
+            mostrar_indicador_suma(df_edit_zom, 'prob_zombie_principal', 'prob_zombie_default')
+        except NameError:
+            pass 
+        
+        if st.button("💾 Guardar Probabilidades (Zombies)", type="primary"):
+            with engine.begin() as conn:
+                for idx, row in df_edit_zom.iterrows():
+                    conn.execute(text("""
+                        UPDATE Subcategorias_Sistema 
+                        SET prob_zombie_principal = :p1, prob_zombie_default = :p2 
+                        WHERE id = :id
+                    """), {"p1": row['prob_zombie_principal'], "p2": row['prob_zombie_default'], "id": row['id']})
+            st.success("✅ Probabilidades Zombie guardadas.")
+
+    st.divider()
+
+    # --- 3. PERSONALIDAD DE IA ZOMBIE ---
+    st.markdown("**🧠 Personalidad de IA para Reactivación Zombie**")
+    val_zom = getattr(config, 'prompt_zombie', "Eres un asesor empático intentando reactivar a un cliente que dejó de responder. Sé cálido y no seas insistente.")
+    with st.form("form_prompt_zombie"):
+        p_zom = st.text_area("Instrucciones base para redactar mensajes a Zombies:", value=val_zom, height=120)
+        if st.form_submit_button("💾 Guardar Personalidad Zombie", type="primary"):
+            with engine.begin() as conn:
+                conn.execute(text("UPDATE Configuracion_Campanas SET prompt_zombie = :pz"), {"pz": p_zom})
+            st.toast("✅ ¡Personalidad Zombie actualizada!")
+            st.rerun()
+            
+    st.divider()
+
+    # --- 4. RESPUESTAS AUTOMÁTICAS (FRASES CLAVE) ---
+    st.markdown("**📝 Frases Clave y Respuestas Automáticas (Webhooks)**")
+    st.caption("Añade, edita o elimina las frases que catalogarán a un cliente como Zombie. El webhook leerá estas reglas en vivo.")
+    
+    with engine.connect() as conn:
+        df_resp = pd.read_sql(text("SELECT id, frase_clave, respuesta_nivel_1, respuesta_nivel_2 FROM respuestas_automaticas ORDER BY id"), conn)
+    
+    df_edit_resp = st.data_editor(
+        df_resp,
+        column_config={
+            "id": None,
+            "frase_clave": st.column_config.TextColumn("Frase Clave (Activador)", required=True),
+            "respuesta_nivel_1": st.column_config.TextColumn("Respuesta Rápida 30s (Obligatorio)"),
+            "respuesta_nivel_2": st.column_config.TextColumn("Respuesta Extra (Opcional)")
+        },
+        num_rows="dynamic", hide_index=True, key="editor_resp_auto", use_container_width=True
+    )
+    
+    if st.button("💾 Guardar Respuestas Automáticas", type="primary"):
+        with engine.begin() as conn_r:
+            # Borramos y re-insertamos para soportar la creación/eliminación dinámica desde Streamlit
+            conn_r.execute(text("DELETE FROM respuestas_automaticas"))
+            for idx, row in df_edit_resp.iterrows():
+                if pd.notna(row['frase_clave']) and str(row['frase_clave']).strip() != "":
+                    conn_r.execute(text("""
+                        INSERT INTO respuestas_automaticas (frase_clave, respuesta_nivel_1, respuesta_nivel_2)
+                        VALUES (:f, :r1, :r2)
+                    """), {
+                        "f": str(row['frase_clave']).strip().lower(), # Forzamos minúsculas para el Webhook
+                        "r1": str(row['respuesta_nivel_1']) if pd.notna(row['respuesta_nivel_1']) else "",
+                        "r2": str(row['respuesta_nivel_2']) if pd.notna(row['respuesta_nivel_2']) else ""
+                    })
+        st.success("✅ Frases y respuestas actualizadas correctamente.")
 
 # ==============================================================================
 # 🚀 ORQUESTADOR PRINCIPAL DE LA VISTA
@@ -458,26 +581,17 @@ def render_tab_facebook(config):
 def render_campanas():
     st.title("🎯 Gestión de Campañas y Automatizaciones")
     
-    # 1. AUTO-SANACIÓN DE BASE DE DATOS
-    try:
-        with engine.begin() as conn_heal:
-            conn_heal.execute(text("ALTER TABLE Historial_Estados ADD COLUMN IF NOT EXISTS session_name VARCHAR(50) DEFAULT 'principal'"))
-            conn_heal.execute(text("ALTER TABLE Historial_Facebook ADD COLUMN IF NOT EXISTS pagina VARCHAR(50) DEFAULT 'General'"))
-            # NUEVA COLUMNA PARA LÍMITE DE MENSAJES FRÍOS
-            conn_heal.execute(text("ALTER TABLE Configuracion_Campanas ADD COLUMN IF NOT EXISTS max_mensajes_nuevos_dia INTEGER DEFAULT 10"))
-    except:
-        pass
-
-    # 2. LECTURA ÚNICA GLOBAL DE LA CONFIGURACIÓN BASE
+    # 1. LECTURA ÚNICA GLOBAL DE LA CONFIGURACIÓN BASE
     with engine.connect() as conn:
         config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
 
-    # 3. RENDERIZADO MODULAR DE PESTAÑAS
-    tab_general, tab_mensajes, tab_estados, tab_fb = st.tabs([
+    # 2. RENDERIZADO MODULAR DE PESTAÑAS
+    tab_general, tab_mensajes, tab_estados, tab_fb, tab_zombies = st.tabs([
         "📊 1. General", 
         "💬 2. Mensajes", 
         "📱 3. Estados",
-        "📘 4. Facebook"
+        "📘 4. Facebook",
+        "🧟 5. Zombies"
     ])
 
     with tab_general:
@@ -490,4 +604,7 @@ def render_campanas():
         render_tab_estados(config)
 
     with tab_fb:
-        render_tab_facebook(config) 
+        render_tab_facebook(config)
+        
+    with tab_zombies:
+        render_tab_zombies(config)

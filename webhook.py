@@ -12,6 +12,7 @@ from datetime import datetime
 import io
 from PIL import Image
 import threading
+import time
 
 app = Flask(__name__)
 
@@ -25,37 +26,12 @@ def log_error(msg):
     print(f"[ERROR] {msg}", file=sys.stderr, flush=True)
 
 try:
-    from utils import normalizar_telefono_maestro, crear_en_google, buscar_contacto_google
+    from utils import normalizar_telefono_maestro, crear_en_google, buscar_contacto_google, marcar_chat_como_leido_waha
 except ImportError:
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
     def crear_en_google(n, a, t): return False
     def buscar_contacto_google(t): return None
-
-def aplicar_parche_db():
-    try:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS whatsapp_internal_id VARCHAR(150)"))
-            conn.execute(text("ALTER TABLE Clientes ADD COLUMN IF NOT EXISTS id_etapa INTEGER"))
-            conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS estado_waha VARCHAR(20)"))
-            conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS session_name VARCHAR(50)"))
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS webhook_logs (
-                    id SERIAL PRIMARY KEY,
-                    fecha TIMESTAMP DEFAULT NOW(),
-                    session_name VARCHAR(50),
-                    event_type VARCHAR(50),
-                    payload TEXT
-                )
-            """))
-            try:
-                conn.execute(text("SELECT version FROM sync_estado LIMIT 1"))
-            except:
-                conn.execute(text("DROP TABLE IF EXISTS sync_estado"))
-                conn.execute(text("CREATE TABLE sync_estado (id INT PRIMARY KEY, version INT DEFAULT 0)"))
-                conn.execute(text("INSERT INTO sync_estado (id, version) VALUES (1, 0)"))
-    except: pass
-
-aplicar_parche_db()
+    def marcar_chat_como_leido_waha(*args): pass
 
 def sync_google_fondo(id_cliente, nombre, telefono):
     """Guarda el contacto en Google Contacts de forma asíncrona y lo vincula"""
@@ -232,6 +208,44 @@ def obtener_nombre_waha(contact_id, session):
         log_error(f"Error API WAHA Contacts: {e}")
     return None
 
+# Caché en memoria para evitar spam (almacena {telefono: timestamp_ultima_respuesta})
+ultima_respuesta_zombie = {}
+
+def enviar_respuesta_zombie_async(telefono, session_name, respuesta, delay=30):
+    """Espera los segundos indicados y envía la respuesta automática, evitando spam."""
+    try:
+        ahora = time.time()
+        
+        # Validación de spam: Si le hemos respondido en los últimos 60 segundos, cancelamos este hilo.
+        ultimo_envio = ultima_respuesta_zombie.get(telefono, 0)
+        if ahora - ultimo_envio < 60:
+            log_info(f"🛑 Hilo Zombie CANCELADO: Se bloqueó respuesta repetitiva a {telefono} (Menos de 1 min).")
+            return
+            
+        # Registramos que estamos procesando un envío a este número
+        ultima_respuesta_zombie[telefono] = ahora
+
+        log_info(f"⏳ Hilo Zombie: Esperando {delay}s para responder a {telefono}...")
+        time.sleep(delay)
+        
+        if not WAHA_URL: return
+        url = f"{WAHA_URL.rstrip('/')}/api/sendText"
+        payload = {
+            "chatId": f"{telefono}@c.us",
+            "text": respuesta,
+            "session": session_name
+        }
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
+        
+        res = requests.post(url, json=payload, headers=headers, timeout=15)
+        if res.status_code in [200, 201]:
+            log_info(f"✅ Respuesta Zombie enviada automáticamente a {telefono}")
+        else:
+            log_error(f"❌ Error API WAHA Zombie: {res.text}")
+            
+    except Exception as e:
+        log_error(f"🔥 Error en hilo de respuesta zombie: {e}")
 # ==============================================================================
 # 🚀 WEBHOOK PRINCIPAL
 # ==============================================================================
@@ -579,16 +593,88 @@ def recibir_mensaje():
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
 
                         if fue_insertado and tipo_msg == 'ENTRANTE':
+                            import re # Asegúrate de que re esté importado
+                            
+                            # 1. Limpieza extrema del mensaje entrante: Quitar tildes, signos y convertir a minúsculas
                             texto_limpio = body.strip().lower()
+                            # Remover acentos comunes
+                            texto_limpio = re.sub(r'[áäâà]', 'a', texto_limpio)
+                            texto_limpio = re.sub(r'[éëêè]', 'e', texto_limpio)
+                            texto_limpio = re.sub(r'[íïîì]', 'i', texto_limpio)
+                            texto_limpio = re.sub(r'[óöôò]', 'o', texto_limpio)
+                            texto_limpio = re.sub(r'[úüûù]', 'u', texto_limpio)
+                            # Dejar solo caracteres alfanuméricos y espacios
+                            texto_limpio = re.sub(r'[^a-z0-9\s]', '', texto_limpio).strip()
+                            
+                            # Evaluar si es "Primera Vez" (Sin ventas + Sin mensajes o > 6 meses sin hablar)
+                            estado_cli = conn.execute(text("""
+                                SELECT c.nivel_zombie,
+                                       (SELECT COUNT(*) FROM Ventas v WHERE v.id_cliente = c.id_cliente AND v.anulado = FALSE) as cant_ventas,
+                                       (SELECT MAX(fecha) FROM mensajes m WHERE (m.telefono = :t OR m.telefono = c.telefono) 
+                                        AND m.tipo = 'ENTRANTE' AND m.fecha < NOW() - INTERVAL '1 minute') as fecha_ultimo_msg
+                                FROM Clientes c WHERE c.id_cliente = :id
+                            """), {"id": int(id_cliente_final), "t": t_msg}).fetchone()
 
-                            if archivo_bytes or "archivo multimedia" in texto_limpio:
-                                conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
-                            else:
-                                es_clave = conn.execute(text("SELECT 1 FROM respuestas_automaticas WHERE LOWER(frase_clave) = :t LIMIT 1"), {"t": texto_limpio}).scalar()
-                                if es_clave:
-                                    conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = NOW() WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                            nivel_actual = estado_cli.nivel_zombie if estado_cli and estado_cli.nivel_zombie else 0
+                            ventas = estado_cli.cant_ventas if estado_cli and estado_cli.cant_ventas else 0
+                            ultimo_msg = estado_cli.fecha_ultimo_msg
+
+                            es_primera_vez = False
+                            if ventas == 0:
+                                if not ultimo_msg:
+                                    es_primera_vez = True
                                 else:
+                                    diferencia = datetime.now() - ultimo_msg
+                                    if diferencia.days >= 180: # 6 meses sin escribir
+                                        es_primera_vez = True
+
+                            # 2. Lógica de asignación, permanencia o salida Zombie
+                            if archivo_bytes or has_media:
+                                # Condición de salida: Envió multimedia (Queda NO LEÍDO para el asesor)
+                                if nivel_actual > 0:
                                     conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                                    log_info(f"🚶 Cliente {id_cliente_final} dejó de ser zombie (Envió Multimedia).")
+                            else:
+                                # Buscar TODAS las respuestas para evaluar en Python y así ignorar los signos de la Base de Datos
+                                todas_las_frases = conn.execute(text("SELECT frase_clave, respuesta_nivel_1 FROM respuestas_automaticas")).fetchall()
+                                
+                                respuesta_auto = None
+                                es_frase_zombie = False
+                                
+                                for row in todas_las_frases:
+                                    frase_db_limpia = str(row.frase_clave).lower()
+                                    frase_db_limpia = re.sub(r'[áäâà]', 'a', frase_db_limpia)
+                                    frase_db_limpia = re.sub(r'[éëêè]', 'e', frase_db_limpia)
+                                    frase_db_limpia = re.sub(r'[íïîì]', 'i', frase_db_limpia)
+                                    frase_db_limpia = re.sub(r'[óöôò]', 'o', frase_db_limpia)
+                                    frase_db_limpia = re.sub(r'[úüûù]', 'u', frase_db_limpia)
+                                    frase_db_limpia = re.sub(r'[^a-z0-9\s]', '', frase_db_limpia).strip()
+                                    
+                                    # Si el texto que ingresó el usuario coincide con la frase de la BD (ambas ya limpias)
+                                    if texto_limpio == frase_db_limpia:
+                                        es_frase_zombie = True
+                                        respuesta_auto = row.respuesta_nivel_1
+                                        break
+                                
+                                if es_frase_zombie:
+                                    # 🟢 MARCAR COMO LEÍDO AUTOMÁTICAMENTE 
+                                    conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :t AND tipo = 'ENTRANTE' AND leido = FALSE"), {"t": t_msg})
+                                    threading.Thread(target=marcar_chat_como_leido_waha, args=(t_msg, session_name)).start()
+
+                                    if es_primera_vez and nivel_actual == 0:
+                                        conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = NOW() WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                                        log_info(f"🧟 Cliente {id_cliente_final} categorizado como ZOMBIE Lvl 1. Chat marcado como leído.")
+                                        if respuesta_auto: threading.Thread(target=enviar_respuesta_zombie_async, args=(t_msg, session_name, respuesta_auto, 30)).start()
+                                            
+                                    elif nivel_actual > 0:
+                                        conn.execute(text("UPDATE Clientes SET ultimo_msg_zombie = NOW() WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                                        log_info(f"🧟 Cliente {id_cliente_final} permanece como ZOMBIE (Nivel {nivel_actual}). Chat marcado como leído.")
+                                        if respuesta_auto: threading.Thread(target=enviar_respuesta_zombie_async, args=(t_msg, session_name, respuesta_auto, 30)).start()
+                                else:
+                                    if nivel_actual > 0:
+                                        conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
+                                        log_info(f"🚶 Cliente {id_cliente_final} despertó y dejó de ser zombie (Escribió texto orgánico).")
+
             except Exception as e:
                 log_error(f"🔥 Error DB: {e}")
 

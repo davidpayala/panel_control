@@ -209,56 +209,90 @@ def ejecutar_francotirador():
         tiempo_ok_est = es_modo_test or (min_pasados_est >= 10)
         tiempo_ok_fb  = es_modo_test or (min_pasados_fb >= 10)
 
-        # 🛡️ MEDIDA DE SEGURIDAD Y AUTO-RECUPERACIÓN - VERIFICAR WAHA
-        waha_url = os.getenv("WAHA_URL", "http://localhost:3000")
+        # 🛡️️ MEDIDA DE SEGURIDAD Y AUTO-RECUPERACIÓN - VERIFICAR WAHA
         waha_key = os.getenv("WAHA_KEY", "")
         waha_ok = False
         
-        def comprobar_estado_waha():
+        # ⚠️ IMPORTANTE: Ajusta el valor de "contenedor" al nombre exacto que usas en Docker (ej. docker ps)
+        instancias_waha = [
+            {"puerto": 3000, "contenedor": "waha", "nombre_sesion": "default"},
+            {"puerto": 3001, "contenedor": "waha_3001", "nombre_sesion": "principal"}
+        ]
+        
+        def comprobar_estado_waha(puerto, nombre_sesion):
             try:
                 headers = {"Accept": "application/json"}
                 if waha_key:
                     headers["X-Api-Key"] = waha_key
-                res = requests.get(f"{waha_url}/api/sessions?all=true", headers=headers, timeout=10)
+                
+                # Apuntamos dinámicamente al puerto correspondiente
+                url = f"http://localhost:{puerto}/api/sessions?all=true"
+                res = requests.get(url, headers=headers, timeout=10)
                 
                 if res.status_code == 200:
                     sesiones = res.json()
                     sesiones_activas = {s.get('name'): s.get('status') for s in sesiones}
-                    if sesiones_activas.get('default') == 'WORKING' and sesiones_activas.get('principal') == 'WORKING':
+                    
+                    if sesiones_activas.get(nombre_sesion) == 'WORKING':
                         return True, "WORKING"
-                    return False, f"Las sesiones no están óptimas: {sesiones_activas}"
+                    return False, f"La sesión '{nombre_sesion}' no está óptima: {sesiones_activas}"
+                
                 return False, f"WAHA respondió con error HTTP {res.status_code}"
             except Exception as e:
                 return False, f"Error de red/timeout: {e}"
 
-        log_mkt("🔍 Verificando salud de WAHA y sesiones (default, principal)...")
-        waha_ok, detalle_estado = comprobar_estado_waha()
+        log_mkt("🔍 Verificando salud de WAHA y sesiones (default en 3000, principal en 3001)...")
+        
+        contenedores_reiniciados = []
+        estados_finales = []
+
+        # 1. Verificación inicial de cada puerto
+        for instancia in instancias_waha:
+            puerto = instancia["puerto"]
+            contenedor = instancia["contenedor"]
+            sesion = instancia["nombre_sesion"]
+            
+            ok, detalle_estado = comprobar_estado_waha(puerto, sesion)
+            
+            if ok:
+                log_mkt(f"✅ WAHA operativo en el puerto {puerto} (Sesión '{sesion}').")
+                estados_finales.append(True)
+            else:
+                log_mkt(f"⚠️ Alerta en puerto {puerto} ({sesion}): {detalle_estado}. Iniciando auto-recuperación...")
+                try:
+                    log_mkt(f"♻️ Aplicando reinicio al contenedor {contenedor}...")
+                    subprocess.run(["docker", "restart", contenedor], capture_output=True, text=True, timeout=30)
+                    contenedores_reiniciados.append(instancia)
+                except Exception as e:
+                    log_mkt(f"🔥 Error crítico al intentar reiniciar {contenedor}: {e}")
+                    estados_finales.append(False)
+
+        # 2. Re-evaluación si hubo algún reinicio
+        if contenedores_reiniciados:
+            log_mkt("⏳ Esperando 60 segundos para que los contenedores reiniciados vuelvan a levantar...")
+            time.sleep(60)
+            
+            for instancia in contenedores_reiniciados:
+                puerto = instancia["puerto"]
+                sesion = instancia["nombre_sesion"]
+                
+                log_mkt(f"🔍 Re-evaluando salud de WAHA en puerto {puerto} tras el reinicio...")
+                ok, detalle_estado = comprobar_estado_waha(puerto, sesion)
+                
+                if ok:
+                    log_mkt(f"✅ WAHA en puerto {puerto} se recuperó exitosamente.")
+                    estados_finales.append(True)
+                else:
+                    log_mkt(f"❌ WAHA en puerto {puerto} sigue fallando ({detalle_estado}).")
+                    estados_finales.append(False)
+
+        # 3. Decisión final: waha_ok será True SOLO si todas las instancias evaluadas están funcionales
+        waha_ok = all(estados_finales) and len(estados_finales) == len(instancias_waha)
 
         if waha_ok:
-            log_mkt("✅ WAHA operativo. Sesiones 'default' y 'principal' en línea.")
+             log_mkt("✅ Todos los servicios WAHA operativos. Continuando con las tareas.")
         else:
-            log_mkt(f"⚠️ Alerta: {detalle_estado}. Iniciando protocolo de auto-recuperación...")
-            try:
-                # 2.1 Reiniciar el WAHA
-                log_mkt("♻️ Aplicando reinicio al contenedor WAHA...")
-                subprocess.run(["docker", "restart", "waha"], capture_output=True, text=True, timeout=30)
-                
-                # 2.2 Esperar 1 minuto
-                log_mkt("⏳ Esperando 60 segundos para que WAHA vuelva a levantar...")
-                time.sleep(60)
-                
-                # 2.3 Revisar de nuevo si funciona
-                log_mkt("🔍 Re-evaluando salud de WAHA tras el reinicio...")
-                waha_ok, detalle_estado = comprobar_estado_waha()
-                
-                # 2.4 Tomar decisión final
-                if waha_ok:
-                    log_mkt("✅ WAHA se recuperó exitosamente. Continuando con las tareas.")
-                else:
-                    log_mkt(f"❌ WAHA sigue fallando tras el reinicio ({detalle_estado}). Saltando Tareas 1 y 2.")
-            except Exception as e:
-                log_mkt(f"🔥 Error crítico al intentar reiniciar WAHA: {e}")
-                waha_ok = False
+             log_mkt("❌ Hay inestabilidad en uno o más servicios WAHA. Se bloquearán las tareas dependientes.")
 
         # ==================================================================
         # 🎯 TAREA 1: MENSAJES DIRECTOS CON RESTRICCIÓN DE CONTACTOS FRÍOS
@@ -270,10 +304,9 @@ def ejecutar_francotirador():
         elif not tiempo_ok_msg:
             log_mkt(f"⏳ TAREA 1: Aún no pasan los 30 min base (Han pasado {int(min_pasados_msg)} min).")
         elif not dentro_de_horario:
-            log_mkt(f"⏰ TAREA 1 OMITIDA: Fuera de horario comercial ({config.hora_inicio} - {config.hora_fin}).")
+            log_mkt(f"⏰ TAREA 1 OMITIDA: Fuera de horario comercial ({config.hora_inicio} a {config.hora_fin}).")
         else:
-            log_mkt("▶️ INICIANDO TAREA 1: Evaluando líneas de envío independientes...")            
-            # 🛠️ CORRECCIÓN 1: Extraemos límites totales y probabilidades de forma individual por línea
+            log_mkt("▶️ INICIANDO TAREA 1: Evaluando líneas de envío independientes...")            # 🛠️ CORRECCIÓN 1: Extraemos límites totales y probabilidades de forma individual por línea
             obreros = [
                 {
                     "sesion": "principal", 
@@ -538,6 +571,131 @@ def ejecutar_francotirador():
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_fb = NOW() WHERE id = :id"), {"id": config.id})
 
+        # ==================================================================
+        # 🧟 TAREA 4: REACTIVACIÓN DE CLIENTES ZOMBIES
+        # ==================================================================
+        if not waha_ok:
+            log_mkt("⏸️ TAREA 4 OMITIDA: Bloqueo de seguridad activado (WAHA inestable o desconectado).")
+        elif not config.bot_activo:
+            log_mkt("⏸ TAREA 4 OMITIDA: El Sniper Bot está apagado.")
+        elif not dentro_de_horario:
+            log_mkt(f"⏰ TAREA 4 OMITIDA: Fuera de horario comercial ({config.hora_inicio} a {config.hora_fin}).")
+        else:
+            log_mkt("▶️ INICIANDO TAREA 4: Evaluando clientes en categoría Zombie...")
+            
+            # Cargar límites y probabilidades dinámicas desde el Panel
+            limites_zombie = {
+                1: getattr(config, 'max_zombies_lvl1', 1),
+                2: getattr(config, 'max_zombies_lvl2', 1),
+                3: getattr(config, 'max_zombies_lvl3', 1)
+            }
+            probabilidades_zombie = {
+                1: getattr(config, 'prob_zombie_lvl1', 10),
+                2: getattr(config, 'prob_zombie_lvl2', 20),
+                3: getattr(config, 'prob_zombie_lvl3', 30)
+            }
+            
+            for obrero in obreros: 
+                with engine.connect() as conn:
+                    # FIX: Se agrupan los mensajes salientes en bloques de 5 minutos (300 segundos) 
+                    # para evitar que los ecos del webhook cuenten como múltiples envíos.
+                    query_zombies = text("""
+                        SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, c.nivel_zombie, c.ultimo_msg_zombie, t.telefono,
+                               (SELECT COUNT(DISTINCT (EXTRACT(EPOCH FROM m2.fecha) / 300)::INT) 
+                                FROM mensajes m2 
+                                WHERE m2.telefono = t.telefono 
+                                  AND m2.tipo IN ('SALIENTE_BOT', 'SALIENTE_PANEL') 
+                                  AND m2.fecha >= (NOW() AT TIME ZONE 'America/Lima')::date
+                               ) as msgs_enviados_hoy
+                        FROM Clientes c
+                        JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
+                        WHERE c.activo = TRUE 
+                          AND c.nivel_zombie > 0 
+                          AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
+                          AND t.activo = TRUE 
+                          AND t.es_principal = TRUE
+                          AND TRIM(COALESCE((SELECT session_name FROM mensajes m3 WHERE m3.telefono = t.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1), 'default')) = TRIM(:sess)
+                    """)
+                    zombies_validos = conn.execute(query_zombies, {"sess": obrero["sesion"]}).fetchall()
+
+                if not zombies_validos:
+                    continue
+
+                for zombie in zombies_validos:
+                    # 1. EVALUACIÓN DE TIEMPOS Y CAMBIOS DE NIVEL
+                    if not zombie.ultimo_msg_zombie:
+                        continue
+                        
+                    dias_transcurridos = (datetime.now() - zombie.ultimo_msg_zombie).days
+                    nivel_actual = zombie.nivel_zombie
+                    nuevo_nivel = nivel_actual
+                    
+                    if dias_transcurridos >= 14:
+                        with engine.begin() as conn_up:
+                            conn_up.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": zombie.id_cliente})
+                        log_mkt(f"🚶 Cliente {zombie.telefono} dejó de ser zombie (Pasaron 14 días en silencio).")
+                        continue
+                    elif dias_transcurridos >= 7 and nivel_actual < 3:
+                        nuevo_nivel = 3
+                    elif dias_transcurridos >= 1 and nivel_actual < 2:
+                        nuevo_nivel = 2
+                        
+                    if nuevo_nivel != nivel_actual:
+                        with engine.begin() as conn_up:
+                            conn_up.execute(text("UPDATE Clientes SET nivel_zombie = :n WHERE id_cliente = :id"), {"n": nuevo_nivel, "id": zombie.id_cliente})
+                        log_mkt(f"⬆️ Cliente {zombie.telefono} avanzó a Zombie Lvl {nuevo_nivel}.")
+                        nivel_actual = nuevo_nivel
+
+                    # 2. EVALUACIÓN DE LÍMITES POR USUARIO
+                    limite_usuario = limites_zombie.get(nivel_actual, 1)
+                    if zombie.msgs_enviados_hoy >= limite_usuario:
+                        continue # Ya alcanzó su límite diario independiente
+                        
+                    # 3. EVALUACIÓN DE PROBABILIDAD (DADO)
+                    prob_z = probabilidades_zombie.get(nivel_actual, 10)
+                    dado_z = random.randint(1, 100)
+                    
+                    if dado_z > prob_z and not es_modo_test:
+                        log_mkt(f"🎲 Cliente Zombie {zombie.telefono} - Dado NO sale ({dado_z} > {prob_z}%).")
+                        continue 
+                        
+                    # 4. PREPARACIÓN Y DISPARO
+                    numero_msj_actual = zombie.msgs_enviados_hoy + 1
+                    log_mkt(f"🎯 Cliente Zombie {zombie.telefono} - Dado SÍ sale. Enviando mensaje {numero_msj_actual} del día...")
+                    
+                    es_primer_contacto_hoy = (zombie.msgs_enviados_hoy == 0)
+                    
+                    with engine.connect() as conn:
+                        prod_zombie = buscar_producto_dinamico(conn, obrero['col_prob'])
+                    if not prod_zombie: continue
+
+                    cuerpo_ia = generar_texto_producto_ia(
+                        prod_zombie, 
+                        es_estado=False, 
+                        cliente_info={"etiquetas": zombie.etiquetas}, 
+                        primer_contacto_dia=es_primer_contacto_hoy
+                    )
+                    
+                    if es_primer_contacto_hoy:
+                        saludo = random.choice(["Hola", "¡Hola!", "¡Qué tal", "Saludos", "Buen día"])
+                        nom_ia = zombie.nombre_ia.strip() if zombie.nombre_ia else ""
+                        cabecera = f"{saludo} {nom_ia} 👋\n\n" if nom_ia else "¡Hola! 👋\n\n"
+                    else:
+                        cabecera = ""
+                        
+                    mensaje_completo = f"{cabecera}{cuerpo_ia}"
+                    
+                    # 5. ENVÍO, REGISTRO Y ANTI-SPAM
+                    if enviar_mensaje_whatsapp(zombie.telefono, mensaje_completo, prod_zombie['url_imagen'], session=obrero['sesion']):
+                        with engine.begin() as conn_save:
+                            conn_save.execute(text("""
+                                INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) 
+                                VALUES (:idc, :t, 'SALIENTE_BOT', :c, (NOW() AT TIME ZONE 'America/Lima'), TRUE, :sess)
+                            """), {"idc": zombie.id_cliente, "t": zombie.telefono, "c": mensaje_completo, "sess": obrero['sesion']})
+                        
+                        log_mkt(f"🧟✅ Disparo ZOMBIE (Lvl {nivel_actual}) exitoso a {zombie.telefono} ({obrero['sesion']}).")
+                        log_mkt(f"⏳ Esperando 60 segundos antes de evaluar al siguiente cliente para evitar spam...")
+                        time.sleep(60)
     except Exception as e:
         log_mkt(f"🔥 Error catastrófico: {e}")
 

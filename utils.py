@@ -893,13 +893,11 @@ def buscar_producto_aleatorio_en_stock(conn, macro_categoria, subcategorias_perm
 
     return None
 
-def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
+def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, primer_contacto_dia=True):
     """
     Genera copys persuasivos con IA local (Ollama).
-    Ahora incluye lectura de Prompts Dinámicos, Contexto de Festividades, 
-    Enfoques de Base de Datos y salida doble (WhatsApp + Meta).
+    Ahora incluye lectura de Prompts Dinámicos, Festividades y control de saludo.
     """
-
     ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     modelo_ia = os.getenv("OLLAMA_MODEL", "llama3.1")
     url_ia = f"{ollama_url.rstrip('/')}/api/generate"
@@ -950,7 +948,15 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         enfoque = f"ENFOQUE OBLIGATORIO: {str(enfoque_db).strip()}"
     else:
         enfoque = f"ENFOQUE OBLIGATORIO: Destaca la calidad indiscutible de {tipo_articulo} y su acabado exclusivo."
-    # -----------------------------------------------------------------------------
+
+    # 🎯 NUEVO: Regla de Saludo Dinámico
+    if not es_estado:
+        if primer_contacto_dia:
+            regla_saludo = "ESTRUCTURA: Inicia el texto con un saludo muy natural, breve y cálido."
+        else:
+            regla_saludo = "ESTRUCTURA IMPORTANTE: Ya hemos saludado al cliente hoy. PROHIBIDO INCLUIR SALUDOS (nada de 'Hola', 'Buenos días', 'Qué tal', etc.). Ve DIRECTO al grano a presentar el producto."
+    else:
+        regla_saludo = "" # Los estados no llevan saludo dirigido
 
     # 4. Obtener el Prompt Personalizado desde la Base de Datos
     prompt_personalizado_estado = ""
@@ -964,7 +970,7 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
     except Exception as e:
         pass # Fallback silencioso si las columnas aún no existen
 
-# 5. Bifurcación del Prompt (BLINDAJE JSON Y ANTI-CONFUSIÓN)
+    # 5. Bifurcación del Prompt (BLINDAJE JSON Y ANTI-CONFUSIÓN)
     regla_anti_confusion = f"""
     REGLA DE ORO DE CATEGORÍA: 
     Este producto pertenece estrictamente a la línea de: {macro.upper()}.
@@ -978,7 +984,7 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         
         prompt = f"""{base_instruct}
         {regla_anti_confusion}
-        
+        {regla_saludo}
         DATOS DEL ARTÍCULO: {titulo_prod}
         ATRACTIVO DEL PRODUCTO: {desc_grupo}
         {enfoque}
@@ -1000,7 +1006,7 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None):
         
         prompt = f"""{base_instruct}
         {regla_anti_confusion}
-        
+        {regla_saludo}
         PRODUCTO: {titulo_prod} {txt_precio}
         ENLACE DE COMPRA: {enlace_compra}
         {notas_crm}

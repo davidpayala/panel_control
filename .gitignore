@@ -4,6 +4,8 @@ env/
 token_google
 token.json
 __pycache__/
+datos-noweb/
+datos-webjs/
 *.pyc
 .sessions/
 *.sql
