@@ -114,10 +114,7 @@ def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
         log_error(f"Error al comprimir imagen: {e}")
         return None
 
-# ==============================================================================
-# 🕵️ FUNCIONES LOCALES CORREGIDAS
-# ==============================================================================
-# 🛠️ CORRECCIÓN: Se recibe from_me como parámetro para no fallar en la extracción
+
 def obtener_lid_local(payload, from_me=False):
     try:
         me_lid = payload.get('me', {}).get('lid', '')
@@ -133,12 +130,11 @@ def obtener_lid_local(payload, from_me=False):
         ]
         for c in candidatos:
             if c and isinstance(c, str) and '@lid' in c:
-                if c != me_lid:  # EVITAMOS DEVOLVER TU PROPIO LID
+                if c != me_lid:
                     return c
         return None
     except: return None
 
-# 🛠️ CORRECCIÓN: Se recibe from_me robusto para definir bien el target
 def obtener_telefono_local(payload, from_me=False):
     try:
         me_id = payload.get('me', {}).get('id', '')
@@ -211,48 +207,61 @@ def obtener_nombre_waha(contact_id, session):
 # Caché en memoria para evitar spam (almacena {telefono: timestamp_ultima_respuesta})
 ultima_respuesta_zombie = {}
 
-def enviar_respuesta_zombie_async(telefono, session_name, respuesta, delay=30):
-    """Espera los segundos indicados y envía la respuesta automática, evitando spam."""
+def enviar_respuesta_zombie_async(telefono, session_name, respuesta, delay=30, msg_id=None):
+    """Espera los segundos indicados y envía la respuesta automática, forzando entrega E2E."""
     try:
         ahora = time.time()
         
         # Validación de spam: Si le hemos respondido en los últimos 60 segundos, cancelamos este hilo.
         ultimo_envio = ultima_respuesta_zombie.get(telefono, 0)
         if ahora - ultimo_envio < 60:
-            log_info(f"🛑 Hilo Zombie CANCELADO: Se bloqueó respuesta repetitiva a {telefono} (Menos de 1 min).")
+            log_info(f"🛑 Hilo Zombie CANCELADO: Se bloqueó respuesta repetitiva a {telefono}.")
             return
             
-        # Registramos que estamos procesando un envío a este número
         ultima_respuesta_zombie[telefono] = ahora
 
         log_info(f"⏳ Hilo Zombie: Esperando {delay}s para responder a {telefono}...")
         time.sleep(delay)
         
         if not WAHA_URL: return
+        
+        # 🔥 BLINDAJE DE CHAT ID: Previene el error de JIDs malformados (ej. @lid@c.us)
+        telefono_str = str(telefono).strip()
+        if "@" in telefono_str:
+            chat_id = telefono_str.replace("@c.us", "") if "@lid" in telefono_str else telefono_str
+        else:
+            chat_id = f"{telefono_str}@c.us"
+
         url = f"{WAHA_URL.rstrip('/')}/api/sendText"
         payload = {
-            "chatId": f"{telefono}@c.us",
+            "chatId": chat_id,
             "text": respuesta,
             "session": session_name
         }
+        
+        # 🔥 TRUCO E2E: Citar su mensaje fuerza a WhatsApp a sincronizar las llaves de seguridad
+        if msg_id:
+            payload["reply_to"] = str(msg_id)
+            
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
         res = requests.post(url, json=payload, headers=headers, timeout=15)
         if res.status_code in [200, 201]:
-            log_info(f"✅ Respuesta Zombie enviada automáticamente a {telefono}")
+            log_info(f"✅ Respuesta Zombie entregada físicamente a {telefono}")
         else:
             log_error(f"❌ Error API WAHA Zombie: {res.text}")
             
     except Exception as e:
         log_error(f"🔥 Error en hilo de respuesta zombie: {e}")
+
 # ==============================================================================
 # 🚀 WEBHOOK PRINCIPAL
 # ==============================================================================
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Webhook V57 (Fix UI Chat Invertido) ✅", 200
+    return "Webhook V58 (Fix Zombie E2E) ✅", 200
 
 @app.route('/api/alertas', methods=['POST'])
 def recibir_alerta():
@@ -316,14 +325,13 @@ def recibir_mensaje():
 
             if is_broadcast or es_sistema or (not payload.get('body') and not payload.get('hasMedia') and tipo_evento != 'call.received'):
                 continue
-            # 🔥 CORRECCIÓN: Quitamos el "not from_me" para obligar a registrar los mensajes salientes de la IA
+
             if tipo_evento not in ['message.ack']:
                 try:
                     with engine.begin() as conn:
                         p_str = json.dumps(evento, ensure_ascii=False)[:5000]
                         conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) VALUES (:s, :e, :p)"), 
                                     {"s": session_name, "e": tipo_evento, "p": p_str})
-                        # Aumentamos el límite temporal a 150 para que no borre los logs tan rápido mientras depuramos
                         conn.execute(text("DELETE FROM webhook_logs WHERE id NOT IN (SELECT id FROM webhook_logs ORDER BY id DESC LIMIT 150)"))
                 except Exception as e:
                     log_error(f"Error DB Log Raw: {e}")
@@ -386,7 +394,6 @@ def recibir_mensaje():
             if tipo_evento == "message" and from_me:
                 continue
 
-            # 🛠️ CORRECCIÓN: Le pasamos from_me a las funciones de abajo
             wspid_lid = obtener_lid_local(payload, from_me)
             telefono_crudo = obtener_telefono_local(payload, from_me)
 
@@ -421,19 +428,15 @@ def recibir_mensaje():
                 msg_id_safe = str(whatsapp_id).replace('@', '%40')
                 media_url = f"{WAHA_URL.rstrip('/')}/api/{session_name}/messages/{msg_id_safe}/download"
 
-            # 1. Intentamos descargar la imagen por HTTP normal
             archivo_bytes = descargar_media_plus(media_url) if media_url else None
             
-            # 🔥 2. CORRECCIÓN: Si falla la descarga web, rescatamos el Base64 que WAHA incluye en el payload
             if not archivo_bytes and has_media:
                 import base64
                 b64_str = payload.get('_data', {}).get('body')
                 
-                # A veces viene en el body, a veces en el jpegThumbnail
                 if not b64_str or not isinstance(b64_str, str):
                     b64_str = payload.get('_data', {}).get('message', {}).get('imageMessage', {}).get('jpegThumbnail')
                 
-                # Si encontramos un Base64 válido de imagen (empieza con /9j/ que es JPG)
                 if isinstance(b64_str, str) and b64_str.startswith('/9j/'):
                     try:
                         archivo_bytes = base64.b64decode(b64_str)
@@ -441,14 +444,12 @@ def recibir_mensaje():
                     except Exception as e:
                         log_error(f"Error decodificando base64: {e}")
 
-            # 3. Comprimimos la imagen final
             if archivo_bytes: 
                 archivo_bytes = comprimir_imagen_waha(archivo_bytes)
             
             if has_media and not body: 
                 body = "📷 Archivo Multimedia" if archivo_bytes else "📷 [Multimedia enviada]"
 
-            # 🛠️ CORRECCIÓN: Asignamos explícitamente SALIENTE_BOT para que el Streamlit panel lo ubique del lado derecho
             tipo_msg = 'SALIENTE_BOT' if from_me else 'ENTRANTE'
             
             reply_id = (payload.get('replyTo') or {}).get('id')
@@ -481,7 +482,6 @@ def recibir_mensaje():
                     if not cliente_tel and telefono_num:
                         cliente_tel = conn.execute(text("SELECT id_cliente, telefono FROM Clientes WHERE telefono = :t LIMIT 1"), {"t": telefono_num}).fetchone()
 
-                    # Escenario 1: Colisión y Fusión
                     if cliente_tel and cliente_lid and cliente_tel.id_cliente != cliente_lid.id_cliente:
                         viejo_tel = cliente_lid.telefono
                         if telefono_num:
@@ -494,7 +494,6 @@ def recibir_mensaje():
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:new"), {"new": cliente_tel.id_cliente})
                         id_cliente_final = cliente_tel.id_cliente
 
-                    # Escenario 2: Teléfono existe
                     elif cliente_tel:
                         id_cliente_final = cliente_tel.id_cliente
                         conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente = :id"), {"id": id_cliente_final})
@@ -503,7 +502,6 @@ def recibir_mensaje():
                                 UPDATE telefonoscliente SET lid = :lid, alias = :alias WHERE id_cliente = :id AND telefono = :t
                             """), {"lid": wspid_lid, "alias": nombre_corto_final, "id": id_cliente_final, "t": telefono_num})
 
-                    # Escenario 3: LID existe
                     elif cliente_lid:
                         id_cliente_final = cliente_lid.id_cliente
                         viejo_tel = cliente_lid.telefono
@@ -517,7 +515,6 @@ def recibir_mensaje():
                             conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:id"), {"id": id_cliente_final})
                             conn.execute(text("UPDATE telefonoscliente SET alias=:alias WHERE id_cliente=:id AND lid=:lid"), {"alias": nombre_corto_final, "id": id_cliente_final, "lid": wspid_lid})
 
-                    # Escenario 4: Nuevo contacto
                     else:
                         try:
                             res = conn.execute(text("""
@@ -549,7 +546,6 @@ def recibir_mensaje():
                         fue_insertado = False
 
                         if not existe:
-                            # 🛠️ CORRECCIÓN: Ahora evalúa SALIENTE_BOT o SALIENTE_PANEL de manera inteligente
                             if tipo_msg == 'SALIENTE_BOT':
                                 match = conn.execute(text("""
                                     SELECT id_mensaje FROM mensajes 
@@ -559,7 +555,6 @@ def recibir_mensaje():
                                 """), {"t": t_msg, "txt": body}).scalar()
                                 
                                 if match:
-                                    # CORRECCIÓN: Agregamos archivo_data = COALESCE(archivo_data, :d) para inyectar la foto
                                     conn.execute(text("""
                                         UPDATE mensajes 
                                         SET whatsapp_id = :wid, estado_waha = 'enviado', archivo_data = COALESCE(archivo_data, :d) 
@@ -580,7 +575,6 @@ def recibir_mensaje():
                                     log_info(f"🚫 Fantasma WEBJS bloqueado. Ignorando eco entrante: {body[:20]}")
 
                         if not existe and not is_echo:
-                            # CORRECCIÓN: Se cambió a NOW() puro sin restar horas
                             conn.execute(text("""
                                 INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content, estado_waha, session_name)
                                 VALUES (:t, :tipo, :txt, NOW(), :leido, :d, :wid, :rid, :rbody, :est, :sess)
@@ -593,20 +587,15 @@ def recibir_mensaje():
                         conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
 
                         if fue_insertado and tipo_msg == 'ENTRANTE':
-                            import re # Asegúrate de que re esté importado
-                            
-                            # 1. Limpieza extrema del mensaje entrante: Quitar tildes, signos y convertir a minúsculas
+                            import re 
                             texto_limpio = body.strip().lower()
-                            # Remover acentos comunes
                             texto_limpio = re.sub(r'[áäâà]', 'a', texto_limpio)
                             texto_limpio = re.sub(r'[éëêè]', 'e', texto_limpio)
                             texto_limpio = re.sub(r'[íïîì]', 'i', texto_limpio)
                             texto_limpio = re.sub(r'[óöôò]', 'o', texto_limpio)
                             texto_limpio = re.sub(r'[úüûù]', 'u', texto_limpio)
-                            # Dejar solo caracteres alfanuméricos y espacios
                             texto_limpio = re.sub(r'[^a-z0-9\s]', '', texto_limpio).strip()
                             
-                            # Evaluar si es "Primera Vez" (Sin ventas + Sin mensajes o > 6 meses sin hablar)
                             estado_cli = conn.execute(text("""
                                 SELECT c.nivel_zombie,
                                        (SELECT COUNT(*) FROM Ventas v WHERE v.id_cliente = c.id_cliente AND v.anulado = FALSE) as cant_ventas,
@@ -625,17 +614,14 @@ def recibir_mensaje():
                                     es_primera_vez = True
                                 else:
                                     diferencia = datetime.now() - ultimo_msg
-                                    if diferencia.days >= 180: # 6 meses sin escribir
+                                    if diferencia.days >= 180: 
                                         es_primera_vez = True
 
-                            # 2. Lógica de asignación, permanencia o salida Zombie
                             if archivo_bytes or has_media:
-                                # Condición de salida: Envió multimedia (Queda NO LEÍDO para el asesor)
                                 if nivel_actual > 0:
                                     conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                     log_info(f"🚶 Cliente {id_cliente_final} dejó de ser zombie (Envió Multimedia).")
                             else:
-                                # Buscar TODAS las respuestas para evaluar en Python y así ignorar los signos de la Base de Datos
                                 todas_las_frases = conn.execute(text("SELECT frase_clave, respuesta_nivel_1 FROM respuestas_automaticas")).fetchall()
                                 
                                 respuesta_auto = None
@@ -650,26 +636,30 @@ def recibir_mensaje():
                                     frase_db_limpia = re.sub(r'[úüûù]', 'u', frase_db_limpia)
                                     frase_db_limpia = re.sub(r'[^a-z0-9\s]', '', frase_db_limpia).strip()
                                     
-                                    # Si el texto que ingresó el usuario coincide con la frase de la BD (ambas ya limpias)
                                     if texto_limpio == frase_db_limpia:
                                         es_frase_zombie = True
                                         respuesta_auto = row.respuesta_nivel_1
                                         break
                                 
                                 if es_frase_zombie:
-                                    # 🟢 MARCAR COMO LEÍDO AUTOMÁTICAMENTE 
                                     conn.execute(text("UPDATE mensajes SET leido = TRUE WHERE telefono = :t AND tipo = 'ENTRANTE' AND leido = FALSE"), {"t": t_msg})
                                     threading.Thread(target=marcar_chat_como_leido_waha, args=(t_msg, session_name)).start()
 
                                     if es_primera_vez and nivel_actual == 0:
                                         conn.execute(text("UPDATE Clientes SET nivel_zombie = 1, ultimo_msg_zombie = NOW() WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                         log_info(f"🧟 Cliente {id_cliente_final} categorizado como ZOMBIE Lvl 1. Chat marcado como leído.")
-                                        if respuesta_auto: threading.Thread(target=enviar_respuesta_zombie_async, args=(t_msg, session_name, respuesta_auto, 30)).start()
+                                        try:
+                                            if respuesta_auto: threading.Thread(target=enviar_respuesta_zombie_async, args=(t_msg, session_name, respuesta_auto, 30, whatsapp_id)).start()
+                                        except Exception as th_err:
+                                            log_error(f"Error iniciando hilo zombie: {th_err}")
                                             
                                     elif nivel_actual > 0:
                                         conn.execute(text("UPDATE Clientes SET ultimo_msg_zombie = NOW() WHERE id_cliente = :id"), {"id": int(id_cliente_final)})
                                         log_info(f"🧟 Cliente {id_cliente_final} permanece como ZOMBIE (Nivel {nivel_actual}). Chat marcado como leído.")
-                                        if respuesta_auto: threading.Thread(target=enviar_respuesta_zombie_async, args=(t_msg, session_name, respuesta_auto, 30)).start()
+                                        try:
+                                            if respuesta_auto: threading.Thread(target=enviar_respuesta_zombie_async, args=(t_msg, session_name, respuesta_auto, 30, whatsapp_id)).start()
+                                        except Exception as th_err:
+                                            log_error(f"Error iniciando hilo zombie: {th_err}")
                                 else:
                                     if nivel_actual > 0:
                                         conn.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": int(id_cliente_final)})

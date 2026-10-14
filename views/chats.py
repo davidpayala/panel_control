@@ -28,10 +28,8 @@ except ImportError:
 def mostrar_resumen_compras_chat(telefono_activo):
     st.markdown("##### 🛍️ Historial de Compras")
     
-    # --- NUEVA CONSULTA DE HISTORIAL CORREGIDA ---
-    # Ahora evalúa si el "telefono_activo" coincide con el ID del cliente, su teléfono o su LID
     query = """
-        SELECT v.fecha_venta, d.descripcion as producto, 
+        SELECT v.fecha_venta, d.sku, d.descripcion as producto, 
                COALESCE(p.categoria, d.macro_categoria, 'Otros') as categoria, 
                d.precio_unitario, d.cantidad, d.subtotal
         FROM Ventas v
@@ -55,20 +53,19 @@ def mostrar_resumen_compras_chat(telefono_activo):
             st.info("Sin compras previas.")
             return
 
-        # Convertir a datetime
         df['fecha_venta'] = pd.to_datetime(df['fecha_venta'])
         current_year = datetime.now().year
         
-        # Separar en año actual y años anteriores
         df_current = df[df['fecha_venta'].dt.year == current_year]
         df_past = df[df['fecha_venta'].dt.year < current_year]
         
         if not df_current.empty:
             st.markdown(f"**Detalle del Año Actual ({current_year})**")
-            df_show = df_current[['fecha_venta', 'producto', 'categoria', 'precio_unitario', 'cantidad', 'subtotal']].copy()
+            df_show = df_current[['fecha_venta', 'sku', 'producto', 'categoria', 'precio_unitario', 'cantidad', 'subtotal']].copy()
             df_show['fecha_venta'] = df_show['fecha_venta'].dt.strftime('%d/%m/%Y')
             df_show.rename(columns={
                 'fecha_venta': 'Fecha', 
+                'sku': 'SKU',
                 'producto': 'Producto', 
                 'categoria': 'Categoría', 
                 'precio_unitario': 'Precio Unit.', 
@@ -105,16 +102,13 @@ def resolver_telefono_api(lid, session):
             pn = data.get('pn')
             if pn:
                 pn_clean = pn.split('@')[0]
-                
-                # --- VERIFICACIÓN EXTRA SOLICITADA ---
                 url_check = f"{WAHA_URL.rstrip('/')}/api/contacts/check-exists"
                 params = {"session": session, "phone": pn_clean}
                 r_check = requests.get(url_check, params=params, headers=headers, timeout=5)
                 
                 if r_check.status_code == 200 and r_check.json().get('numberExists', False):
                     return pn_clean
-                
-                return pn_clean # Fallback, lo devolvemos por si acaso WAHA dice que no existe
+                return pn_clean 
     except: pass
     return None
 
@@ -123,13 +117,10 @@ def mandar_mensaje_api(telefono, texto, sesion):
     try:
         telefono_str = str(telefono).strip()
         
-        # --- CORRECCIÓN: Detectar de forma segura si es un LID ---
         if telefono_str.endswith("@lid") or telefono_str.startswith("LID_"):
-            # Limpiamos la cadena de cualquier prefijo o sufijo para extraer solo los números
             lid_number = telefono_str.replace("LID_", "").replace("@lid", "")
             chat_id = f"{lid_number}@lid"
         else:
-            # Flujo normal para números de teléfono
             res_norm = normalizar_telefono_maestro(telefono_str)
             if isinstance(res_norm, dict):
                 telefono_final = res_norm.get('db') 
@@ -186,7 +177,6 @@ def render_boton_chat(row, cat, chat_actual, cambiar_chat_func):
     icono = "🔴" if c_leidos > 0 else "👤"
     texto_leidos = f" **({c_leidos})**" if c_leidos > 0 else ""
     
-    # --- NUEVO: Indicador visual por tipo de envío ---
     indicador_envio = ""
     if 'tipo_envio' in row and pd.notna(row['tipo_envio']):
         te = str(row['tipo_envio']).upper()
@@ -196,7 +186,6 @@ def render_boton_chat(row, cat, chat_actual, cambiar_chat_func):
         
     extra = f" [{row['estado']}]" if cat in ["📁 Otros Estados", "🔴 Mensajes Nuevos"] and pd.notna(row['estado']) else ""
     
-    # Inyectamos el indicador_envio al nombre
     label = f"{icono} {row['nombre']}{indicador_envio}{extra}{texto_leidos}"
     tipo = "primary" if str(chat_actual) == str(c_id) else "secondary"
     st.button(label, key=f"c_{c_id}", use_container_width=True, type=tipo, on_click=cambiar_chat_func, args=(c_id,))
@@ -208,13 +197,11 @@ def render_chat():
     c_tit, c_time = st.columns([80, 20])
     c_tit.title("💬 Chat Center")
     
-    # Limpieza: Ahora usa datetime.now() sin restar 5 horas
     lima_time = datetime.now()
     c_time.caption(f"🔄 {lima_time.strftime('%H:%M:%S')}")
 
     poller_cambios_db()
 
-    # --- CARGA DINÁMICA DE ETAPAS ---
     try:
         with engine.connect() as conn:
             df_etapas = pd.read_sql(text("SELECT id_etapa, grupo, subgrupo FROM EtapasCliente WHERE activo = TRUE"), conn)
@@ -295,10 +282,8 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
-                # --- NUEVA CONSULTA MAESTRA (100% DEPENDIENTE DE TELEFONOSCLIENTE) ---
                 query = f"""
                     WITH chat_summary AS (
-                        -- 1. Agrupar la tabla pesada de mensajes PRIMERO (súper rápido)
                         SELECT 
                             telefono, 
                             MAX(fecha) as ultima_interaccion, 
@@ -307,7 +292,6 @@ def render_chat():
                         GROUP BY telefono
                     ),
                     mapped_chats AS (
-                        -- 2. Cruzar solo los números únicos con telefonoscliente
                         SELECT 
                             cs.telefono, cs.ultima_interaccion, cs.no_leidos, 
                             t.id_cliente
@@ -315,7 +299,6 @@ def render_chat():
                         LEFT JOIN telefonoscliente t ON (cs.telefono = t.telefono OR cs.telefono = t.lid) AND t.activo = TRUE
                     ),
                     chat_list AS (
-                        -- 3. Consolidar usando el chat_id
                         SELECT 
                             COALESCE(CAST(id_cliente AS VARCHAR), telefono) as chat_id,
                             MAX(id_cliente) as id_cliente,
@@ -350,7 +333,6 @@ def render_chat():
                     else: filtro += ")"
                     query += filtro
                 
-                # Ordena: 1ro No leídos | 2do Etapas de venta (0) | 3ro Sin empezar (1) | 4to Fecha
                 query += " ORDER BY no_leidos DESC, (CASE WHEN c.estado IS NULL OR TRIM(c.estado) = '' OR TRIM(c.estado) ILIKE 'sin empezar' THEN 1 ELSE 0 END) ASC, ultima_interaccion DESC NULLS LAST LIMIT 1000"
                 
                 df_clientes = pd.read_sql(text(query), conn)
@@ -403,9 +385,25 @@ def render_chat():
                             expandido = (cat == "🔴 Mensajes Nuevos") or chat_activo_aqui or (cat == "💰 Venta realizada")
                             
                             with st.expander(f"{cat} ({len(df_cat)}){badge}", expanded=expandido):
-                                # Agregamos "💰 Venta realizada" al condicional
-                                if cat in ["🗣️ Conversación", "💰 Venta realizada"]:
-                                    sub_estados = estados_e1 if cat == "🗣️ Conversación" else estados_e2
+                                # Subdivisión "En Camino" por tipo de envío
+                                if cat == "🚚 En camino":
+                                    for te in ['MOTO', 'AGENCIA', 'OTROS']:
+                                        if te == 'OTROS':
+                                            df_sub = df_cat[~df_cat['tipo_envio'].str.upper().isin(['MOTO', 'AGENCIA'])]
+                                        else:
+                                            df_sub = df_cat[df_cat['tipo_envio'].str.upper() == te]
+                                            
+                                        if not df_sub.empty:
+                                            st.markdown(f"<div style='font-size: 11px; color: #777; margin-top: 10px; margin-bottom: 2px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;'>📌 {te}</div>", unsafe_allow_html=True)
+                                            for _, row in df_sub.iterrows():
+                                                render_boton_chat(row, cat, chat_actual, cambiar_chat)
+                                                
+                                # Subdivisión por subestados para Conversación, Ventas y Post-Venta
+                                elif cat in ["🗣️ Conversación", "💰 Venta realizada", "🛡️ Post-Venta"]:
+                                    if cat == "🗣️ Conversación": sub_estados = estados_e1
+                                    elif cat == "💰 Venta realizada": sub_estados = estados_e2
+                                    elif cat == "🛡️ Post-Venta": sub_estados = estados_e4
+                                    
                                     for sub in sub_estados:
                                         df_sub = df_cat[df_cat['estado'].str.lower().str.strip() == str(sub).strip().lower()]
                                         if not df_sub.empty:
@@ -427,47 +425,18 @@ def render_chat():
             try:
                 es_cliente = str(chat_actual).isdigit() and len(str(chat_actual)) < 10
 
-                # 1. CARGAR DATOS UNIFICADOS PRIMERO (Para saber el teléfono de este ID)
+                # 🚀 SÚPER OPTIMIZACIÓN: 1 SOLA CONEXIÓN PARA TODO EL PANEL DE CHAT (Max Velocidad)
                 with engine.connect() as conn:
                     conn.commit()
+                    
                     if es_cliente:
                         info = conn.execute(text(f"SELECT * FROM {tabla} WHERE id_cliente=:id"), {"id": int(chat_actual)}).fetchone()
                     else:
                         info = conn.execute(text(f"SELECT * FROM {tabla} WHERE telefono=:t"), {"t": chat_actual}).fetchone()
 
-                # 2. AUTO-RESOLUCIÓN LIDs INTELIGENTE (100% Migrado a telefonoscliente)
-                tc_principal = None
-                if es_cliente:
-                    with engine.connect() as conn:
-                        tc_principal = conn.execute(text("SELECT id_telefono, telefono, lid FROM telefonoscliente WHERE id_cliente=:id AND es_principal=TRUE AND activo=TRUE LIMIT 1"), {"id": int(chat_actual)}).fetchone()
+                    # BLOQUE DE RESOLUCIÓN DE LIDs ELIMINADO PARA MÁXIMA VELOCIDAD
+                    # (Ya no se ralentizará intentando resolver números ocultos)
 
-                if tc_principal and not tc_principal.telefono and tc_principal.lid:
-                    with st.spinner("🕵️‍♂️ Consultando número real oculto en WAHA..."):
-                        num_real = resolver_telefono_api(tc_principal.lid, "default")
-                        if not num_real: num_real = resolver_telefono_api(tc_principal.lid, "principal")
-                        
-                        if num_real:
-                            norm = normalizar_telefono_maestro(num_real)
-                            real_db = norm.get('db') if isinstance(norm, dict) else norm
-                            if real_db:
-                                with engine.begin() as t_conn:
-                                    existente = t_conn.execute(text(f"SELECT id_cliente FROM telefonoscliente WHERE telefono=:t AND activo = TRUE LIMIT 1"), {"t": real_db}).fetchone()
-                                    
-                                    if existente and existente.id_cliente != int(chat_actual):
-                                        # ¡Colisión! El número real ya existía en otro cliente. Los fusionamos.
-                                        t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": tc_principal.lid})
-                                        t_conn.execute(text("UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE WHERE id_cliente = :old"), {"new": existente.id_cliente, "old": int(chat_actual)})
-                                        t_conn.execute(text(f"UPDATE {tabla} SET estado='Duplicado', activo=FALSE WHERE id_cliente=:old"), {"old": int(chat_actual)})
-                                        st.session_state['chat_actual_id'] = str(existente.id_cliente)
-                                    else:
-                                        # Todo limpio, le guardamos su número real descubierto
-                                        t_conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o"), {"n": real_db, "o": tc_principal.lid})
-                                        t_conn.execute(text("UPDATE telefonoscliente SET telefono=:n WHERE id_telefono=:idt"), {"n": real_db, "idt": tc_principal.id_telefono})
-                                st.rerun()  
-
-                # 3. MARCAR COMO LEÍDO EN BD Y WHATSAPP
-                with engine.connect() as conn:
-                    conn.commit() 
                     tels_condition = """
                         SELECT telefono FROM telefonoscliente WHERE id_cliente = :id AND telefono IS NOT NULL AND activo = TRUE
                         UNION
@@ -489,9 +458,6 @@ def render_chat():
                             except Exception as e:
                                 print(f"Error marcando leído: {e}")
 
-                # 4. CARGAR DIRECCIÓN Y DEUDAS
-                with engine.connect() as conn:
-                    conn.commit()
                     nombre = info.nombre_corto if info and info.nombre_corto else chat_actual
                     estado_actual_cliente = info.estado if info and hasattr(info, 'estado') and info.estado else "Sin empezar"
                     
@@ -514,22 +480,20 @@ def render_chat():
 
                     pendiente_pago = float(venta_info.pendiente_pago) if venta_info and venta_info.pendiente_pago else 0.0
                     
-                    # --- DETALLES DINÁMICOS CORTO PARA EL TITULO ---
                     sub_detalles = ""
                     if dir_info:
                         if dir_info.tipo_envio == "MOTO":
                             sub_detalles = f"📍 {dir_info.distrito or ''}"
                         elif dir_info.tipo_envio == "AGENCIA":
-                            sub_detalles = f"🏢 {dir_info.agencia_nombre or ''} - {dir_info.sede_entrega or ''}"
+                            sub_detalles = f"🏢 {dir_info.agencia_nombre or ''} {dir_info.sede_entrega or ''}"
                         elif dir_info.tipo_envio == "OTROS":
                             sub_detalles = f"📦 {dir_info.observacion or ''}"
                         
                         if len(sub_detalles) > 45:
                             sub_detalles = sub_detalles[:42] + "..."
 
-                    # --- CARGA OPTIMIZADA DE MENSAJES (Sin JOINs masivos) ---
+                    # --- CARGA OPTIMIZADA DE MENSAJES ---
                     if es_cliente:
-                        # Si es cliente, sacamos todos sus números (normales y LIDs) de una vez
                         tels_query = """
                             SELECT telefono FROM telefonoscliente WHERE id_cliente = :chat_id AND telefono IS NOT NULL AND activo = TRUE
                             UNION 
@@ -538,27 +502,33 @@ def render_chat():
                         where_clause = f"telefono IN ({tels_query})"
                         params = {"chat_id": int(chat_actual)}
                     else:
-                        # Si es número anónimo, buscamos directo
                         where_clause = "telefono = :chat_id"
                         params = {"chat_id": str(chat_actual)}
 
+                    # Reducido el Límite de 100 a 60 para acelerar considerablemente el renderizado de la UI
                     msgs = pd.read_sql(text(f"""
                         SELECT * FROM (
                             SELECT * FROM mensajes
                             WHERE {where_clause}
-                            ORDER BY fecha DESC LIMIT 100
+                            ORDER BY fecha DESC LIMIT 60
                         ) sub ORDER BY fecha ASC
                     """), conn, params=params)
+                    
+                    # Recuperar info de teléfonos para el selector en la misma conexión
+                    tels_data = pd.DataFrame()
+                    if es_cliente:
+                        tels_data = pd.read_sql(text("""
+                            SELECT telefono, alias, lid 
+                            FROM telefonoscliente 
+                            WHERE id_cliente = :id AND activo = TRUE
+                        """), conn, params={"id": int(chat_actual)})
 
                 # --- CONTROL DE ZONA HORARIA LIMA ---
                 if not msgs.empty and 'fecha' in msgs.columns:
                     msgs['fecha'] = pd.to_datetime(msgs['fecha'])
-                    
-                    # Si el motor de la base de datos asignó una zona horaria, la quitamos para operar plano
                     if msgs['fecha'].dt.tz is not None:
                         msgs['fecha'] = msgs['fecha'].dt.tz_localize(None)
 
-                # --- HEADER MEJORADO CON DETALLES Y DEUDA VISUAL ---
                 badge_deuda = f"<span style='color: #856404; background-color: #ffeeba; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 13px; margin-left: 10px;'>⚠️ Cobrar: S/ {pendiente_pago:.2f}</span>" if pendiente_pago > 0 else ""
                 
                 if sub_detalles or badge_deuda:
@@ -642,13 +612,11 @@ def render_chat():
                 # =========================================
                 # 🚀 MOTOR DE RENDERIZADO
                 # =========================================
-
                 html_blocks = []
                 imagenes_galeria = []
                 
                 if not msgs.empty:
                     ultima_fecha = None
-                    # Limpieza: Ahora evalúa la fecha actual real sin desfaces
                     ahora_lima = datetime.now()
                     hoy = ahora_lima.date()
                     ayer = hoy - timedelta(days=1)
@@ -664,9 +632,7 @@ def render_chat():
                             html_blocks.append(f"<div class='date-separator'><span>{texto_fecha}</span></div>")
                             ultima_fecha = fecha_msg
 
-                        # 🔥 CORRECCIÓN: Ampliamos la condición para que incluya todos los orígenes de salida
                         es_mio = m['tipo'] in ['SALIENTE', 'SALIENTE_BOT', 'SALIENTE_PANEL']
-                        
                         clase_row = "msg-row msg-mio" if es_mio else "msg-row msg-otro"
                         clase_bub = "b-mio" if es_mio else "b-otro"
                         hora = m['fecha'].strftime("%H:%M") if pd.notna(m['fecha']) else ""
@@ -717,8 +683,6 @@ def render_chat():
                                 media_html = "<div style='color: gray; font-size: 10px;'>Archivo corrupto</div>"
 
                         contenido_str = str(m['contenido']) if pd.notna(m['contenido']) else ""
-                        
-                        # Reemplazo de negritas seguro para Markdown (**) y WhatsApp (*)
                         contenido_str = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', contenido_str)
                         contenido_str = re.sub(r'\*(.*?)\*', r'<b>\1</b>', contenido_str)
 
@@ -726,7 +690,6 @@ def render_chat():
                             contenido_str = ""
                         
                         texto_html = f"<div style='white-space: pre-wrap;'>{contenido_str}</div>" if contenido_str.strip() else ""
-                        
                         tel_label = f"<div style='font-size: 11px; color: {'#6b8e23' if es_mio else '#888'}; margin-bottom: 2px; font-weight: 600; text-align: {'right' if es_mio else 'left'};'>📱 {m['telefono']}</div>"
 
                         html_msg = f"<div class='{clase_row}'><div class='bubble {clase_bub}'>{tel_label}{reply_html}{media_html}{texto_html}<div class='meta'>{hora} {icono_estado}{etiqueta_sess}</div></div></div>"
@@ -735,7 +698,6 @@ def render_chat():
                     html_blocks.reverse()
 
                 if not msgs.empty:
-                    # Cambio visual sutil si hay deuda
                     bg_color_chat = "rgba(255, 243, 205, 0.4)" if pendiente_pago > 0 else "transparent"
                     border_color_chat = "#ffeeba" if pendiente_pago > 0 else "rgba(128, 128, 128, 0.2)"
                     
@@ -781,16 +743,8 @@ def render_chat():
                 
                 with c_num:
                     if es_cliente:
-                        with engine.connect() as conn:
-                            tels_data = pd.read_sql(text("""
-                                SELECT telefono, alias, lid 
-                                FROM telefonoscliente 
-                                WHERE id_cliente = :id AND activo = TRUE
-                            """), conn, params={"id": int(chat_actual)})
-                        
-                        # --- NUEVO FLUJO CORREGIDO PARA SELECCIÓN DE NÚMEROS ---
                         opciones_envio = {}
-                        mapeo_entrante = {} # Sirve para enlazar LIDs con sus teléfonos reales si los tienen
+                        mapeo_entrante = {} 
 
                         for _, row in tels_data.iterrows():
                             t = str(row['telefono']).strip() if pd.notna(row['telefono']) else ""
@@ -799,29 +753,22 @@ def render_chat():
                             
                             valor_destino = None
                             
-                            # PRIORIDAD 1: Si hay teléfono, es la única opción de esta fila
                             if t != "":
                                 valor_destino = t
                                 label_mostrar = f"📱 {t}" + (f" ({a})" if a else "")
                                 opciones_envio[valor_destino] = label_mostrar
                                 
-                                # Si entra un msj por el LID o Teléfono de esta fila, apuntará al Teléfono
                                 mapeo_entrante[t] = valor_destino
-                                if l != "":
-                                    mapeo_entrante[l] = valor_destino
-                            
-                            # PRIORIDADES 2 y 3: No hay teléfono, usamos el LID
+                                if l != "": mapeo_entrante[l] = valor_destino
                             elif l != "":
                                 valor_destino = l
                                 label_mostrar = f"🕵️‍♂️ {a} (Anónimo)" if a else f"🕵️‍♂️ {l}"
                                 opciones_envio[valor_destino] = label_mostrar
                                 mapeo_entrante[l] = valor_destino
 
-                        # Corregimos tel_defecto por si es un LID pero la fila ya tiene un teléfono
                         if tel_defecto in mapeo_entrante:
                             tel_defecto = mapeo_entrante[tel_defecto]
 
-                        # Fallback por si el tel_defecto (el número externo foráneo) no estaba en la tabla
                         if tel_defecto and tel_defecto not in opciones_envio:
                             opciones_envio[tel_defecto] = f"📱 {tel_defecto}"
                             
@@ -858,10 +805,8 @@ def render_chat():
                 
                 if txt:
                     ok, res = mandar_mensaje_api(telefono_destino, txt, sesion_elegida)
-                    if ok:
-                        st.rerun()
-                    else:
-                        st.error(f"Error al enviar: {res}")
+                    if ok: st.rerun()
+                    else: st.error(f"Error al enviar: {res}")
 
                 # --- 🛠️ OPCIONES ADICIONALES (AL FINAL DEL CHAT) ---
                 st.write("")
@@ -913,9 +858,6 @@ def render_chat():
                             st.caption("No se han compartido imágenes en este chat todavía.")
 
                     with tab_compras:
-                        # Ahora pasamos directamente chat_actual en lugar de info.telefono.
-                        # La consulta SQL que mejoramos arriba detectará automáticamente qué es 
-                        # y hará el cruce exacto en la base de datos sin importar si el valor es un LID.
                         mostrar_resumen_compras_chat(str(chat_actual))
 
             except Exception as e:

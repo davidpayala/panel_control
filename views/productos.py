@@ -36,7 +36,7 @@ def vista_productos():
     st.title("📦 Gestión de Productos e Inventario")
     
     tab_gestion, tab_importar, tab_ubicaciones = st.tabs(["📊 Gestión de Inventario Avanzada", "📦 Importar Stock Externo (CSV)", "📍 Distribuir Ubicaciones"])
-# ==============================================================================
+    # ==============================================================================
     # --- PESTAÑA 1: GESTIÓN DE INVENTARIO ---
     # ==============================================================================
     with tab_gestion:
@@ -58,7 +58,18 @@ def vista_productos():
                          WHERE su.sku = v.sku AND su.cantidad > 0) as ubicacion_nueva,
                         v.stock_externo, v.stock_transito, v.ubicacion as ubicacion_antigua, p.importacion,
                         p.url_compra, 
-                        COALESCE(NULLIF(TRIM(v.url_imagen), ''), NULLIF(TRIM(p.url_imagen), '')) AS url_imagen
+                        COALESCE(NULLIF(TRIM(v.url_imagen), ''), NULLIF(TRIM(p.url_imagen), '')) AS url_imagen,
+                        
+                        -- NUEVA COLUMNA 1: Costo promedio de compras de este año
+                        (SELECT COALESCE(AVG(m.costo_unitario), 0) 
+                         FROM Movimientos m 
+                         WHERE m.sku = v.sku 
+                           AND m.tipo_movimiento = 'PEDIDO_IMPORT' 
+                           AND EXTRACT(YEAR FROM m.fecha) = EXTRACT(YEAR FROM CURRENT_DATE)) AS costo_promedio_anual,
+                           
+                        -- NUEVA COLUMNA 2: Último precio de compra (ya guardado en Variantes)
+                        COALESCE(v.costo_compra, 0) AS ultimo_precio_compra
+
                     FROM Variantes v
                     JOIN Productos p ON v.id_producto = p.id_producto
                     ORDER BY macro_categoria DESC, p.marca, p.modelo, v.sku ASC
@@ -193,9 +204,9 @@ def vista_productos():
         df_final = df_calc[[
             'url_imagen', 'sku', 'id_producto', 'linea_corta', 'categoria', 'nombre_completo', 
             'detalles_info', 'stock_interno', 'stock_externo', 'stock_transito',
-            'ubicacion_antigua', 'ubicacion_nueva', 'importacion', 'url_compra'
+            'ubicacion_antigua', 'ubicacion_nueva', 'importacion', 'url_compra',
+            'costo_promedio_anual', 'ultimo_precio_compra' # <--- COLUMNAS AÑADIDAS
         ]]
-
         st.caption(f"Mostrando **{len(df_final)} variantes**. 📝 Editables: **Subcategoría**, **En Tránsito**, **Ubi. Antigua**, **Importación** y **URL**.")
 
         with engine.connect() as conn_sub:
@@ -225,7 +236,9 @@ def vista_productos():
                 "ubicacion_antigua": st.column_config.TextColumn("Ubi. Ant. 📍", width="small"),
                 "ubicacion_nueva": st.column_config.TextColumn("Ubi. Nueva 🗄️", disabled=True, width="medium", help="Se edita desde la pestaña de Ubicaciones"),
                 "importacion": st.column_config.SelectboxColumn("Importar De ✈️", width="small", options=["Aliexpress", "Alibaba", "Proveedor Nacional", "Otro"]),
-                "url_compra": st.column_config.LinkColumn("Link Compra 🔗", width="medium", display_text="Ver Enlace")
+                "url_compra": st.column_config.LinkColumn("Link Compra 🔗", width="medium", display_text="Ver Enlace"),
+                "costo_promedio_anual": st.column_config.NumberColumn("Costo Prom. (Año) 💰", disabled=True, format="S/ %.2f", width="small"),
+                "ultimo_precio_compra": st.column_config.NumberColumn("Últ. Compra 💲", disabled=True, format="S/ %.2f", width="small")
             },
             hide_index=True,
             width='stretch',
