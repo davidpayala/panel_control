@@ -499,22 +499,25 @@ def render_nueva_venta():
                                 else:
                                     id_ubi = int(id_ubi)
                                 
+                                # 💡 NUEVA LÍNEA: Convertir NaN de Pandas a None para SQL
+                                sku_val = None if pd.isna(item['sku']) else item['sku']
+                                
                                 if has_macro_col and has_ubi_col:
                                     conn.execute(text("""
                                         INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario, macro_categoria, id_ubicacion)
                                         VALUES (:idv, :sku, :desc, :cant, :pu, :sub, :inv, :mac, :idu)
-                                    """), {"idv": id_venta, "sku": item['sku'], "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario'], "mac": mac_val, "idu": id_ubi})
+                                    """), {"idv": id_venta, "sku": sku_val, "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario'], "mac": mac_val, "idu": id_ubi})
                                 elif has_macro_col:
                                     conn.execute(text("""
                                         INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario, macro_categoria)
                                         VALUES (:idv, :sku, :desc, :cant, :pu, :sub, :inv, :mac)
-                                    """), {"idv": id_venta, "sku": item['sku'], "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario'], "mac": mac_val})
+                                    """), {"idv": id_venta, "sku": sku_val, "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario'], "mac": mac_val})
                                 else:
                                     conn.execute(text("""
                                         INSERT INTO DetalleVenta (id_venta, sku, descripcion, cantidad, precio_unitario, subtotal, es_inventario)
                                         VALUES (:idv, :sku, :desc, :cant, :pu, :sub, :inv)
-                                    """), {"idv": id_venta, "sku": item['sku'], "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario']})
-                                
+                                    """), {"idv": id_venta, "sku": sku_val, "desc": item['descripcion'], "cant": int(item['cantidad']), "pu": float(item['precio']), "sub": float(item['subtotal']), "inv": item['es_inventario']})
+
                                 if item['es_inventario']:
                                     res_s = conn.execute(text("UPDATE Variantes SET stock_interno = stock_interno - :c WHERE sku=:s RETURNING stock_interno"),
                                                          {"c": int(item['cantidad']), "s": item['sku']})

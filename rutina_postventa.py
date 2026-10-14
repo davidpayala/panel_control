@@ -20,7 +20,6 @@ def calcular_dias_sin_domingos(fecha_inicio, fecha_fin):
         return 0
     
     dias_validos = 0
-    # Recorremos cada día transcurrido
     for i in range(1, dias_totales + 1):
         dia_evaluado = fecha_inicio.date() + timedelta(days=i)
         # weekday() devuelve 6 para los domingos
@@ -38,7 +37,7 @@ def ejecutar_agradecimientos_automaticos():
     
     query_etapa = text("SELECT id_etapa FROM EtapasCliente WHERE subgrupo ILIKE 'sin empezar' LIMIT 1")
     
-    # Consulta dinámica leyendo la sesión desde los mensajes
+    # Añadimos c.nombre_ia a la consulta extraída de la tabla Clientes
     query_clientes = text("""
         WITH ultima_interaccion AS (
             SELECT DISTINCT ON (tc.id_cliente)
@@ -54,6 +53,7 @@ def ejecutar_agradecimientos_automaticos():
             c.id_cliente, 
             c.telefono, 
             c.nombre_corto,
+            c.nombre_ia, 
             c.estado,
             u.ultima_fecha,
             u.session_name,
@@ -89,17 +89,22 @@ def ejecutar_agradecimientos_automaticos():
                 if ultima_fecha.tzinfo is not None:
                     ultima_fecha = ultima_fecha.tz_localize(None)
 
-                # --- 🚀 NUEVA LÓGICA: DÍAS SIN DOMINGOS ---
                 dias_transcurridos = calcular_dias_sin_domingos(ultima_fecha, ahora)
-
                 dias_objetivo = 7 if tipo_envio == 'AGENCIA' else 2
 
                 if dias_transcurridos >= dias_objetivo:
                     print(f"[{telefono}] Han pasado {dias_transcurridos} días hábiles (Objetivo: {dias_objetivo} por {tipo_envio}). Enviando agradecimiento vía '{sesion_detectada}'...")
                     
-                    nombre = row['nombre_corto'] or "Estimado/a"
+                    # --- LÓGICA DE NOMBRE IA Y SALUDO GENÉRICO ---
+                    nombre_ia_val = str(row['nombre_ia']).strip() if pd.notna(row['nombre_ia']) else ""
+                    
+                    if nombre_ia_val:
+                        saludo = f"¡Hola {nombre_ia_val}! 👋\n\n"
+                    else:
+                        saludo = "¡Hola! 👋\n\n"
+                        
                     mensaje = (
-                        f"¡Hola {nombre}! 👋\n\n"
+                        f"{saludo}"
                         f"Esperamos que ya tengas tu pedido contigo y todo esté en perfectas condiciones. 📦✨\n"
                         f"Queríamos tomar un momento para decirte: *¡Muchas gracias por tu compra y por confiar en nosotros!*\n\n"
                         f"Si necesitas asistencia o tienes alguna duda, este chat siempre está abierto para ti."
@@ -122,7 +127,10 @@ def ejecutar_agradecimientos_automaticos():
                         conn.execute(update_venta, {"id": int(id_cliente)})
                         
                         print(f"✅ Cliente {id_cliente} actualizado a 'Sin empezar' con deuda 0.")
-                        time.sleep(2) 
+                        
+                        # --- 🛡️ MECANISMO ANTI-SPAM ---
+                        print("⏳ Esperando 30 segundos por seguridad anti-spam...")
+                        time.sleep(30) 
 
     except Exception as e:
         print(f"❌ Error en la rutina de post-venta: {e}")
