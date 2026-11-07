@@ -256,4 +256,19 @@ def sync_inventario_completo():
     print("\n🎉 ¡Orquestación de inventario completada!")
 
 if __name__ == "__main__":
-    sync_inventario_completo()
+    intentos = 0
+    max_intentos = 3
+
+    while intentos < max_intentos:
+        try:
+            sync_inventario_completo()
+            break  # Si termina con éxito, sale del bucle y finaliza el script
+        except Exception as e:
+            intentos += 1
+            print(f"\n💥 ERROR CRÍTICO INESPERADO: {e}")
+            
+            if intentos < max_intentos:
+                print(f"⏳ Reintentando automáticamente en 30 minutos... (Intento {intentos} de {max_intentos})")
+                time.sleep(1800)
+            else:
+                print(f"🚨 Se alcanzó el límite de {max_intentos} intentos fallidos por un corte mayor. Abortando el script.")

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 # Lista de respaldo por seguridad si la base de datos está vacía
 ESTADOS_FALLBACK = [
-    "Sin empezar", "Responder duda", "Interesado en venta", "Proveedor nacional", 
+    "Sin empezar", "Responder duda", "Interesado en venta", "Venta - Reservado", "Proveedor nacional", 
     "Proveedor internacional", "Venta motorizado", "Venta agencia", "Venta express moto", 
     "En camino moto", "En camino agencia", "Contraentrega agencia", "Pendiente agradecer", "Problema post"
 ]
@@ -60,9 +60,15 @@ def render_seguimiento():
         with engine.connect() as conn:
             query_seg = text("""
                 SELECT 
-                    c.id_cliente, c.nombre_corto, c.telefono, c.estado, c.fecha_seguimiento, 
+                    c.id_cliente, c.nombre_corto, c.estado, c.fecha_seguimiento, 
                     
-                    -- Datos de Venta
+                    -- CORRECCIÓN 1: Obtener el teléfono desde telefonoscliente
+                    COALESCE(
+                        (SELECT tc.telefono FROM telefonoscliente tc WHERE tc.id_cliente = c.id_cliente AND tc.es_principal = TRUE AND tc.activo = TRUE LIMIT 1),
+                        'Sin Contacto'
+                    ) as telefono,
+                    
+                    -- CORRECCIÓN 2: Datos de Venta (Se añade anulado = FALSE)
                     v.id_venta, v.total_venta, v.clave_seguridad, 
                     v.fecha_venta, 
                     v.pendiente_pago,
@@ -77,7 +83,7 @@ def render_seguimiento():
 
                 FROM Clientes c
                 LEFT JOIN LATERAL (
-                    SELECT * FROM Ventas v2 WHERE v2.id_cliente = c.id_cliente ORDER BY v2.id_venta DESC LIMIT 1
+                    SELECT * FROM Ventas v2 WHERE v2.id_cliente = c.id_cliente AND v2.anulado = FALSE ORDER BY v2.id_venta DESC LIMIT 1
                 ) v ON TRUE
                 LEFT JOIN LATERAL (
                     SELECT * FROM Direcciones d2 
@@ -177,7 +183,12 @@ def render_seguimiento():
 
     # --- 4. RENDERIZADO Y FILTRADO INTELIGENTE ---
     if not df_seg.empty:
-        df_etapa2 = df_seg[df_seg['estado'].isin(etapa_2_etapas)]
+        
+        # CORRECCIÓN 3: Aislar "Venta - Reservado" primero para que tenga su propia pestaña
+        df_reservado = df_seg[df_seg['estado'] == 'Venta - Reservado'].copy()
+        
+        # Filtramos etapa 2 omitiendo los reservados para evitar duplicados en por registrar/otros
+        df_etapa2 = df_seg[df_seg['estado'].isin(etapa_2_etapas) & (df_seg['estado'] != 'Venta - Reservado')].copy()
         
         # Separación Inicial: Con dirección vs Sin dirección registrada
         df_por_registrar = df_etapa2[pd.isna(df_etapa2['id_direccion'])].copy()
@@ -197,18 +208,19 @@ def render_seguimiento():
         df_e1 = df_seg[df_seg['estado'].isin(etapa_1_etapas)].copy()
         df_e4 = df_seg[df_seg['estado'].isin(etapa_4_etapas)].copy()
 
-        # Métricas (5 Columnas)
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("🛵 Moto / Interno", len(df_moto))
+        # Métricas (6 Columnas)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("🛵 Moto", len(df_moto))
         c2.metric("🏢 Agencia", len(df_agencia))
         c3.metric("📦 Otros", len(df_otros))
-        c4.metric("📝 Por Registrar", len(df_por_registrar))
-        c5.metric("🚚 En Ruta Total", len(df_ruta_general))
+        c4.metric("📝 P. Registrar", len(df_por_registrar))
+        c5.metric("⏳ Reservados", len(df_reservado))
+        c6.metric("🚚 En Ruta", len(df_ruta_general))
         
         st.divider()
         
-        tab_moto, tab_agencia, tab_otros, tab_por_registrar = st.tabs([
-            "🛵 MOTORIZADO / INTERNO", "🏢 AGENCIA", "📦 OTROS", "📝 POR REGISTRAR"
+        tab_moto, tab_agencia, tab_otros, tab_por_registrar, tab_reservado = st.tabs([
+            "🛵 MOTORIZADO / INTERNO", "🏢 AGENCIA", "📦 OTROS", "📝 POR REGISTRAR", "⏳ RESERVADOS"
         ])
 
         # --- FORMATOS VISUALES ---
@@ -482,6 +494,53 @@ def render_seguimiento():
             else:
                 st.caption("No hay clientes de Etapa 2 pendientes de dirección.")
 
+        # >>>>>>>>>>>>>>>>>>>>>>>>> PESTAÑA RESERVADOS <<<<<<<<<<<<<<<<<<<<<<<<<
+        with tab_reservado:
+            if not df_reservado.empty:
+                # Los reservados pueden tener o no tener una dirección configurada
+                def formatear_entrega_reservado(row):
+                    if pd.isna(row['id_direccion']):
+                        return "⚠️ Sin dirección registrada"
+                    t = str(row['tipo_envio']).upper()
+                    if t == 'MOTO': return formatear_entrega_moto(row)
+                    elif t == 'AGENCIA': return formatear_entrega_agencia(row)
+                    else: return formatear_entrega_otros(row)
+
+                df_reservado["datos_entrega"] = df_reservado.apply(formatear_entrega_reservado, axis=1)
+                df_reservado["resumen_venta"] = df_reservado.apply(formatear_venta_resumen, axis=1)
+                df_view_res = df_reservado.copy()
+                df_view_res.insert(0, "Seleccionar", False)
+
+                event_res = st.data_editor(
+                    df_view_res[cols_show], key="ed_res",
+                    column_config={
+                        "Seleccionar": st.column_config.CheckboxColumn("👉", width="small"),
+                        "estado": st.column_config.SelectboxColumn("Estado", options=todos_los_estados, width="medium"),
+                        "fecha_seguimiento": st.column_config.DateColumn("📅 Fecha", format="DD/MM/YYYY", width="medium"),
+                        "nombre_corto": st.column_config.TextColumn("Cliente", disabled=True),
+                        "telefono": st.column_config.TextColumn("📞 Telf.", disabled=True),
+                        "resumen_venta": st.column_config.TextColumn("🧾 Venta", width="medium", disabled=True),
+                        "datos_entrega": st.column_config.TextColumn("📦 Entrega", width="large", disabled=True),
+                        "pendiente_pago": st.column_config.NumberColumn("❗ Cobrar", format="S/ %.2f"),
+                        "id_cliente": None
+                    }, hide_index=True, use_container_width=True
+                )
+
+                if st.button("💾 Guardar Cambios Reservados", type="primary"):
+                    df_save_res = df_reservado.loc[event_res.index].copy()
+                    df_save_res['estado'] = event_res['estado']
+                    df_save_res['fecha_seguimiento'] = event_res['fecha_seguimiento']
+                    df_save_res['pendiente_pago'] = event_res['pendiente_pago']
+                    guardar_edicion_rapida(df_save_res, "RESERVADO")
+
+                filas_sel_res = event_res[event_res["Seleccionar"] == True]
+                if not filas_sel_res.empty:
+                    row_full_res = df_reservado.loc[filas_sel_res.index[0]]
+                    st.divider()
+                    st.info(f"💡 Para editar los detalles de dirección de **{row_full_res['nombre_corto']}**, por favor cambia su estado a 'Venta motorizado', 'Venta agencia' u 'Otros' (según corresponda) y edítalo en su respectiva pestaña.")
+            else:
+                st.caption("No hay ventas en estado de reserva.")
+
         # >>>>>>>>>>>>>>>>>>>>>>>>> SECCIÓN EN RUTA (ETAPA 3 SEGMENTADA) <<<<<<<<<<<<<<<<<<<<<<<<<
         st.divider()
         st.markdown("### 🚚 En Ruta Logística")
@@ -633,7 +692,7 @@ def render_seguimiento():
                             c1, c2 = st.columns(2)
                             n_nom = c1.text_input("Recibe", row_full_ro['nombre_receptor'])
                             n_tel = c2.text_input("Teléfono", row_full_ro['telefono_receptor'])
-                            n_obs = st.text_area("Observación / Lugar", row_full_o['observacion'])
+                            n_obs = st.text_area("Observación / Lugar", row_full_ro['observacion'])
                             col_st, col_btn = st.columns([2, 1])
                             idx_estado = todos_los_estados.index(row_full_ro['estado']) if row_full_ro['estado'] in todos_los_estados else 0
                             nuevo_estado = col_st.selectbox("Mover a Estado:", todos_los_estados, index=idx_estado, key="est_ro_ind")

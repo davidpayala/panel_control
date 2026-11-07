@@ -2,6 +2,7 @@ import os
 import time
 import pandas as pd
 from datetime import datetime, timedelta
+import pytz
 
 # 1. CARGAR VARIABLES DE ENTORNO ANTES DE IMPORTAR LA BD
 from dotenv import load_dotenv
@@ -37,7 +38,7 @@ def ejecutar_agradecimientos_automaticos():
     
     query_etapa = text("SELECT id_etapa FROM EtapasCliente WHERE subgrupo ILIKE 'sin empezar' LIMIT 1")
     
-    # Añadimos c.nombre_ia a la consulta extraída de la tabla Clientes
+    # Consulta extraída de la tabla Clientes
     query_clientes = text("""
         WITH ultima_interaccion AS (
             SELECT DISTINCT ON (tc.id_cliente)
@@ -51,7 +52,10 @@ def ejecutar_agradecimientos_automaticos():
         )
         SELECT 
             c.id_cliente, 
-            c.telefono, 
+            COALESCE(
+                (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1),
+                c.telefono
+            ) as telefono,
             c.nombre_corto,
             c.nombre_ia, 
             c.estado,
@@ -65,75 +69,89 @@ def ejecutar_agradecimientos_automaticos():
           AND c.activo = TRUE
     """)
 
+    # --- FASE 1: LECTURA RÁPIDA (Sin bloquear la BD) ---
     try:
-        with engine.begin() as conn:
+        with engine.connect() as conn:
             res_etapa = conn.execute(query_etapa).fetchone()
             id_etapa_sin_empezar = res_etapa[0] if res_etapa else None
 
             df_clientes = pd.read_sql(query_clientes, conn)
             
-            if df_clientes.empty:
-                print("No hay clientes en estado 'En camino'.")
-                return
+        if df_clientes.empty:
+            print("No hay clientes en estado 'En camino'.")
+            return
+            
+    except Exception as e:
+        print(f"❌ Error al consultar la base de datos: {e}")
+        return
 
-            ahora = datetime.now()
+    # Usamos zona horaria de Lima para evitar desajustes con el servidor
+    tz_lima = pytz.timezone('America/Lima')
+    ahora = datetime.now(tz_lima).replace(tzinfo=None)
 
-            for _, row in df_clientes.iterrows():
-                id_cliente = row['id_cliente']
-                telefono = row['telefono']
+    # --- FASE 2: PROCESAMIENTO CLIENTE POR CLIENTE ---
+    for _, row in df_clientes.iterrows():
+        try:
+            id_cliente = row['id_cliente']
+            
+            # Limpieza y validación anti-nan
+            telefono = str(row['telefono']).strip()
+            if pd.isna(row['telefono']) or telefono.lower() == 'nan' or not telefono:
+                print(f"⚠️ Cliente {id_cliente} ignorado: No tiene un número de teléfono válido registrado.")
+                continue
                 
-                sesion_detectada = str(row['session_name']).strip().lower() if pd.notna(row['session_name']) and str(row['session_name']).strip() else 'default'
-                tipo_envio = str(row['tipo_envio']).upper() if pd.notna(row['tipo_envio']) else 'OTROS'
+            # A partir de aquí tu código sigue igual...
+            sesion_detectada = str(row['session_name']).strip().lower() if pd.notna(row['session_name']) and str(row['session_name']).strip() else 'default'
+            tipo_envio = str(row['tipo_envio']).upper() if pd.notna(row['tipo_envio']) else 'OTROS'
+            
+            ultima_fecha = pd.to_datetime(row['ultima_fecha'])
+            if ultima_fecha.tzinfo is not None:
+                ultima_fecha = ultima_fecha.tz_localize(None)
+
+            dias_transcurridos = calcular_dias_sin_domingos(ultima_fecha, ahora)
+            dias_objetivo = 7 if tipo_envio == 'AGENCIA' else 2
+
+            if dias_transcurridos >= dias_objetivo:
+                print(f"[{telefono}] Han pasado {dias_transcurridos} días hábiles (Objetivo: {dias_objetivo} por {tipo_envio}). Enviando agradecimiento vía '{sesion_detectada}'...")
                 
-                ultima_fecha = pd.to_datetime(row['ultima_fecha'])
-                if ultima_fecha.tzinfo is not None:
-                    ultima_fecha = ultima_fecha.tz_localize(None)
-
-                dias_transcurridos = calcular_dias_sin_domingos(ultima_fecha, ahora)
-                dias_objetivo = 7 if tipo_envio == 'AGENCIA' else 2
-
-                if dias_transcurridos >= dias_objetivo:
-                    print(f"[{telefono}] Han pasado {dias_transcurridos} días hábiles (Objetivo: {dias_objetivo} por {tipo_envio}). Enviando agradecimiento vía '{sesion_detectada}'...")
+                nombre_ia_val = str(row['nombre_ia']).strip() if pd.notna(row['nombre_ia']) else ""
+                saludo = f"¡Hola {nombre_ia_val}! 👋\n\n" if nombre_ia_val else "¡Hola! 👋\n\n"
                     
-                    # --- LÓGICA DE NOMBRE IA Y SALUDO GENÉRICO ---
-                    nombre_ia_val = str(row['nombre_ia']).strip() if pd.notna(row['nombre_ia']) else ""
+                mensaje = (
+                    f"{saludo}"
+                    f"Esperamos que ya tengas tu pedido contigo y todo esté en perfectas condiciones. 📦✨\n"
+                    f"Queríamos tomar un momento para decirte: *¡Muchas gracias por tu compra y por confiar en nosotros!*\n\n"
+                    f"Si necesitas asistencia o tienes alguna duda, este chat siempre está abierto para ti."
+                )
+                
+                # API Call de WhatsApp (SIN bloquear base de datos)
+                if enviar_mensaje_whatsapp(telefono, mensaje, session=sesion_detectada):
                     
-                    if nombre_ia_val:
-                        saludo = f"¡Hola {nombre_ia_val}! 👋\n\n"
-                    else:
-                        saludo = "¡Hola! 👋\n\n"
-                        
-                    mensaje = (
-                        f"{saludo}"
-                        f"Esperamos que ya tengas tu pedido contigo y todo esté en perfectas condiciones. 📦✨\n"
-                        f"Queríamos tomar un momento para decirte: *¡Muchas gracias por tu compra y por confiar en nosotros!*\n\n"
-                        f"Si necesitas asistencia o tienes alguna duda, este chat siempre está abierto para ti."
-                    )
-                    
-                    if enviar_mensaje_whatsapp(telefono, mensaje, session=sesion_detectada):
-                        update_cliente = text("""
+                    # --- FASE 3: ESCRITURA RÁPIDA EN BD (Micro-transacción) ---
+                    with engine.begin() as conn_upd:
+                        conn_upd.execute(text("""
                             UPDATE Clientes 
                             SET estado = 'Sin empezar', id_etapa = :id_etapa 
                             WHERE id_cliente = :id
-                        """)
+                        """), {"id_etapa": id_etapa_sin_empezar, "id": int(id_cliente)})
                         
-                        update_venta = text("""
+                        conn_upd.execute(text("""
                             UPDATE Ventas 
                             SET pendiente_pago = '0' 
                             WHERE id_cliente = :id
-                        """)
-                        
-                        conn.execute(update_cliente, {"id_etapa": id_etapa_sin_empezar, "id": int(id_cliente)})
-                        conn.execute(update_venta, {"id": int(id_cliente)})
-                        
-                        print(f"✅ Cliente {id_cliente} actualizado a 'Sin empezar' con deuda 0.")
-                        
-                        # --- 🛡️ MECANISMO ANTI-SPAM ---
-                        print("⏳ Esperando 30 segundos por seguridad anti-spam...")
-                        time.sleep(30) 
+                        """), {"id": int(id_cliente)})
+                    
+                    print(f"✅ Cliente {id_cliente} actualizado a 'Sin empezar' con deuda 0.")
+                    
+                    # Mecanismo anti-spam SEGURO
+                    print("⏳ Esperando 30 segundos por seguridad anti-spam...")
+                    time.sleep(30) 
+                else:
+                    print(f"⚠️ Falló el envío a {telefono}, se intentará de nuevo en la siguiente ronda.")
 
-    except Exception as e:
-        print(f"❌ Error en la rutina de post-venta: {e}")
+        except Exception as e:
+            print(f"❌ Error procesando al cliente {id_cliente} ({telefono}): {e}")
+            continue # Permite que el sistema pase al siguiente cliente sin morir
 
 if __name__ == "__main__":
     ejecutar_agradecimientos_automaticos()
