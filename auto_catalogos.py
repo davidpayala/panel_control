@@ -6,18 +6,19 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-from dotenv import load_dotenv # 🆕 Importamos dotenv
+from dotenv import load_dotenv
 import utils 
 
-# 🆕 Forzamos la lectura del archivo .env
 load_dotenv()
 
 # --- CONFIGURACIÓN ---
-# Ahora sí encontrará la variable
 DATABASE_URL = os.getenv("DATABASE_URL") 
 
 if not DATABASE_URL:
     raise ValueError("❌ ERROR: No se encontró DATABASE_URL en el archivo .env")
+
+# 🆕 Declaramos el engine a nivel global para que el logger pueda usarlo
+engine = create_engine(DATABASE_URL)
 
 TOKEN_FILE = 'token.json'
 DRIVE_LN = '12eINvzNXf4iiB2jn7NY2TMwfw8JfvYvu' 
@@ -27,19 +28,31 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 
+# --- FUNCIÓN DE REGISTRO EN SQL ---
+def log_catalogo(mensaje):
+    """Guarda el log en la Base de Datos e imprime en consola"""
+    mensaje_limpio = str(mensaje).lstrip('\n')
+    print(mensaje_limpio, flush=True)
+    if engine is not None:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("INSERT INTO logs_catalogos (fecha, mensaje) VALUES (NOW(), :msg)"),
+                    {"msg": mensaje_limpio}
+                )
+        except Exception as e:
+            print(f"Error crítico escribiendo log en BD: {e}")
+
 def autenticar_drive():
     creds = None
-    # 1. Cargamos el token que generaste en tu PC y pegaste en el servidor
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
     
-    # 2. Si el token expiró (dura 1 hora), se auto-renueva silenciosamente
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
         with open(TOKEN_FILE, 'w') as token:
             token.write(creds.to_json())
             
-    # 3. Si no hay token o es inválido, detenemos el proceso con un error claro
     if not creds or not creds.valid:
         raise Exception("❌ ERROR: El archivo token.json no existe o es inválido. Asegúrate de haberlo creado en la misma carpeta que este script.")
 
@@ -56,16 +69,15 @@ def subir_o_reemplazar_drive(servicio, buffer_pdf, nombre_archivo):
     if archivos:
         file_id = archivos[0]['id']
         servicio.files().update(fileId=file_id, media_body=media).execute()
-        print(f"🔄 Actualizado en Drive: {nombre_archivo}")
+        log_catalogo(f"🔄 Actualizado en Drive: {nombre_archivo}")
     else:
         file_metadata = {'name': nombre_archivo, 'parents': [DRIVE_LN]}
         servicio.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print(f"✅ Creado en Drive: {nombre_archivo}")
+        log_catalogo(f"✅ Creado en Drive: {nombre_archivo}")
 
 def procesar_catalogos():
-    engine = create_engine(DATABASE_URL)
+    log_catalogo("🚀 Iniciando generación automática de catálogos PDF...")
     
-    # Extraemos todos los Lentes de Estilo Natural
     query = """
         SELECT v.sku, v.precio, p.color_principal, p.diametro, v.medida,
                CASE WHEN p.macro_categoria ILIKE 'peluca%' THEN 'Pelucas' ELSE 'Lentes' END AS macro_categoria, 
@@ -77,11 +89,15 @@ def procesar_catalogos():
           AND p.categoria = 'Estilo Natural'
     """
     
-    with engine.connect() as conn:
-        df = pd.read_sql(text(query), conn)
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text(query), conn)
+    except Exception as e:
+        log_catalogo(f"❌ Error consultando la base de datos: {e}")
+        return
 
     if df.empty:
-        print("No hay productos que coincidan con la línea base.")
+        log_catalogo("ℹ️ No hay productos que coincidan con la línea base.")
         return
 
     # Filtramos obligatoriamente los de Medida Cero
@@ -92,7 +108,11 @@ def procesar_catalogos():
     df_tienda = df_cero[df_cero['stock_interno'] > 0]
     df_lab = df_cero[(df_cero['stock_interno'] <= 0) & (df_cero['stock_externo'] > 0)]
 
-    drive_service = autenticar_drive()
+    try:
+        drive_service = autenticar_drive()
+    except Exception as e:
+        log_catalogo(str(e))
+        return
 
     # --- GENERAR: LENTES EN TIENDA ---
     colores_tienda = df_tienda['color_principal'].dropna().unique()
@@ -111,6 +131,8 @@ def procesar_catalogos():
             pdf_buffer = utils.generar_pdf_catalogo(df_color)
             nombre_pdf = f"LN {str(color).capitalize()} - En Laboratorio.pdf"
             subir_o_reemplazar_drive(drive_service, pdf_buffer, nombre_pdf)
+            
+    log_catalogo("🎉 Proceso de generación y subida de catálogos finalizado con éxito.")
 
 if __name__ == "__main__":
     procesar_catalogos()

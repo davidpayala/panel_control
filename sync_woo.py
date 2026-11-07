@@ -5,8 +5,24 @@ from dotenv import load_dotenv
 from woocommerce import API
 from sqlalchemy import create_engine, text
 
-# 1. Cargar las llaves de seguridad
+# 1. Cargar las llaves de seguridad y Motor Global
 load_dotenv()
+engine = create_engine(os.getenv("DATABASE_URL"))
+
+# --- FUNCIÓN DE REGISTRO EN SQL ---
+def log_woo(mensaje):
+    """Guarda el log en la Base de Datos e imprime en consola"""
+    mensaje_limpio = str(mensaje).lstrip('\n')
+    print(mensaje_limpio, flush=True)
+    if engine is not None:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("INSERT INTO logs_woo (fecha, mensaje) VALUES (NOW(), :msg)"),
+                    {"msg": mensaje_limpio}
+                )
+        except Exception as e:
+            print(f"Error crítico escribiendo log en BD: {e}")
 
 def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     """
@@ -15,16 +31,16 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     hora_inicio = datetime.now()
     str_hora_inicio = hora_inicio.strftime('%Y-%m-%d %H:%M:%S')
 
-    print(f"\n==============================================================")
-    print(f"🌐 [{str_hora_inicio}] INICIANDO SINCRONIZACIÓN PARA: {nombre_tienda.upper()}")
-    print(f"==============================================================")
+    log_woo(f"==============================================================")
+    log_woo(f"🌐 [{str_hora_inicio}] INICIANDO SINCRONIZACIÓN PARA: {nombre_tienda.upper()}")
+    log_woo(f"==============================================================")
 
     if not stock_local_tienda:
-        print(f"ℹ️ OMITIDO: No hay SKUs locales clasificados para {nombre_tienda}.")
+        log_woo(f"ℹ️ OMITIDO: No hay SKUs locales clasificados para {nombre_tienda}.")
         return
 
     # 1. Descargar y mapear el catálogo web basado 100% en SKUs
-    print(f"📥 Descargando y mapeando catálogo web de {nombre_tienda}...")
+    log_woo(f"📥 Descargando y mapeando catálogo web de {nombre_tienda}...")
     
     mapa_simples = {}         # {sku: product_id}
     mapa_variaciones = {}     # {parent_id: {sku: variation_id}}
@@ -35,9 +51,8 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     while True:
         resp = wcapi.get("products", params={"per_page": 100, "page": pagina})
         
-        # NUEVO: Validar que WordPress nos haya dejado entrar antes de procesar
         if resp.status_code not in [200, 201]:
-            print(f"❌ ERROR LEYENDO WOOCOMMERCE: (HTTP {resp.status_code}) - Revisa tus permisos.")
+            log_woo(f"❌ ERROR LEYENDO WOOCOMMERCE: (HTTP {resp.status_code}) - Revisa tus permisos.")
             break
             
         items = resp.json()
@@ -61,37 +76,33 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
                         break
                     for v in v_items:
                         v_sku = v.get("sku", "").strip()
-                        if v_sku: # IDENTIDAD BASADA ESTRICTAMENTE EN EL SKU
+                        if v_sku:
                             mapa_variaciones[p_id][v_sku] = v["id"]
                             woo_skus_totales.add(v_sku)
                             
                             opciones = [attr.get('option', '') for attr in v.get('attributes', [])]
                             nombres_web[v_sku] = f"{p_title} ({' '.join(opciones)})".strip()
                     v_pagina += 1
-            elif p_sku: # Producto Simple con SKU
+            elif p_sku: 
                 mapa_simples[p_sku] = p_id
                 woo_skus_totales.add(p_sku)
                 nombres_web[p_sku] = p_title
                 
         pagina += 1
 
-    print(f"🔗 Mapeo de {nombre_tienda} listo. SKUs totales detectados en la Web: {len(woo_skus_totales)}.")
+    log_woo(f"🔗 Mapeo de {nombre_tienda} listo. SKUs totales detectados en la Web: {len(woo_skus_totales)}.")
 
     # =========================================================================
-    # 2. AUDITORÍA CRUZADA DE CONJUNTOS POR SKU (Puntos 3 y 4 del usuario)
+    # 2. AUDITORÍA CRUZADA DE CONJUNTOS POR SKU
     # =========================================================================
-    # Saco absoluto de SKUs de la Base de Datos para esta tienda
     db_skus_totales = set(stock_local_tienda.keys())
 
-    # RESTA MATEMÁTICA DE CONJUNTOS
-    faltan_en_woo = db_skus_totales - woo_skus_totales  # Viven en Postgres, no están en WordPress
-    faltan_en_db = woo_skus_totales - db_skus_totales   # Viven en WordPress, no están en Postgres
+    faltan_en_woo = db_skus_totales - woo_skus_totales  
+    faltan_en_db = woo_skus_totales - db_skus_totales   
 
     with engine.begin() as conn:
-        # Purgar los desajustes anteriores estrictamente de esta tienda
         conn.execute(text("DELETE FROM auditoria_skus_woo WHERE tienda = :t"), {"t": nombre_tienda})
         
-        # Guardar Tipo A: Faltan en la Web
         for sku_err in faltan_en_woo:
             desc_db = stock_local_tienda[sku_err].get("nombre_ref", "Ítem en Postgres")
             conn.execute(text("""
@@ -99,7 +110,6 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
                 VALUES (:t, 'FALTA_EN_WOO', :s, :d)
             """), {"t": nombre_tienda, "s": sku_err, "d": desc_db})
 
-        # Guardar Tipo B: Faltan en la Base de Datos
         for sku_err in faltan_en_db:
             desc_w = nombres_web.get(sku_err, "Ítem en WordPress")
             conn.execute(text("""
@@ -107,11 +117,10 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
                 VALUES (:t, 'FALTA_EN_DB', :s, :d)
             """), {"t": nombre_tienda, "s": sku_err, "d": desc_w})
 
-    # Feedback en consola de los desajustes
-    if faltan_en_woo: print(f"  ⚠️ [FALTA EN WOO]: {len(faltan_en_woo)} SKUs locales no existen en la tienda web.")
-    if faltan_en_db:  print(f"  ⚠️ [FALTA EN BD]:  {len(faltan_en_db)} SKUs de la web no están registrados en PostgreSQL.")
+    if faltan_en_woo: log_woo(f"  ⚠️ [FALTA EN WOO]: {len(faltan_en_woo)} SKUs locales no existen en la tienda web.")
+    if faltan_en_db:  log_woo(f"  ⚠️ [FALTA EN BD]:  {len(faltan_en_db)} SKUs de la web no están registrados en PostgreSQL.")
     if not faltan_en_woo and not faltan_en_db:
-        print("  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.")
+        log_woo("  ✅ CONCILIACIÓN PERFECTA: 100% de match de SKUs entre base de datos y catálogo web.")
 
     # =========================================================================
     # 3. ENVÍO DE LOTES (Usando el SKU como puente hacia el ID de Woo)
@@ -134,19 +143,18 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     simples_objetivo = len(paquete_simples)
 
     if paquete_simples:
-        print(f"🚀 Enviando {simples_objetivo} simples a {nombre_tienda}...")
+        log_woo(f"🚀 Enviando {simples_objetivo} simples a {nombre_tienda}...")
         lote_tamano = 100
         for i in range(0, len(paquete_simples), lote_tamano):
             lote = paquete_simples[i:i + lote_tamano]
             try:
                 resp = wcapi.post("products/batch", {"update": lote})
-                # NUEVO: Validar respuesta de la API explícitamente
                 if resp.status_code in [200, 201]:
                     simples_enviados_ok += len(lote)
                 else:
-                    print(f"❌ WooCommerce rechazó el lote simples (HTTP {resp.status_code}): {resp.text}")
+                    log_woo(f"❌ WooCommerce rechazó el lote simples (HTTP {resp.status_code}): {resp.text}")
             except Exception as e:
-                print(f"❌ Error de red en lote simples: {e}")
+                log_woo(f"❌ Error de red en lote simples: {e}")
 
     # Variaciones
     lotes_variaciones = []
@@ -165,39 +173,36 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     vars_objetivo = sum(len(p) for _, p in lotes_variaciones)
 
     if lotes_variaciones:
-        print(f"🚀 Enviando variaciones a {nombre_tienda}...")
+        log_woo(f"🚀 Enviando variaciones a {nombre_tienda}...")
         for parent_id, paq_v in lotes_variaciones:
             try:
                 resp = wcapi.post(f"products/{parent_id}/variations/batch", {"update": paq_v})
-                # NUEVO: Validar respuesta de la API explícitamente
                 if resp.status_code in [200, 201]:
                     vars_enviados_ok += len(paq_v)
                 else:
-                    print(f"❌ WooCommerce rechazó el padre #{parent_id} (HTTP {resp.status_code}): {resp.text}")
+                    log_woo(f"❌ WooCommerce rechazó el padre #{parent_id} (HTTP {resp.status_code}): {resp.text}")
             except Exception as e:
-                print(f"❌ Error de red en variaciones del padre #{parent_id}: {e}")
+                log_woo(f"❌ Error de red en variaciones del padre #{parent_id}: {e}")
 
     # =========================================================================
-    # 4. CÁLCULO DE PORCENTAJES RESUMIDOS (Punto 2 del usuario)
+    # 4. CÁLCULO DE PORCENTAJES RESUMIDOS
     # =========================================================================
     pct_simples = (simples_enviados_ok / simples_objetivo * 100) if simples_objetivo > 0 else 100.0
     pct_vars = (vars_enviados_ok / vars_objetivo * 100) if vars_objetivo > 0 else 100.0
     
     duracion = datetime.now() - hora_inicio
 
-    print(f"\n📊 RESUMEN DE TAREAS PARA {nombre_tienda.upper()}:")
-    print(f"   • Lotes Simples:  {pct_simples:.0f}% completado ({simples_enviados_ok}/{simples_objetivo})")
-    print(f"   • Variaciones:    {pct_vars:.0f}% completado ({vars_enviados_ok}/{vars_objetivo})")
-    print(f"   • Tiempo tomado:  {str(duracion).split('.')[0]}")
+    log_woo(f"📊 RESUMEN DE TAREAS PARA {nombre_tienda.upper()}:")
+    log_woo(f"   • Lotes Simples:  {pct_simples:.0f}% completado ({simples_enviados_ok}/{simples_objetivo})")
+    log_woo(f"   • Variaciones:    {pct_vars:.0f}% completado ({vars_enviados_ok}/{vars_objetivo})")
+    log_woo(f"   • Tiempo tomado:  {str(duracion).split('.')[0]}")
 
 # ==============================================================================
 # FUNCIÓN ORQUESTADORA PRINCIPAL
 # ==============================================================================
 def sync_inventario_completo():
-    print("⏳ Extrayendo inventario maestro unificado de PostgreSQL...")
+    log_woo("⏳ Extrayendo inventario maestro unificado de PostgreSQL...")
     try:
-        engine = create_engine(os.getenv("DATABASE_URL"))
-        
         with engine.begin() as conn:
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS auditoria_skus_woo (
@@ -235,10 +240,10 @@ def sync_inventario_completo():
             if r.macro_categoria == "Pelucas": stock_pelucas[sku] = item_data
             else: stock_lentes[sku] = item_data
 
-        print(f"📦 Reparto local listo -> LENTES: {len(stock_lentes)} SKUs | PELUCAS: {len(stock_pelucas)} SKUs.")
+        log_woo(f"📦 Reparto local listo -> LENTES: {len(stock_lentes)} SKUs | PELUCAS: {len(stock_pelucas)} SKUs.")
 
     except Exception as e:
-        print(f"🔥 Error crítico al conectar con PostgreSQL: {e}")
+        log_woo(f"🔥 Error crítico al conectar con PostgreSQL: {e}")
         return
 
     # --- DISPARO 1: LENTES ---
@@ -253,7 +258,7 @@ def sync_inventario_completo():
         wcapi_pelucas = API(url=url_pelucas, consumer_key=key_pelucas, consumer_secret=sec_pelucas, version="wc/v3", timeout=60)
         sincronizar_tienda_woo(engine, "Pelucas (pelucat.pe)", wcapi_pelucas, stock_pelucas)
 
-    print("\n🎉 ¡Orquestación de inventario completada!")
+    log_woo("🎉 ¡Orquestación de inventario completada!")
 
 if __name__ == "__main__":
     intentos = 0
@@ -262,13 +267,13 @@ if __name__ == "__main__":
     while intentos < max_intentos:
         try:
             sync_inventario_completo()
-            break  # Si termina con éxito, sale del bucle y finaliza el script
+            break  
         except Exception as e:
             intentos += 1
-            print(f"\n💥 ERROR CRÍTICO INESPERADO: {e}")
+            log_woo(f"💥 ERROR CRÍTICO INESPERADO: {e}")
             
             if intentos < max_intentos:
-                print(f"⏳ Reintentando automáticamente en 30 minutos... (Intento {intentos} de {max_intentos})")
+                log_woo(f"⏳ Reintentando automáticamente en 30 minutos... (Intento {intentos} de {max_intentos})")
                 time.sleep(1800)
             else:
-                print(f"🚨 Se alcanzó el límite de {max_intentos} intentos fallidos por un corte mayor. Abortando el script.")
+                log_woo(f"🚨 Se alcanzó el límite de {max_intentos} intentos fallidos por un corte mayor. Abortando el script.")

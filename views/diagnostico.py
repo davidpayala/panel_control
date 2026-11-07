@@ -2,433 +2,219 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 from database import engine
-import json
-import requests
-import os
-import re
-from datetime import datetime, timedelta
 
-# IMPORTANTE: Importamos el motor lógico desde utils para la auditoría WOO
-from utils import ejecutar_auditoria_bidireccional_woo
+# ==========================================================================
+# 🧩 MÓDULOS DE PESTAÑAS (Independientes y aislados)
+# ==========================================================================
+def tab_auditoria_woo():
+    st.markdown("### ⚖️ Conciliación de Catálogo (PostgreSQL vs WordPress)")
+    st.info("Muestra las discrepancias atrapadas durante la última ejecución de la sincronización de stock en segundo plano.")
+    
+    col_btn_aud, col_vacio = st.columns([2, 8])
+    if col_btn_aud.button("🔄 Refrescar Auditoría", key="btn_ref_aud"):
+        st.rerun()
+        
+    try:
+        with engine.connect() as conn:
+            df_aud = pd.read_sql(text("SELECT tienda, tipo_error, sku, detalle, fecha_deteccion FROM auditoria_skus_woo ORDER BY tienda, tipo_error, sku"), conn)
+    except Exception:
+        df_aud = pd.DataFrame() 
+        
+    if df_aud.empty:
+        st.success("✨ **¡Catálogo Inmaculado!** No existen SKUs huérfanos ni discrepancias entre tu PostgreSQL local y WooCommerce en ninguna de tus tiendas.")
+    else:
+        tiendas_afectadas = df_aud['tienda'].unique()
+        for t in tiendas_afectadas:
+            st.markdown(f"#### 🏪 Instancia: `{t}`")
+            df_t = df_aud[df_aud['tienda'] == t]
+            
+            c_db_woo, c_woo_db = st.columns(2)
+            
+            with c_db_woo:
+                df_faltan_woo = df_t[df_t['tipo_error'] == 'FALTA_EN_WOO']
+                st.error(f"🔴 En tu BD pero NO en WordPress ({len(df_faltan_woo)})")
+                st.caption("Falta crear estos ítems en tu página web:")
+                if not df_faltan_woo.empty:
+                    st.dataframe(df_faltan_woo[['sku', 'detalle']], hide_index=True, use_container_width=True)
+                else:
+                    st.write("Todo en orden aquí ✔️")
+                    
+            with c_woo_db:
+                df_faltan_db = df_t[df_t['tipo_error'] == 'FALTA_EN_DB']
+                st.warning(f"🟡 En WordPress pero NO en tu BD ({len(df_faltan_db)})")
+                st.caption("Falta registrar este SKU en tu inventario de Streamlit:")
+                if not df_faltan_db.empty:
+                    st.dataframe(df_faltan_db[['sku', 'detalle']], hide_index=True, use_container_width=True)
+                else:
+                    st.write("Todo en orden aquí ✔️")
+            st.divider()
 
-# Configuración API
-WAHA_URL = os.getenv("WAHA_URL")
-WAHA_KEY = os.getenv("WAHA_KEY")
-# Intentamos adivinar la URL local del webhook, o usa la variable si existe
-WEBHOOK_INTERNAL_URL = os.getenv("WEBHOOK_URL", "https://kmlentes-webhook.up.railway.app/webhook")
+    # =========================================================================
+    # NUEVA SECCIÓN INTEGRADA: LOGS DE SINCRONIZACIÓN
+    # =========================================================================
+    st.markdown("### 📡 Logs de Sincronización WOO")
+    st.info("Visualiza en tiempo real las operaciones y el estado de tu motor de actualización de WordPress.")
+    
+    c_filtro_woo, c_btn_woo = st.columns([8, 2])
+    filtro_tiempo_woo = c_filtro_woo.radio("⏳ Mostrar eventos de:", ["Últimas 2 horas", "Hoy", "Últimas 24h"], horizontal=True, key="flt_woo")
+    
+    if c_btn_woo.button("🔄 Refrescar Logs WOO", key="btn_logs_woo"):
+        st.rerun()
 
-def get_headers():
-    h = {"Content-Type": "application/json"}
-    if WAHA_KEY: h["X-Api-Key"] = WAHA_KEY
-    return h
+    condicion_tiempo_woo = "fecha >= NOW() - INTERVAL '2 hours'" if filtro_tiempo_woo == "Últimas 2 horas" else \
+                           "fecha::date = CURRENT_DATE" if filtro_tiempo_woo == "Hoy" else \
+                           "fecha >= NOW() - INTERVAL '24 hours'"
+    
+    try:
+        # Aseguramos que la tabla exista en caso de que aún no corras el script
+        with engine.begin() as conn_init:
+            conn_init.execute(text("""
+                CREATE TABLE IF NOT EXISTS logs_woo (
+                    id SERIAL PRIMARY KEY,
+                    fecha TIMESTAMP DEFAULT NOW(),
+                    mensaje TEXT
+                )
+            """))
 
+        with engine.connect() as conn:
+            df_logs = pd.read_sql(text(f"SELECT fecha, mensaje FROM logs_woo WHERE {condicion_tiempo_woo} ORDER BY id DESC"), conn)
+        
+        if not df_logs.empty:
+            df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
+            lineas_log = [f"[{row['fecha'].strftime('%Y-%m-%d %H:%M:%S')}] {row['mensaje']}" for _, row in df_logs.iterrows()]
+            st.code("\n".join(lineas_log), language="log")
+        else:
+            st.warning(f"Aún no hay registros de sincronización WOO generados para el filtro: {filtro_tiempo_woo}")
+
+    except Exception as e:
+        st.error(f"❌ Error leyendo la base de datos de logs: {e}")
+
+def tab_logs_marketing():
+    st.markdown("### 📈 Auditoría del Motor de Marketing")
+    st.info("Visualiza en tiempo real las operaciones del bot de prospección.")
+    
+    c_filtro, c_btn_log = st.columns([8, 2])
+    filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimas 2 horas", "Hoy", "Últimas 24h"], horizontal=True, key="flt_mkt")
+    
+    if c_btn_log.button("🔄 Refrescar Logs", key="btn_mkt"):
+        st.rerun()
+
+    condicion_tiempo = "fecha >= NOW() - INTERVAL '2 hours'" if filtro_tiempo == "Últimas 2 horas" else \
+                       "fecha::date = CURRENT_DATE" if filtro_tiempo == "Hoy" else \
+                       "fecha >= NOW() - INTERVAL '24 hours'"
+    
+    try:
+        with engine.begin() as conn_init:
+            conn_init.execute(text("""
+                CREATE TABLE IF NOT EXISTS logs_marketing (
+                    id SERIAL PRIMARY KEY,
+                    fecha TIMESTAMP DEFAULT NOW(),
+                    mensaje TEXT
+                )
+            """))
+
+        with engine.connect() as conn:
+            df_logs = pd.read_sql(text(f"SELECT fecha, mensaje FROM logs_marketing WHERE {condicion_tiempo} ORDER BY id DESC"), conn)
+        
+        if not df_logs.empty:
+            df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
+            lineas_log = [f"[{row['fecha'].strftime('%Y-%m-%d %H:%M:%S')}] {row['mensaje']}" for _, row in df_logs.iterrows()]
+            st.code("\n".join(lineas_log), language="log")
+        else:
+            st.warning(f"Aún no hay registros de marketing generados para el filtro: {filtro_tiempo}")
+
+    except Exception as e:
+        st.error(f"❌ Error leyendo la base de datos: {e}")
+
+def tab_logs_postventa():
+    st.markdown("### 📦 Auditoría de Rutina Post-Venta")
+    st.info("Visualiza en tiempo real los mensajes de agradecimiento y seguimiento logístico enviados.")
+    
+    c_filtro, c_btn_log = st.columns([8, 2])
+    filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimas 2 horas", "Hoy", "Últimas 24h"], horizontal=True, key="flt_pv")
+    
+    if c_btn_log.button("🔄 Refrescar Logs", key="btn_pv"):
+        st.rerun()
+
+    condicion_tiempo = "fecha >= NOW() - INTERVAL '2 hours'" if filtro_tiempo == "Últimas 2 horas" else \
+                       "fecha::date = CURRENT_DATE" if filtro_tiempo == "Hoy" else \
+                       "fecha >= NOW() - INTERVAL '24 hours'"
+    
+    try:
+        with engine.begin() as conn_init:
+            conn_init.execute(text("""
+                CREATE TABLE IF NOT EXISTS logs_postventa (
+                    id SERIAL PRIMARY KEY,
+                    fecha TIMESTAMP DEFAULT NOW(),
+                    mensaje TEXT
+                )
+            """))
+
+        with engine.connect() as conn:
+            df_logs = pd.read_sql(text(f"SELECT fecha, mensaje FROM logs_postventa WHERE {condicion_tiempo} ORDER BY id DESC"), conn)
+        
+        if not df_logs.empty:
+            df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
+            lineas_log = [f"[{row['fecha'].strftime('%Y-%m-%d %H:%M:%S')}] {row['mensaje']}" for _, row in df_logs.iterrows()]
+            st.code("\n".join(lineas_log), language="log")
+        else:
+            st.warning(f"Aún no hay registros de post-venta generados para el filtro: {filtro_tiempo}")
+
+    except Exception as e:
+        st.error(f"❌ Error leyendo la base de datos: {e}")
+
+def tab_logs_catalogos():
+    st.markdown("### 📑 Logs de Catálogos PDF")
+    st.info("Visualiza en tiempo real la generación y subida de catálogos a Google Drive (Cron de las 4 AM).")
+    
+    c_filtro, c_btn_log = st.columns([8, 2])
+    filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimas 2 horas", "Hoy", "Últimas 24h"], horizontal=True, key="flt_cat")
+    
+    if c_btn_log.button("🔄 Refrescar Logs Catálogos", key="btn_cat"):
+        st.rerun()
+
+    condicion_tiempo = "fecha >= NOW() - INTERVAL '2 hours'" if filtro_tiempo == "Últimas 2 horas" else \
+                       "fecha::date = CURRENT_DATE" if filtro_tiempo == "Hoy" else \
+                       "fecha >= NOW() - INTERVAL '24 hours'"
+    
+    try:
+        with engine.begin() as conn_init:
+            conn_init.execute(text("""
+                CREATE TABLE IF NOT EXISTS logs_catalogos (
+                    id SERIAL PRIMARY KEY,
+                    fecha TIMESTAMP DEFAULT NOW(),
+                    mensaje TEXT
+                )
+            """))
+
+        with engine.connect() as conn:
+            df_logs = pd.read_sql(text(f"SELECT fecha, mensaje FROM logs_catalogos WHERE {condicion_tiempo} ORDER BY id DESC"), conn)
+        
+        if not df_logs.empty:
+            df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
+            lineas_log = [f"[{row['fecha'].strftime('%Y-%m-%d %H:%M:%S')}] {row['mensaje']}" for _, row in df_logs.iterrows()]
+            st.code("\n".join(lineas_log), language="log")
+        else:
+            st.warning(f"Aún no hay registros de catálogos generados para el filtro: {filtro_tiempo}")
+
+    except Exception as e:
+        st.error(f"❌ Error leyendo la base de datos: {e}")
+
+# ==========================================================================
+# 🏗️ RENDERIZADOR PRINCIPAL (Estructura Dinámica)
+# ==========================================================================
 def render_diagnostico():
     st.title("🛠️ Centro de Diagnóstico")
     
-    # --- DECLARACIÓN ACTUALIZADA CON 7 TABS ---
-    tab_logs, tab_woo, tab_inspector, tab_simulador, tab_respuestas, tab_auditoria, tab_marketing = st.tabs([
-        "📡 Logs Webhook", "📡 Logs WOO", "🕵️ Inspector API", "🧪 Simulador (Test)", "🤖 Auto-Respuestas", "⚖️ Auditoría WOO", "📈 Logs Marketing"
-    ])
-    
-    # ==========================================================================
-    # PESTAÑA 1: LOGS DE BASE DE DATOS
-    # ==========================================================================
-    with tab_logs:
-        c_btn, c_info, c_filtro = st.columns([15, 55, 30])
-        
-        if c_btn.button("🔄 Actualizar", key="btn_logs"):
-            st.rerun()
-        
-        c_info.info("Últimos eventos recibidos por el servidor.")
-        
-        # 🕵️ NUEVO: Filtro visual para aislar el diagnóstico
-        solo_lid = c_filtro.checkbox("🕵️ Solo clientes anónimos (LID)", value=True)
-
-        try:
-            with engine.connect() as conn:
-                conn.commit()
-                
-                # Inyectamos la condición SQL si la casilla está marcada
-                condicion_sql = "WHERE event_type = 'TRACE_LID_ANONIMO'" if solo_lid else ""
-                
-                query = f"""
-                    SELECT id, fecha, session_name, event_type, payload 
-                    FROM webhook_logs 
-                    {condicion_sql}
-                    ORDER BY id DESC LIMIT 40
-                """
-                df = pd.read_sql(text(query), conn)
-
-            if df.empty:
-                st.caption("No hay registros recientes.")
-            else:
-                for index, row in df.iterrows():
-                    fecha_str = row['fecha'].strftime("%H:%M:%S")
-                    evento = row['event_type']
-                    
-                    try:
-                        # Corregido: Algunos payloads vienen directo en la raíz y otros anidados
-                        payload_json = json.loads(row['payload'])
-                        p = payload_json.get('payload', payload_json) 
-                        resumen = "Datos..."
-                        icono = "📩"
-                        
-                        if evento == 'message':
-                            body = p.get('body', '') or (p.get('media', {}).get('url', '')) 
-                            if not body: body = "[Multimedia/Sticker]"
-                            origen = "📤 YO" if p.get('fromMe') else f"📥 {p.get('from', '?').split('@')[0]}"
-                            resumen = f"{origen} | {str(body)[:40]}"
-                        
-                        elif evento == 'message.ack':
-                            est_map = {1:'Enviado', 2:'Recibido', 3:'Leído', 4:'Play'}
-                            status = est_map.get(p.get('ack'), str(p.get('ack')))
-                            resumen = f"Estado: {status}"
-                            icono = "✔️"
-                            
-                        # 🕵️ Captura visual del rastreador de anónimos
-                        elif evento == 'TRACE_LID_ANONIMO':
-                            lid_id = payload_json.get('3_registro_panel', {}).get('campo_whatsapp_internal_id', 'Desconocido')
-                            resumen = f"Rastreo de Cliente sin Teléfono | {lid_id}"
-                            icono = "🕵️"
-                            
-                    except Exception as e:
-                        payload_json = {"error": "No JSON", "raw": str(row['payload'])}
-                        resumen = "Log sin formato"
-                        icono = "⚠️"
-
-                    with st.expander(f"{icono} {fecha_str} | {evento} | {resumen}"):
-                        st.text(f"ID Log: {row['id']} | Sesión: {row['session_name']}")
-                        
-                        if evento == 'TRACE_LID_ANONIMO':
-                            st.markdown("### 🔍 Análisis de Cliente Anónimo (LID)")
-                            
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                st.info("**2. ¿Qué dijo WAHA al pedir el teléfono?**")
-                                st.write(payload_json.get("2_waha_resolucion", ""))
-                                
-                                st.warning("**4. ¿Intentó sincronizar con Google?**")
-                                st.write(payload_json.get("4_intento_google", ""))
-                                
-                            with c2:
-                                st.success("**3. ¿Cómo se registró en el Panel?**")
-                                reg = payload_json.get("3_registro_panel", {})
-                                st.write(f"**ID Cliente:** {reg.get('id_cliente')}")
-                                st.write(f"**Campo `telefono`:** `{reg.get('campo_telefono')}`")
-                                st.write(f"**Campo `whatsapp_internal_id`:** `{reg.get('campo_whatsapp_internal_id')}`")
-                                
-                            st.markdown("**1. Payload RAW recibido (Data original):**")
-                            st.json(payload_json.get("1_raw_waha", {}))
-                            
-                        else:
-                            st.json(payload_json)
-
-        except Exception as e:
-            st.error(f"Error leyendo logs: {e}")
-
-    # ==========================================================================
-    # PESTAÑA 2: WOO (Sincronización Bidireccional)
-    # ==========================================================================
-    with tab_woo:
-        st.subheader("🔄 Auditoría Espejo: Local vs WordPress")
-        st.write("Verifica discrepancias entre tu inventario físico y la tienda virtual.")
-
-        c1, c2 = st.columns([1, 2])
-        tienda_url = c1.selectbox("Tienda a auditar:", ["kmlentes.pe", "pelucat.pe"])
-        
-        if st.button("🚀 Iniciar Auditoría Bidireccional", type="primary"):
-            c_hora = st.empty()
-            c_progreso = st.progress(0)
-            c_estado = st.empty()
-            
-            wc_key = os.getenv("WC_KEY", "tu_ck_aqui") 
-            wc_secret = os.getenv("WC_SECRET", "tu_cs_aqui")
-            
-            for paso in ejecutar_auditoria_bidireccional_woo(tienda_url, wc_key, wc_secret):
-                if paso["estado"] == "inicio":
-                    c_hora.info(f"🕒 **Hora de inicio:** {paso['hora']}")
-                    c_estado.caption(paso["msg"])
-                elif paso["estado"] == "procesando":
-                    c_progreso.progress(paso["progreso"] / 100.0)
-                    c_estado.caption(paso["msg"])
-                elif paso["estado"] == "completado":
-                    c_progreso.progress(1.0)
-                    c_estado.success(f"✅ Sincronización Finalizada (Fin: {paso['hora_fin']})")
-                    st.markdown(f"**Resumen:** {paso['resumen']}")
-                    
-                    c_m1, c_m2 = st.columns(2)
-                    c_m1.metric("⚠️ Sobrantes en Local (Faltan en WP)", paso["err_wp"])
-                    c_m2.metric("🚨 Sobrantes en Web (Faltan en DB)", paso["err_db"])
-                elif paso["estado"] == "error":
-                    st.error(f"🔥 Ocurrió un error: {paso['msg']}")
-                    break
-
-        st.divider()
-        st.markdown("### 📋 Último Reporte de Discrepancias")
-        
-        try:
-            with engine.connect() as conn:
-                df_audit = pd.read_sql(text("SELECT tipo_error, sku, detalle, fecha_deteccion FROM auditoria_skus_woo WHERE tienda = :t ORDER BY fecha_deteccion DESC"), conn, params={"t": tienda_url})
-            
-            if df_audit.empty:
-                st.success(f"¡Excelente! No hay discrepancias registradas para {tienda_url}. Ambos catálogos están 100% sincronizados.")
-            else:
-                df_falta_wp = df_audit[df_audit['tipo_error'] == 'Falta en WP'].drop(columns=['tipo_error'])
-                df_falta_db = df_audit[df_audit['tipo_error'] == 'Falta en DB'].drop(columns=['tipo_error'])
-                
-                t1, t2 = st.tabs(["🛒 Faltan en WordPress (Subir a la web)", "📦 Faltan en Base de Datos (Bajar de la web)"])
-                
-                with t1:
-                    st.warning(f"Se encontraron {len(df_falta_wp)} SKUs en tu almacén físico que NO están a la venta en la web.")
-                    st.dataframe(df_falta_wp, use_container_width=True)
-                    
-                with t2:
-                    st.error(f"¡PELIGRO! Hay {len(df_falta_db)} SKUs activos en WordPress que NO existen en tu almacén físico. Podrían comprarte algo sin stock.")
-                    st.dataframe(df_falta_db, use_container_width=True)
-        except Exception:
-            st.info("Aún no se ha realizado ninguna auditoría para esta tienda.")
-
-    # ==========================================================================
-    # PESTAÑA 3: INSPECTOR API
-    # ==========================================================================
-    with tab_inspector:
-        st.info("Consulta directa a WAHA para verificar cómo ve el sistema un chat.")
-        c1, c2 = st.columns(2)
-        session = c1.selectbox("Sesión", ["principal", "default"], key="sel_session")
-        chat_id_manual = c2.text_input("Teléfono (519...)", placeholder="Ej: 51999888777", key="txt_chat_id")
-        
-        if st.button("🔍 Analizar Chat", type="primary"):
-            if not WAHA_URL:
-                st.error("Falta WAHA_URL")
-                return
-
-            chat_target = chat_id_manual.strip()
-            if chat_target and "@" not in chat_target:
-                chat_target = f"{chat_target}@c.us"
-
-            if not chat_target:
-                with st.spinner("Buscando último chat activo..."):
-                    try:
-                        r = requests.get(f"{WAHA_URL}/api/{session}/chats?limit=1", headers=get_headers())
-                        data = r.json()
-                        if data: chat_target = data[0]['id']
-                    except: pass
-
-            if chat_target:
-                st.write(f"📂 Analizando: `{chat_target}`")
-                try:
-                    url_msgs = f"{WAHA_URL}/api/{session}/chats/{chat_target}/messages?limit=5"
-                    r_msg = requests.get(url_msgs, headers=get_headers())
-                    if r_msg.status_code == 200:
-                        mensajes = list(reversed(r_msg.json()))
-                        for msg in mensajes:
-                            ts = msg.get('timestamp', 0)
-                            fecha = datetime.fromtimestamp(int(str(ts)[:10])).strftime('%H:%M:%S')
-                            cuerpo = msg.get('body') or "[Media]"
-                            origen = "📤" if msg.get('fromMe') else "📥"
-                            with st.expander(f"{origen} {fecha} - {cuerpo[:50]}"):
-                                st.json(msg)
-                    else:
-                        st.error(f"Error API: {r_msg.text}")
-                except Exception as e:
-                    st.error(f"Error conexión: {e}")
-            else:
-                st.warning("No se especificó chat.")
-
-    # ==========================================================================
-    # PESTAÑA 4: SIMULADOR (TEST DE INYECCIÓN)
-    # ==========================================================================
-    with tab_simulador:
-        st.markdown("### 🧪 Inyección de Eventos (Mock)")
-        st.info("Envía un JSON directamente a tu Webhook local para probar si la lógica de `remoteJidAlt` y `LID` funciona correctamente.")
-
-        default_json = """{
-  "id": "evt_simulado_001",
-  "timestamp": 1770901602945,
-  "event": "message",
-  "session": "default",
-  "payload": {
-    "id": "false_214924743712877@lid_TEST_SIMULADO",
-    "timestamp": 1770901602,
-    "from": "214924743712877@lid",
-    "fromMe": false,
-    "body": "🔔 PRUEBA DE SIMULACIÓN: Este mensaje debe asignarse al 51963...",
-    "_data": {
-      "key": {
-        "remoteJid": "214924743712877@lid",
-        "remoteJidAlt": "51963168383@s.whatsapp.net",
-        "fromMe": false
-      },
-      "notifyName": "Cliente Simulado"
+    pestanas = {
+        "⚖️ Auditoría WOO": tab_auditoria_woo,
+        "📈 Logs Marketing": tab_logs_marketing,
+        "📦 Logs Post-Venta": tab_logs_postventa,
+        "📑 Logs Catálogos": tab_logs_catalogos # <--- AÑADIDO AQUÍ
     }
-  }
-}"""
-
-        col_url, col_btn = st.columns([70, 30])
-        target_url = col_url.text_input("URL del Webhook", value=WEBHOOK_INTERNAL_URL)
-        json_input = st.text_area("JSON Payload", value=default_json, height=350)
-
-        if col_btn.button("🚀 Disparar Webhook", type="primary", use_container_width=True):
-            try:
-                payload = json.loads(json_input)
-                with st.spinner("Enviando petición POST..."):
-                    response = requests.post(target_url, json=payload, timeout=10)
-                
-                if response.status_code == 200:
-                    st.success(f"✅ Éxito: {response.status_code}")
-                    st.json(response.json())
-                    st.info("👉 Ahora ve a la pestaña 'Chats' y verifica si apareció el mensaje en el número `51963168383`.")
-                else:
-                    st.error(f"❌ Error del Servidor: {response.status_code}")
-                    st.text(response.text)
-            except json.JSONDecodeError:
-                st.error("❌ El texto no es un JSON válido.")
-            except requests.exceptions.ConnectionError:
-                st.error(f"❌ No se pudo conectar a `{target_url}`. ¿Está corriendo el servidor Flask?")
-            except Exception as e:
-                st.error(f"❌ Error inesperado: {str(e)}")
-
-    # ==========================================================================
-    # PESTAÑA 5: GESTIÓN DE RESPUESTAS AUTOMÁTICAS (ZOMBIES)
-    # ==========================================================================
-    with tab_respuestas:
-        st.markdown("### 🤖 Gestión de Clientes Zombie")
-        st.info("💡 **Tip:** Escribe la Frase Clave en minúsculas (ej: `precio`, `info`, `catalogo`). Si necesitas borrar una fila, selecciónala y presiona la tecla `Suprimir` (Delete).")
-        
-        try:
-            with engine.connect() as conn:
-                df_resp = pd.read_sql(text("SELECT id, frase_clave, respuesta_nivel_1, respuesta_nivel_2 FROM respuestas_automaticas ORDER BY id"), conn)
-            
-            editado = st.data_editor(
-                df_resp,
-                num_rows="dynamic",
-                use_container_width=True,
-                column_config={
-                    "id": st.column_config.NumberColumn("ID", disabled=True),
-                    "frase_clave": st.column_config.TextColumn("Frase Clave (minúsculas)", required=True),
-                    "respuesta_nivel_1": st.column_config.TextColumn("Nivel 1 (5 a 10 min)", required=True),
-                    "respuesta_nivel_2": st.column_config.TextColumn("Nivel 2 (6 a 12 horas)", required=True)
-                },
-                key="editor_respuestas"
-            )
-            
-            if st.button("💾 Guardar Cambios en Respuestas", type="primary"):
-                with engine.begin() as conn:
-                    conn.execute(text("DELETE FROM respuestas_automaticas"))
-                    for _, row in editado.iterrows():
-                        if pd.notna(row['frase_clave']) and str(row['frase_clave']).strip():
-                            f_clave = str(row['frase_clave']).strip().lower()
-                            r1 = str(row['respuesta_nivel_1']) if pd.notna(row['respuesta_nivel_1']) else ""
-                            r2 = str(row['respuesta_nivel_2']) if pd.notna(row['respuesta_nivel_2']) else ""
-                            
-                            conn.execute(text("""
-                                INSERT INTO respuestas_automaticas (frase_clave, respuesta_nivel_1, respuesta_nivel_2)
-                                VALUES (:f, :r1, :r2)
-                            """), {"f": f_clave, "r1": r1, "r2": r2})
-                st.success("✅ Respuestas actualizadas correctamente en la Base de Datos.")
-                st.rerun()
-                
-        except Exception as e:
-            st.error(f"❌ Error al cargar/guardar la tabla: {e}")
     
-    # ==========================================================================
-    # PESTAÑA 6: INSPECTOR DE DESAJUSTES DE CATÁLOGO (SQL vs WordPress)
-    # ==========================================================================
-    with tab_auditoria:
-        st.markdown("### ⚖️ Conciliación de Catálogo (PostgreSQL vs WordPress)")
-        st.info("Muestra las discrepancias atrapadas durante la última ejecución de la sincronización de stock en segundo plano.")
-        
-        col_btn_aud, col_vacio = st.columns([2, 8])
-        if col_btn_aud.button("🔄 Refrescar Auditoría", key="btn_ref_aud"):
-            st.rerun()
-            
-        try:
-            with engine.connect() as conn:
-                df_aud = pd.read_sql(text("SELECT tienda, tipo_error, sku, detalle, fecha_deteccion FROM auditoria_skus_woo ORDER BY tienda, tipo_error, sku"), conn)
-        except Exception:
-            df_aud = pd.DataFrame() 
-            
-        if df_aud.empty:
-            st.success("✨ **¡Catálogo Inmaculado!** No existen SKUs huérfanos ni discrepancias entre tu PostgreSQL local y WooCommerce en ninguna de tus tiendas.")
-        else:
-            tiendas_afectadas = df_aud['tienda'].unique()
-            for t in tiendas_afectadas:
-                st.markdown(f"#### 🏪 Instancia: `{t}`")
-                df_t = df_aud[df_aud['tienda'] == t]
-                
-                c_db_woo, c_woo_db = st.columns(2)
-                
-                with c_db_woo:
-                    df_faltan_woo = df_t[df_t['tipo_error'] == 'FALTA_EN_WOO']
-                    st.error(f"🔴 En tu BD pero NO en WordPress ({len(df_faltan_woo)})")
-                    st.caption("Falta crear estos ítems en tu página web:")
-                    if not df_faltan_woo.empty:
-                        st.dataframe(df_faltan_woo[['sku', 'detalle']], hide_index=True, use_container_width=True)
-                    else:
-                        st.write("Todo en orden aquí ✔️")
-                        
-                with c_woo_db:
-                    df_faltan_db = df_t[df_t['tipo_error'] == 'FALTA_EN_DB']
-                    st.warning(f"🟡 En WordPress pero NO en tu BD ({len(df_faltan_db)})")
-                    st.caption("Falta registrar este SKU en tu inventario de Streamlit:")
-                    if not df_faltan_db.empty:
-                        st.dataframe(df_faltan_db[['sku', 'detalle']], hide_index=True, use_container_width=True)
-                    else:
-                        st.write("Todo en orden aquí ✔️")
-                st.divider()
-
-    # ==========================================================================
-    # PESTAÑA 7: LOGS DE MARKETING (LECTURA SQL CLOUD-NATIVE)
-    # ==========================================================================
-    with tab_marketing:
-        st.markdown("### 📈 Auditoría del Motor de Marketing")
-        st.info("Visualiza en tiempo real las operaciones del bot. Ahora conectado de forma nativa a PostgreSQL (sin archivos de texto locales).")
-        
-        c_filtro, c_btn_log = st.columns([8, 2])
-        filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimas 2 horas", "Hoy", "Últimas 24h"], horizontal=True)
-        
-        if c_btn_log.button("🔄 Refrescar Logs", key="btn_refresh_mkt"):
-            st.rerun()
-
-        # LIMPIEZA: Condición SQL directa sin los desfases de - INTERVAL '5 hours'
-        if filtro_tiempo == "Últimas 2 horas":
-            condicion_tiempo = "fecha >= NOW() - INTERVAL '2 hours'"
-        elif filtro_tiempo == "Hoy":
-            condicion_tiempo = "fecha::date = CURRENT_DATE"
-        else:
-            condicion_tiempo = "fecha >= NOW() - INTERVAL '24 hours'"
-        
-        try:
-            # Auto-creación de tabla de contingencia
-            with engine.begin() as conn_init:
-                conn_init.execute(text("""
-                    CREATE TABLE IF NOT EXISTS logs_marketing (
-                        id SERIAL PRIMARY KEY,
-                        fecha TIMESTAMP DEFAULT NOW(),
-                        mensaje TEXT
-                    )
-                """))
-
-            with engine.connect() as conn:
-                df_logs = pd.read_sql(text(f"""
-                    SELECT fecha, mensaje 
-                    FROM logs_marketing 
-                    WHERE {condicion_tiempo}
-                    ORDER BY id DESC
-                """), conn)
-            
-            if not df_logs.empty:
-                # LIMPIEZA: Se elimina el pd.Timedelta(hours=5) porque ya no hay desfase
-                df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
-                
-                lineas_log = []
-                for _, row in df_logs.iterrows():
-                    fecha_f = row['fecha'].strftime("%Y-%m-%d %H:%M:%S")
-                    lineas_log.append(f"[{fecha_f}] {row['mensaje']}")
-                
-                st.code("\n".join(lineas_log), language="log")
-            else:
-                st.warning(f"Aún no hay registros de marketing generados para el filtro: {filtro_tiempo}")
-
-        except Exception as e:
-            st.error(f"❌ Error leyendo la base de datos: {e}")
+    tabs_obj = st.tabs(list(pestanas.keys()))
+    
+    for tab, nombre_pestana in zip(tabs_obj, pestanas.keys()):
+        with tab:
+            pestanas[nombre_pestana]()

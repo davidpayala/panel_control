@@ -12,10 +12,22 @@ from sqlalchemy import text
 from database import engine
 from utils import enviar_mensaje_whatsapp
 
+# --- FUNCIÓN DE REGISTRO EN SQL ---
+def log_mkt(mensaje):
+    """Guarda el log en la Base de Datos e imprime en consola"""
+    mensaje_limpio = str(mensaje).lstrip('\n')
+    print(mensaje_limpio, flush=True)
+    if engine is not None:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("INSERT INTO logs_postventa (fecha, mensaje) VALUES (NOW(), :msg)")
+                    {"msg": mensaje_limpio}
+                )
+        except Exception as e:
+            print(f"Error crítico escribiendo log en BD: {e}")
+
 def calcular_dias_sin_domingos(fecha_inicio, fecha_fin):
-    """
-    Calcula la diferencia en días entre dos fechas excluyendo los domingos.
-    """
     dias_totales = (fecha_fin.date() - fecha_inicio.date()).days
     if dias_totales <= 0:
         return 0
@@ -23,7 +35,6 @@ def calcular_dias_sin_domingos(fecha_inicio, fecha_fin):
     dias_validos = 0
     for i in range(1, dias_totales + 1):
         dia_evaluado = fecha_inicio.date() + timedelta(days=i)
-        # weekday() devuelve 6 para los domingos
         if dia_evaluado.weekday() != 6: 
             dias_validos += 1
             
@@ -31,14 +42,13 @@ def calcular_dias_sin_domingos(fecha_inicio, fecha_fin):
 
 def ejecutar_agradecimientos_automaticos():
     if engine is None:
-        print("❌ Error fatal: No se pudo conectar a la base de datos (engine es None).")
+        log_mkt("❌ Error fatal: No se pudo conectar a la base de datos (engine es None).")
         return
 
-    print("Iniciando revisión de clientes 'En Camino' excluyendo domingos...")
+    log_mkt("🚀 Iniciando revisión de clientes 'En Camino' excluyendo domingos...")
     
     query_etapa = text("SELECT id_etapa FROM EtapasCliente WHERE subgrupo ILIKE 'sin empezar' LIMIT 1")
     
-    # Consulta extraída de la tabla Clientes
     query_clientes = text("""
         WITH ultima_interaccion AS (
             SELECT DISTINCT ON (tc.id_cliente)
@@ -69,38 +79,32 @@ def ejecutar_agradecimientos_automaticos():
           AND c.activo = TRUE
     """)
 
-    # --- FASE 1: LECTURA RÁPIDA (Sin bloquear la BD) ---
     try:
         with engine.connect() as conn:
             res_etapa = conn.execute(query_etapa).fetchone()
             id_etapa_sin_empezar = res_etapa[0] if res_etapa else None
-
             df_clientes = pd.read_sql(query_clientes, conn)
             
         if df_clientes.empty:
-            print("No hay clientes en estado 'En camino'.")
+            log_mkt("ℹ️ No hay clientes en estado 'En camino'.")
             return
             
     except Exception as e:
-        print(f"❌ Error al consultar la base de datos: {e}")
+        log_mkt(f"❌ Error al consultar la base de datos: {e}")
         return
 
-    # Usamos zona horaria de Lima para evitar desajustes con el servidor
     tz_lima = pytz.timezone('America/Lima')
     ahora = datetime.now(tz_lima).replace(tzinfo=None)
 
-    # --- FASE 2: PROCESAMIENTO CLIENTE POR CLIENTE ---
     for _, row in df_clientes.iterrows():
         try:
             id_cliente = row['id_cliente']
             
-            # Limpieza y validación anti-nan
             telefono = str(row['telefono']).strip()
             if pd.isna(row['telefono']) or telefono.lower() == 'nan' or not telefono:
-                print(f"⚠️ Cliente {id_cliente} ignorado: No tiene un número de teléfono válido registrado.")
+                log_mkt(f"⚠️ Cliente {id_cliente} ignorado: No tiene un número de teléfono válido registrado.")
                 continue
                 
-            # A partir de aquí tu código sigue igual...
             sesion_detectada = str(row['session_name']).strip().lower() if pd.notna(row['session_name']) and str(row['session_name']).strip() else 'default'
             tipo_envio = str(row['tipo_envio']).upper() if pd.notna(row['tipo_envio']) else 'OTROS'
             
@@ -112,7 +116,7 @@ def ejecutar_agradecimientos_automaticos():
             dias_objetivo = 7 if tipo_envio == 'AGENCIA' else 2
 
             if dias_transcurridos >= dias_objetivo:
-                print(f"[{telefono}] Han pasado {dias_transcurridos} días hábiles (Objetivo: {dias_objetivo} por {tipo_envio}). Enviando agradecimiento vía '{sesion_detectada}'...")
+                log_mkt(f"[{telefono}] Han pasado {dias_transcurridos} días hábiles (Objetivo: {dias_objetivo} por {tipo_envio}). Enviando agradecimiento vía '{sesion_detectada}'...")
                 
                 nombre_ia_val = str(row['nombre_ia']).strip() if pd.notna(row['nombre_ia']) else ""
                 saludo = f"¡Hola {nombre_ia_val}! 👋\n\n" if nombre_ia_val else "¡Hola! 👋\n\n"
@@ -124,10 +128,7 @@ def ejecutar_agradecimientos_automaticos():
                     f"Si necesitas asistencia o tienes alguna duda, este chat siempre está abierto para ti."
                 )
                 
-                # API Call de WhatsApp (SIN bloquear base de datos)
                 if enviar_mensaje_whatsapp(telefono, mensaje, session=sesion_detectada):
-                    
-                    # --- FASE 3: ESCRITURA RÁPIDA EN BD (Micro-transacción) ---
                     with engine.begin() as conn_upd:
                         conn_upd.execute(text("""
                             UPDATE Clientes 
@@ -141,17 +142,14 @@ def ejecutar_agradecimientos_automaticos():
                             WHERE id_cliente = :id
                         """), {"id": int(id_cliente)})
                     
-                    print(f"✅ Cliente {id_cliente} actualizado a 'Sin empezar' con deuda 0.")
-                    
-                    # Mecanismo anti-spam SEGURO
-                    print("⏳ Esperando 30 segundos por seguridad anti-spam...")
+                    log_mkt(f"✅ Cliente {id_cliente} actualizado a 'Sin empezar' con deuda 0.")
                     time.sleep(30) 
                 else:
-                    print(f"⚠️ Falló el envío a {telefono}, se intentará de nuevo en la siguiente ronda.")
+                    log_mkt(f"⚠️ Falló el envío a {telefono}, se intentará de nuevo en la siguiente ronda.")
 
         except Exception as e:
-            print(f"❌ Error procesando al cliente {id_cliente} ({telefono}): {e}")
-            continue # Permite que el sistema pase al siguiente cliente sin morir
+            log_mkt(f"❌ Error procesando al cliente {id_cliente} ({telefono}): {e}")
+            continue 
 
 if __name__ == "__main__":
     ejecutar_agradecimientos_automaticos()
