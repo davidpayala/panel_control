@@ -1271,15 +1271,18 @@ def publicar_en_facebook_via_webhook(mensaje, url_imagen, webhook_url):
     if not webhook_url or "make.com" not in webhook_url:
          return False, "La URL del Webhook no parece válida."
 
+    # Invocamos al conversor (Asegúrate de que utils esté importado arriba en tu archivo principal)
+    from utils import obtener_imagen_jpg_b64
+    imagen_jpg_b64 = obtener_imagen_jpg_b64(url_imagen)
+
     payload = {
         "mensaje": mensaje,
-        "url_imagen": url_imagen
+        "url_imagen": url_imagen, # Mantenemos la original por si acaso
+        "imagen_b64_jpg": imagen_jpg_b64 # 👈 Make.com ahora usará esta
     }
     
     try:
-        response = requests.post(webhook_url, json=payload, timeout=10)
-        
-        # Make.com devuelve 200 y el texto "Accepted" si todo va bien
+        response = requests.post(webhook_url, json=payload, timeout=15)
         if response.status_code == 200:
             return True, response.text
         else:
@@ -1287,7 +1290,6 @@ def publicar_en_facebook_via_webhook(mensaje, url_imagen, webhook_url):
             return False, response.text
     except Exception as e:
         return False, str(e)
-
 
 
 def ejecutar_auditoria_bidireccional_woo(tienda_url, wc_key, wc_secret):
@@ -1501,3 +1503,26 @@ def generar_pdf_catalogo(df_filtrado):
     doc.build(elementos)
     buffer.seek(0)
     return buffer
+    
+def obtener_imagen_jpg_b64(url_imagen):
+    """Descarga una imagen (ej. WebP), la convierte a JPG y retorna su Base64"""
+    import requests
+    import base64
+    import io
+    from PIL import Image
+
+    if not url_imagen: 
+        return None
+
+    try:
+        r = requests.get(url_imagen, timeout=10)
+        if r.status_code == 200:
+            # Forzamos la conversión a RGB para eliminar transparencias y guardar como JPEG
+            img = Image.open(io.BytesIO(r.content)).convert("RGB")
+            buffered = io.BytesIO()
+            img.save(buffered, format="JPEG", quality=85)
+            return base64.b64encode(buffered.getvalue()).decode("utf-8")
+    except Exception as e:
+        print(f"🔥 Error convirtiendo imagen a JPG: {e}", flush=True)
+    
+    return None

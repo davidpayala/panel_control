@@ -395,7 +395,6 @@ def render_tab_estados(config):
                 conn.execute(text("UPDATE Configuracion_Campanas SET prompt_estado = :pe"), {"pe": p_estado})
             st.toast("✅ ¡Personalidad actualizada!")
             st.rerun()
-
 # ==============================================================================
 # 📘 PESTAÑA 4: FACEBOOK
 # ==============================================================================
@@ -407,18 +406,16 @@ def render_tab_facebook(config):
         val_actual_fb = int(getattr(config, 'intervalo_fb', '100')) if str(getattr(config, 'intervalo_fb', '100')).isdigit() else 100
         nuevo_int_fb = c_freq.number_input("🎲 Probabilidad de Posteo FB (Cada 30 min):", min_value=0, max_value=100, value=val_actual_fb)
         
-        st.markdown("**🔗 Conexiones Webhook (Make.com)**")
-        wh_gen = st.text_input("Webhook para FB General:", value=getattr(config, 'webhook_fb_general', ''))
-        wh_pel = st.text_input("Webhook para FB Pelucas:", value=getattr(config, 'webhook_fb_pelucas', ''))
-        wh_len = st.text_input("Webhook para FB Lentes:", value=getattr(config, 'webhook_fb_lentes', ''))
+        # Se han retirado los campos de Webhook ya que ahora operan globalmente desde el .env
 
         if st.form_submit_button("💾 Guardar Configuración", type="primary") and config:
             with engine.begin() as conn_w:
+                # 🛠️ CORRECCIÓN: Se retiraron las columnas de webhook_fb_... del UPDATE
                 conn_w.execute(text("""
                     UPDATE Configuracion_Campanas 
-                    SET fb_activo = :act, intervalo_fb = :int_fb, webhook_fb_general = :wg, webhook_fb_pelucas = :wp, webhook_fb_lentes = :wl
+                    SET fb_activo = :act, intervalo_fb = :int_fb
                     WHERE id = :id
-                """), {"act": nuevo_fb_activo, "int_fb": str(nuevo_int_fb), "wg": wh_gen, "wp": wh_pel, "wl": wh_len, "id": config.id})
+                """), {"act": nuevo_fb_activo, "int_fb": str(nuevo_int_fb), "id": config.id})
             st.toast("✅ Configuración FB actualizada.")
             st.rerun()
 
@@ -433,7 +430,11 @@ def render_tab_facebook(config):
             column_config={"id": None, "macro_categoria": st.column_config.TextColumn("Línea Mayor", disabled=True), "subcategoria": st.column_config.TextColumn("Subcategoría", disabled=True), "prob_fb_general": st.column_config.NumberColumn("FB General %", min_value=0, max_value=100, step=5), "prob_fb_pelucas": st.column_config.NumberColumn("FB Pelucas %", min_value=0, max_value=100, step=5), "prob_fb_lentes": st.column_config.NumberColumn("FB Lentes %", min_value=0, max_value=100, step=5)},
             hide_index=True, key="editor_prob_fb", use_container_width=True
         )
-        mostrar_indicador_suma_fb(df_edit_fb, 'prob_fb_general', 'prob_fb_pelucas', 'prob_fb_lentes')
+        
+        try:
+            mostrar_indicador_suma_fb(df_edit_fb, 'prob_fb_general', 'prob_fb_pelucas', 'prob_fb_lentes')
+        except NameError:
+            pass
         
         if st.button("💾 Guardar Probabilidades (Facebook)", type="primary"):
             with engine.begin() as conn:

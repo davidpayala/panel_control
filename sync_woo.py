@@ -1,12 +1,15 @@
 import os
 import time
 from datetime import datetime
+
+# 1. Cargar las llaves de seguridad y Motor Global con RUTA ABSOLUTA
 from dotenv import load_dotenv
+ruta_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+load_dotenv(ruta_env)
+
 from woocommerce import API
 from sqlalchemy import create_engine, text
 
-# 1. Cargar las llaves de seguridad y Motor Global
-load_dotenv()
 engine = create_engine(os.getenv("DATABASE_URL"))
 
 # --- FUNCIÓN DE REGISTRO EN SQL ---

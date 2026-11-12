@@ -4,9 +4,10 @@ import pandas as pd
 from datetime import datetime, timedelta
 import pytz
 
-# 1. CARGAR VARIABLES DE ENTORNO ANTES DE IMPORTAR LA BD
+# 1. CARGAR VARIABLES DE ENTORNO CON RUTA ABSOLUTA (Fundamental para Cron)
 from dotenv import load_dotenv
-load_dotenv()
+ruta_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+load_dotenv(ruta_env)
 
 from sqlalchemy import text
 from database import engine
@@ -21,7 +22,7 @@ def log_mkt(mensaje):
         try:
             with engine.begin() as conn:
                 conn.execute(
-                    text("INSERT INTO logs_postventa (fecha, mensaje) VALUES (NOW(), :msg)")
+                    text("INSERT INTO logs_postventa (fecha, mensaje) VALUES (NOW(), :msg)"),
                     {"msg": mensaje_limpio}
                 )
         except Exception as e:

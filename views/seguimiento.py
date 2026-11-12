@@ -60,37 +60,46 @@ def render_seguimiento():
         with engine.connect() as conn:
             query_seg = text("""
                 SELECT 
-                    c.id_cliente, c.nombre_corto, c.estado, c.fecha_seguimiento, 
-                    
-                    -- CORRECCIÓN 1: Obtener el teléfono desde telefonoscliente
-                    COALESCE(
-                        (SELECT tc.telefono FROM telefonoscliente tc WHERE tc.id_cliente = c.id_cliente AND tc.es_principal = TRUE AND tc.activo = TRUE LIMIT 1),
-                        'Sin Contacto'
-                    ) as telefono,
-                    
-                    -- CORRECCIÓN 2: Datos de Venta (Se añade anulado = FALSE)
-                    v.id_venta, v.total_venta, v.clave_seguridad, 
-                    v.fecha_venta, 
-                    v.pendiente_pago,
-                    (SELECT STRING_AGG(d.cantidad || 'x ' || d.descripcion, ', ') 
-                        FROM DetalleVenta d WHERE d.id_venta = v.id_venta) as resumen_items,
-
-                    -- Datos de Dirección
-                    dir.id_direccion, dir.tipo_envio, dir.nombre_receptor, dir.telefono_receptor, 
-                    dir.direccion_texto, dir.distrito, 
-                    dir.referencia, dir.gps_link, dir.observacion,
-                    dir.dni_receptor, dir.agencia_nombre, dir.sede_entrega
-
+                    c.id_cliente, c.nombre_corto, c.estado, c.fecha_seguimiento,
+                    COALESCE(tc.telefono, 'Sin Contacto') AS telefono,
+                    v.id_venta, v.total_venta, v.clave_seguridad, v.fecha_venta, v.pendiente_pago,
+                    v.resumen_items,
+                    dir.id_direccion, dir.tipo_envio, dir.nombre_receptor, dir.telefono_receptor,
+                    dir.direccion_texto, dir.distrito, dir.referencia, dir.gps_link,
+                    dir.observacion, dir.dni_receptor, dir.agencia_nombre, dir.sede_entrega
                 FROM Clientes c
+                
+                -- Extraer teléfono principal
                 LEFT JOIN LATERAL (
-                    SELECT * FROM Ventas v2 WHERE v2.id_cliente = c.id_cliente AND v2.anulado = FALSE ORDER BY v2.id_venta DESC LIMIT 1
+                    SELECT telefono FROM telefonoscliente t
+                    WHERE t.id_cliente = c.id_cliente AND t.activo = TRUE AND t.es_principal = TRUE
+                    LIMIT 1
+                ) tc ON TRUE
+                
+                -- Extraer última venta válida
+                LEFT JOIN LATERAL (
+                    SELECT v2.id_venta, v2.total_venta, v2.clave_seguridad, v2.fecha_venta, v2.pendiente_pago,
+                           (SELECT STRING_AGG(d.cantidad || 'x ' || d.descripcion, ', ') 
+                            FROM DetalleVenta d WHERE d.id_venta = v2.id_venta) AS resumen_items
+                    FROM Ventas v2
+                    WHERE v2.id_cliente = c.id_cliente AND v2.anulado = FALSE
+                    ORDER BY v2.id_venta DESC
+                    LIMIT 1
                 ) v ON TRUE
+                
+                -- Extraer última dirección
                 LEFT JOIN LATERAL (
-                    SELECT * FROM Direcciones d2 
-                    WHERE d2.id_cliente = c.id_cliente AND d2.activo = TRUE 
-                    ORDER BY d2.es_principal DESC, d2.id_direccion DESC LIMIT 1
+                    SELECT id_direccion, tipo_envio, nombre_receptor, telefono_receptor,
+                           direccion_texto, distrito, referencia, gps_link, observacion,
+                           dni_receptor, agencia_nombre, sede_entrega
+                    FROM Direcciones d2
+                    WHERE d2.id_cliente = c.id_cliente AND d2.activo = TRUE
+                    ORDER BY d2.es_principal DESC, d2.id_direccion DESC
+                    LIMIT 1
                 ) dir ON TRUE
+                
                 WHERE c.activo = TRUE 
+                  AND (c.estado IS NULL OR c.estado NOT ILIKE 'Sin empezar')
                 ORDER BY c.fecha_seguimiento ASC
             """)
             df_loaded = pd.read_sql(query_seg, conn)
