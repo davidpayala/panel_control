@@ -10,7 +10,7 @@ load_dotenv(ruta_env)
 import requests
 import random
 import time
-import subprocess # 🛠️ NUEVO: Importado para reiniciar el contenedor WAHA
+import subprocess
 from datetime import datetime
 from sqlalchemy import text
 from database import engine
@@ -21,7 +21,8 @@ from utils import (
     enviar_mensaje_whatsapp, 
     subir_estado_whatsapp,
     generar_texto_producto_ia,
-    publicar_en_facebook_via_webhook
+    publicar_en_facebook_via_webhook,
+    obtener_imagen_jpg_b64
 )
 
 # ==============================================================================
@@ -37,7 +38,7 @@ def log_mkt(mensaje):
                 text("INSERT INTO logs_marketing (fecha, mensaje) VALUES (NOW(), :msg)"), 
                 {"msg": mensaje_limpio}
             )
-    except Exception as e:
+    except Exception:
         try:
             with engine.begin() as conn_fix:
                 conn_fix.execute(text("""
@@ -57,7 +58,7 @@ def log_mkt(mensaje):
             print(f"Error crítico escribiendo log en BD: {e2}", flush=True)
 
 # ==============================================================================
-# 🧠 MOTOR DE SELECCIÓN DE PRODUCTOS
+# 🧠 MOTOR DE SELECCIÓN DE PRODUCTOS (Optimizado en RAM)
 # ==============================================================================
 def buscar_producto_dinamico(conn, col_probabilidad):
     query_pesos = text(f"""
@@ -82,9 +83,15 @@ def buscar_producto_dinamico(conn, col_probabilidad):
     eleccion = random.choices(opciones, weights=pesos, k=1)[0]
     macro_elegida, cat_elegida = eleccion
     
+    # 🛠️ OPTIMIZACIÓN RAM: NOT EXISTS en lugar de NOT IN
     condicion_historial = ""
     if 'est_' in col_probabilidad:
-        condicion_historial = "AND v.sku NOT IN (SELECT sku FROM Historial_Estados WHERE fecha_publicacion > NOW() - INTERVAL '14 days')"
+        condicion_historial = """
+            AND NOT EXISTS (
+                SELECT 1 FROM Historial_Estados he 
+                WHERE he.sku = v.sku AND he.fecha_publicacion > NOW() - INTERVAL '14 days'
+            )
+        """
         
     query_prod = text(f"""
         SELECT 
@@ -94,6 +101,7 @@ def buscar_producto_dinamico(conn, col_probabilidad):
         FROM Variantes v
         JOIN Productos p ON v.id_producto = p.id_producto
         LEFT JOIN Subcategorias_Sistema s ON TRIM(p.categoria) ILIKE TRIM(s.subcategoria)
+                                         AND TRIM(p.macro_categoria) ILIKE TRIM(s.macro_categoria)
         WHERE TRIM(p.categoria) ILIKE :cat
           AND TRIM(p.macro_categoria) ILIKE :macro
           AND COALESCE(v.stock_interno, 0) > 0
@@ -142,7 +150,6 @@ def buscar_producto_dinamico(conn, col_probabilidad):
 def ejecutar_francotirador():
     log_mkt("🤖 Despertando Motor de Marketing Multi-Terminal...")
     
-    # 🛠️ NUEVO: Lógica de recolección de argumentos para test aislado
     es_modo_test = "--test" in sys.argv or "--now" in sys.argv
     tarea_objetivo = None
     for arg in sys.argv:
@@ -162,14 +169,32 @@ def ejecutar_francotirador():
             try:
                 if str(texto).isdigit(): return int(texto)
                 else: return 100
-            except:
+            except Exception:
                 return 100 
 
         prob_msg = obtener_probabilidad(config.intervalo_mensajes)
         prob_est = obtener_probabilidad(config.intervalo_estados)
         prob_fb  = obtener_probabilidad(getattr(config, 'intervalo_fb', '100'))
         
-        max_mensajes_nuevos_dia = getattr(config, 'max_mensajes_nuevos_dia', 10) 
+        # 🛠️ CORRECCIÓN: Definimos 'obreros' globalmente para que TAREA 1 y TAREA 4 puedan usarla siempre
+        obreros = [
+            {
+                "sesion": "principal", 
+                "col_prob": "prob_msg_principal", 
+                "nombre_vis": "Principal", 
+                "limite_nuevos": getattr(config, 'max_nuevos_principal', getattr(config, 'max_mensajes_nuevos_dia', 10)),
+                "limite_total": getattr(config, 'max_mensajes_principal', config.max_mensajes_dia),
+                "probabilidad": obtener_probabilidad(getattr(config, 'intervalo_mensajes_principal', config.intervalo_mensajes))
+            },
+            {
+                "sesion": "default", 
+                "col_prob": "prob_msg_default", 
+                "nombre_vis": "Lentes", 
+                "limite_nuevos": getattr(config, 'max_nuevos_default', getattr(config, 'max_mensajes_nuevos_dia', 10)),
+                "limite_total": getattr(config, 'max_mensajes_default', config.max_mensajes_dia),
+                "probabilidad": obtener_probabilidad(getattr(config, 'intervalo_mensajes_default', config.intervalo_mensajes))
+            }
+        ]
 
         if not es_modo_test:
             retraso_minutos = random.randint(1, 25) 
@@ -185,18 +210,6 @@ def ejecutar_francotirador():
             FROM Configuracion_Campanas LIMIT 1
             """)
             tiempos = conn.execute(query_tiempo).fetchone()
-            
-            query_conteo_nuevos = text("""
-                SELECT COUNT(DISTINCT m.telefono)
-                FROM mensajes m
-                WHERE m.tipo = 'SALIENTE_BOT'
-                  AND m.fecha::date = CURRENT_DATE
-                  AND NOT EXISTS (
-                      SELECT 1 FROM mensajes me
-                      WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
-                  )
-            """)
-            enviados_nuevos_hoy = conn.execute(query_conteo_nuevos).scalar() or 0
 
         min_pasados_msg = tiempos.min_pasados_msg if tiempos and tiempos.min_pasados_msg >= 0 else 9999
         min_pasados_est = tiempos.min_pasados_est if tiempos and tiempos.min_pasados_est >= 0 else 9999
@@ -209,12 +222,16 @@ def ejecutar_francotirador():
         tiempo_ok_est = es_modo_test or (min_pasados_est >= 10)
         tiempo_ok_fb  = es_modo_test or (min_pasados_fb >= 10)
 
+        # ==================================================================
+        # 🛡️ VERIFICACIÓN DE SALUD WAHA (Puertos 3000 y 3001)
+        # ==================================================================
         waha_key = os.getenv("WAHA_KEY", "")
         waha_ok = False
         
+        # Contenedores reales en Docker: 'waha' (3000) y 'waha-estados' (3001)
         instancias_waha = [
             {"puerto": 3000, "contenedor": "waha", "nombre_sesion": "default"},
-            {"puerto": 3001, "contenedor": "waha_3001", "nombre_sesion": "principal"}
+            {"puerto": 3001, "contenedor": "waha-estados", "nombre_sesion": "principal"}
         ]
         
         def comprobar_estado_waha(puerto, nombre_sesion):
@@ -228,68 +245,76 @@ def ejecutar_francotirador():
                 
                 if res.status_code == 200:
                     sesiones = res.json()
-                    sesiones_activas = {s.get('name'): s.get('status') for s in sesiones}
+                    sesiones_activas = {s.get('name'): s.get('status') for s in sesiones if isinstance(s, dict)}
                     
+                    # 1. Verifica si la sesión específica está WORKING
                     if sesiones_activas.get(nombre_sesion) == 'WORKING':
-                        return True, "WORKING"
-                    return False, f"La sesión '{nombre_sesion}' no está óptima: {sesiones_activas}"
+                        return True, f"Sesión '{nombre_sesion}' WORKING"
+                    # 2. Respaldo: Si en ese puerto las sesiones tienen otro nombre pero están WORKING
+                    if 'WORKING' in sesiones_activas.values():
+                        return True, f"Operativo ({sesiones_activas})"
+                        
+                    return False, f"Sesiones no óptimas en puerto {puerto}: {sesiones_activas}"
                 
                 return False, f"WAHA respondió con error HTTP {res.status_code}"
             except Exception as e:
                 return False, f"Error de red/timeout: {e}"
 
-        log_mkt("🔍 Verificando salud de WAHA y sesiones (default en 3000, principal en 3001)...")
-        
-        contenedores_reiniciados = []
-        estados_finales = []
+        # Si estamos probando SOLO Facebook (Tarea 3), no necesitamos evaluar ni reiniciar WAHA
+        if tarea_objetivo in ['3', 'fb', 'facebook']:
+            log_mkt("⏭️ Verificación de WAHA omitida (Modo exclusivo Facebook).")
+        else:
+            log_mkt("🔍 Verificando salud de WAHA en puertos 3000 y 3001...")
+            contenedores_reiniciados = []
+            estados_finales = []
 
-        for instancia in instancias_waha:
-            puerto = instancia["puerto"]
-            contenedor = instancia["contenedor"]
-            sesion = instancia["nombre_sesion"]
-            
-            ok, detalle_estado = comprobar_estado_waha(puerto, sesion)
-            
-            if ok:
-                log_mkt(f"✅ WAHA operativo en el puerto {puerto} (Sesión '{sesion}').")
-                estados_finales.append(True)
-            else:
-                log_mkt(f"⚠️ Alerta en puerto {puerto} ({sesion}): {detalle_estado}. Iniciando auto-recuperación...")
-                try:
-                    log_mkt(f"♻️ Aplicando reinicio al contenedor {contenedor}...")
-                    subprocess.run(["docker", "restart", contenedor], capture_output=True, text=True, timeout=30)
-                    contenedores_reiniciados.append(instancia)
-                except Exception as e:
-                    log_mkt(f"🔥 Error crítico al intentar reiniciar {contenedor}: {e}")
-                    estados_finales.append(False)
-
-        if contenedores_reiniciados:
-            log_mkt("⏳ Esperando 60 segundos para que los contenedores reiniciados vuelvan a levantar...")
-            time.sleep(60)
-            
-            for instancia in contenedores_reiniciados:
+            for instancia in instancias_waha:
                 puerto = instancia["puerto"]
+                contenedor = instancia["contenedor"]
                 sesion = instancia["nombre_sesion"]
                 
-                log_mkt(f"🔍 Re-evaluando salud de WAHA en puerto {puerto} tras el reinicio...")
                 ok, detalle_estado = comprobar_estado_waha(puerto, sesion)
                 
                 if ok:
-                    log_mkt(f"✅ WAHA en puerto {puerto} se recuperó exitosamente.")
+                    log_mkt(f"✅ WAHA operativo en puerto {puerto}: {detalle_estado}.")
                     estados_finales.append(True)
                 else:
-                    log_mkt(f"❌ WAHA en puerto {puerto} sigue fallando ({detalle_estado}).")
-                    estados_finales.append(False)
+                    log_mkt(f"⚠️ Alerta en puerto {puerto} ({contenedor}): {detalle_estado}. Iniciando auto-recuperación...")
+                    try:
+                        log_mkt(f"♻️ Aplicando reinicio al contenedor {contenedor}...")
+                        subprocess.run(["docker", "restart", contenedor], capture_output=True, text=True, timeout=30)
+                        contenedores_reiniciados.append(instancia)
+                    except Exception as e:
+                        log_mkt(f"🔥 Error crítico al intentar reiniciar {contenedor}: {e}")
+                        estados_finales.append(False)
 
-        waha_ok = all(estados_finales) and len(estados_finales) == len(instancias_waha)
+            if contenedores_reiniciados:
+                log_mkt("⏳ Esperando 60 segundos para que los contenedores reiniciados vuelvan a levantar...")
+                time.sleep(60)
+                
+                for instancia in contenedores_reiniciados:
+                    puerto = instancia["puerto"]
+                    sesion = instancia["nombre_sesion"]
+                    
+                    log_mkt(f"🔍 Re-evaluando salud de WAHA en puerto {puerto} tras el reinicio...")
+                    ok, detalle_estado = comprobar_estado_waha(puerto, sesion)
+                    
+                    if ok:
+                        log_mkt(f"✅ WAHA en puerto {puerto} se recuperó exitosamente ({detalle_estado}).")
+                        estados_finales.append(True)
+                    else:
+                        log_mkt(f"❌ WAHA en puerto {puerto} sigue fallando ({detalle_estado}).")
+                        estados_finales.append(False)
 
-        if waha_ok:
-             log_mkt("✅ Todos los servicios WAHA operativos. Continuando con las tareas.")
-        else:
-             log_mkt("❌ Hay inestabilidad en uno o más servicios WAHA. Se bloquearán las tareas dependientes.")
+            waha_ok = all(estados_finales) and len(estados_finales) == len(instancias_waha)
+
+            if waha_ok:
+                log_mkt("✅ Todos los servicios WAHA operativos. Continuando con las tareas.")
+            else:
+                log_mkt("❌ Hay inestabilidad en uno o más servicios WAHA. Se bloquearán las tareas dependientes.")
 
         # ==================================================================
-        # 🎯 TAREA 1: MENSAJES DIRECTOS CON RESTRICCIÓN DE CONTACTOS FRÍOS
+        # 🎯 TAREA 1: MENSAJES DIRECTOS (Optimizado en RAM)
         # ==================================================================
         if tarea_objetivo and tarea_objetivo not in ['1', 'msg', 'mensajes']:
             log_mkt("⏭️ TAREA 1 OMITIDA: Filtrada por parámetro de prueba (--solo).")
@@ -303,24 +328,6 @@ def ejecutar_francotirador():
             log_mkt(f"⏰ TAREA 1 OMITIDA: Fuera de horario comercial ({config.hora_inicio} a {config.hora_fin}).")
         else:
             log_mkt("▶️ INICIANDO TAREA 1: Evaluando líneas de envío independientes...")            
-            obreros = [
-                {
-                    "sesion": "principal", 
-                    "col_prob": "prob_msg_principal", 
-                    "nombre_vis": "Principal", 
-                    "limite_nuevos": getattr(config, 'max_nuevos_principal', getattr(config, 'max_mensajes_nuevos_dia', 10)),
-                    "limite_total": getattr(config, 'max_mensajes_principal', config.max_mensajes_dia),
-                    "probabilidad": obtener_probabilidad(getattr(config, 'intervalo_mensajes_principal', config.intervalo_mensajes))
-                },
-                {
-                    "sesion": "default", 
-                    "col_prob": "prob_msg_default", 
-                    "nombre_vis": "Lentes", 
-                    "limite_nuevos": getattr(config, 'max_nuevos_default', getattr(config, 'max_mensajes_nuevos_dia', 10)),
-                    "limite_total": getattr(config, 'max_mensajes_default', config.max_mensajes_dia),
-                    "probabilidad": obtener_probabilidad(getattr(config, 'intervalo_mensajes_default', config.intervalo_mensajes))
-                }
-            ]
             
             for obrero in obreros:
                 limite_nuevos_sesion = obrero["limite_nuevos"]
@@ -364,33 +371,49 @@ def ejecutar_francotirador():
                     log_mkt(f"📊 [{obrero['nombre_vis']}] Fríos hoy: {enviados_nuevos_mi_sesion}/{limite_nuevos_sesion} | Totales hoy: {enviados_por_mi}/{limite_total_sesion}")
 
                     prod_elegido = buscar_producto_dinamico(conn, obrero['col_prob'])
-                    if not prod_elegido: continue
+                    if not prod_elegido: 
+                        continue
 
+                    # 🛠️ OPTIMIZACIÓN RAM: Uso de EXISTS y NOT EXISTS en lugar de NOT IN y COUNT(*)
                     query_clientes = text("""
                         WITH Prospectos_Random AS (
                             SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono 
                             FROM clientes c
                             JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
-                            WHERE c.activo = TRUE AND c.estado = 'Sin empezar' AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
-                            AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6
-                            AND t.telefono NOT IN (SELECT telefono FROM mensajes WHERE tipo = 'SALIENTE_BOT' AND fecha > NOW() - INTERVAL '60 days')
-                            AND (
-                                :bloquear_frios = FALSE 
-                                OR 
-                                (SELECT COUNT(*) FROM mensajes m2 WHERE m2.telefono = t.telefono AND m2.tipo = 'ENTRANTE') > 0
-                            )
+                            WHERE c.activo = TRUE 
+                              AND c.estado = 'Sin empezar' 
+                              AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
+                              AND t.activo = TRUE 
+                              AND t.es_principal = TRUE 
+                              AND length(t.telefono) > 6
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM mensajes m_sal 
+                                  WHERE m_sal.telefono = t.telefono 
+                                    AND m_sal.tipo = 'SALIENTE_BOT' 
+                                    AND m_sal.fecha > NOW() - INTERVAL '60 days'
+                              )
+                              AND (
+                                  :bloquear_frios = FALSE 
+                                  OR EXISTS (
+                                      SELECT 1 FROM mensajes m2 
+                                      WHERE m2.telefono = t.telefono AND m2.tipo = 'ENTRANTE'
+                                  )
+                              )
                             ORDER BY RANDOM()
                             LIMIT 50
                         )
                         SELECT 
                             pr.*,
-                            (SELECT COUNT(*) FROM mensajes m2 WHERE m2.telefono = pr.telefono AND m2.tipo = 'ENTRANTE') as total_entrantes,
+                            CASE WHEN EXISTS (
+                                SELECT 1 FROM mensajes m2 WHERE m2.telefono = pr.telefono AND m2.tipo = 'ENTRANTE'
+                            ) THEN 1 ELSE 0 END as total_entrantes,
                             (SELECT session_name FROM mensajes m3 WHERE m3.telefono = pr.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1) as ultima_sesion_entrante
                         FROM Prospectos_Random pr
                     """)
                     clientes_validos = conn.execute(query_clientes, {"bloquear_frios": bloquear_frios_sql}).fetchall()
 
-                if not clientes_validos: continue
+                if not clientes_validos: 
+                    continue
                 prospectos = list(clientes_validos)
 
                 descartes = {"otra_sesion": 0, "limite_frios_alcanzado": 0, "formato_invalido": 0, "sin_waha": 0, "error_api": 0}
@@ -461,8 +484,8 @@ def ejecutar_francotirador():
                         f"Err API: {descartes['error_api']}"
                     )
 
-        with engine.begin() as conn_up:
-            conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_mensajes = NOW() WHERE id = :id"), {"id": config.id})
+            with engine.begin() as conn_up:
+                conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_mensajes = NOW() WHERE id = :id"), {"id": config.id})
 
         # ==================================================================
         # 📱 TAREA 2: ESTADOS CON TRAZABILIDAD EXTREMA
@@ -544,20 +567,19 @@ def ejecutar_francotirador():
                     respuestas_ia = generar_texto_producto_ia(prod_fb, es_estado=True)
                     texto_fb = respuestas_ia.get('post_facebook', '')
                     
-                    from utils import obtener_imagen_jpg_b64
                     imagen_jpg_b64 = obtener_imagen_jpg_b64(prod_fb.get('url_imagen', ''))
 
                     payload_make = {
                         "codigo_acceso": os.getenv("MAKE_ACCESS_CODE"),
-                        "categoria": pagina_elegida["nombre"], 
+                        "categoria": pagina_elegida["nombre"],
                         "mensaje": texto_fb,
                         "imagen_b64_jpg": imagen_jpg_b64,
-                        "url_imagen": prod_fb.get('url_imagen', '') # 👈 AÑADE ESTA LÍNEA
+                        "url_imagen": prod_fb.get('url_imagen', '')
                     }
                     
                     webhook_url = os.getenv("MAKE_WEBHOOK_FB")
                     try:
-                        import requests
+                        # 🛠️ CORRECCIÓN: Se usa 'requests' global (sin re-importar aquí adentro)
                         response = requests.post(webhook_url, json=payload_make, timeout=20)
                         
                         if response.status_code == 200:
@@ -575,7 +597,7 @@ def ejecutar_francotirador():
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_fb = NOW() WHERE id = :id"), {"id": config.id})
                 
         # ==================================================================
-        # 🧟 TAREA 4: REACTIVACIÓN DE CLIENTES ZOMBIES
+        # 🧟 TAREA 4: REACTIVACIÓN DE CLIENTES ZOMBIES (Optimizado en RAM)
         # ==================================================================
         if tarea_objetivo and tarea_objetivo not in ['4', 'zombie', 'zombies']:
             log_mkt("⏭️ TAREA 4 OMITIDA: Filtrada por parámetro de prueba (--solo).")
@@ -601,22 +623,41 @@ def ejecutar_francotirador():
             
             for obrero in obreros: 
                 with engine.connect() as conn:
+                    # 🛠️ OPTIMIZACIÓN RAM: Uso de CTEs (WITH) para evitar escanear 'mensajes' fila por fila
                     query_zombies = text("""
-                        SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, c.nivel_zombie, c.ultimo_msg_zombie, t.telefono,
-                               (SELECT COUNT(DISTINCT (EXTRACT(EPOCH FROM m2.fecha) / 300)::INT) 
-                                FROM mensajes m2 
-                                WHERE m2.telefono = t.telefono 
-                                  AND m2.tipo IN ('SALIENTE_BOT', 'SALIENTE_PANEL') 
-                                  AND m2.fecha >= (NOW() AT TIME ZONE 'America/Lima')::date
-                               ) as msgs_enviados_hoy
-                        FROM Clientes c
-                        JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
-                        WHERE c.activo = TRUE 
-                          AND c.nivel_zombie > 0 
-                          AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
-                          AND t.activo = TRUE 
-                          AND t.es_principal = TRUE
-                          AND TRIM(COALESCE((SELECT session_name FROM mensajes m3 WHERE m3.telefono = t.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1), 'default')) = TRIM(:sess)
+                        WITH Zombies_Base AS (
+                            SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, 
+                                   c.nivel_zombie, c.ultimo_msg_zombie, t.telefono
+                            FROM Clientes c
+                            JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
+                            WHERE c.activo = TRUE 
+                              AND c.nivel_zombie > 0 
+                              AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
+                              AND t.activo = TRUE 
+                              AND t.es_principal = TRUE
+                        ),
+                        Ultima_Sesion_Zombie AS (
+                            SELECT DISTINCT ON (m3.telefono) m3.telefono, m3.session_name
+                            FROM mensajes m3
+                            JOIN Zombies_Base zb ON m3.telefono = zb.telefono
+                            WHERE m3.tipo = 'ENTRANTE'
+                            ORDER BY m3.telefono, m3.fecha DESC
+                        ),
+                        Envios_Hoy_Zombie AS (
+                            SELECT m2.telefono, 
+                                   COUNT(DISTINCT (EXTRACT(EPOCH FROM m2.fecha) / 300)::INT) as msgs_enviados_hoy
+                            FROM mensajes m2
+                            JOIN Zombies_Base zb ON m2.telefono = zb.telefono
+                            WHERE m2.tipo IN ('SALIENTE_BOT', 'SALIENTE_PANEL')
+                              AND m2.fecha >= (NOW() AT TIME ZONE 'America/Lima')::date
+                            GROUP BY m2.telefono
+                        )
+                        SELECT zb.*, 
+                               COALESCE(eh.msgs_enviados_hoy, 0) as msgs_enviados_hoy
+                        FROM Zombies_Base zb
+                        LEFT JOIN Ultima_Sesion_Zombie us ON zb.telefono = us.telefono
+                        LEFT JOIN Envios_Hoy_Zombie eh ON zb.telefono = eh.telefono
+                        WHERE TRIM(COALESCE(us.session_name, 'default')) = TRIM(:sess)
                     """)
                     zombies_validos = conn.execute(query_zombies, {"sess": obrero["sesion"]}).fetchall()
 
@@ -657,13 +698,12 @@ def ejecutar_francotirador():
                     if dado_z > prob_z and not es_modo_test:
                         continue 
                         
-                    numero_msj_actual = zombie.msgs_enviados_hoy + 1
-                    
                     es_primer_contacto_hoy = (zombie.msgs_enviados_hoy == 0)
                     
                     with engine.connect() as conn:
                         prod_zombie = buscar_producto_dinamico(conn, obrero['col_prob'])
-                    if not prod_zombie: continue
+                    if not prod_zombie: 
+                        continue
 
                     cuerpo_ia = generar_texto_producto_ia(
                         prod_zombie, 
@@ -689,7 +729,7 @@ def ejecutar_francotirador():
                             """), {"idc": zombie.id_cliente, "t": zombie.telefono, "c": mensaje_completo, "sess": obrero['sesion']})
                         
                         log_mkt(f"🧟✅ Disparo ZOMBIE (Lvl {nivel_actual}) exitoso a {zombie.telefono} ({obrero['sesion']}).")
-                        log_mkt(f"⏳ Esperando 60 segundos antes de evaluar al siguiente cliente para evitar spam...")
+                        log_mkt("⏳ Esperando 60 segundos antes de evaluar al siguiente cliente para evitar spam...")
                         time.sleep(60)
     except Exception as e:
         log_mkt(f"🔥 Error catastrófico: {e}")
