@@ -43,6 +43,24 @@ def vista_productos():
         if 'df_inventario' not in st.session_state:
             with engine.connect() as conn:
                 q_inv = """
+                    WITH ResumenUbicaciones AS (
+                        SELECT 
+                            su.sku,
+                            COALESCE(SUM(su.cantidad), 0) AS stock_asignado,
+                            STRING_AGG(u.nombre || ' (' || su.cantidad || ' un.)', ' | ') FILTER (WHERE su.cantidad > 0) AS ubicacion_nueva
+                        FROM Stock_Ubicaciones su
+                        JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion
+                        GROUP BY su.sku
+                    ),
+                    ResumenCostos AS (
+                        SELECT 
+                            m.sku,
+                            COALESCE(AVG(m.costo_unitario), 0) AS costo_promedio_anual
+                        FROM Movimientos m
+                        WHERE m.tipo_movimiento = 'PEDIDO_IMPORT'
+                          AND m.fecha >= DATE_TRUNC('year', CURRENT_DATE)
+                        GROUP BY m.sku
+                    )
                     SELECT 
                         v.sku, v.id_producto, v.precio,
                         CASE 
@@ -51,27 +69,24 @@ def vista_productos():
                         END AS macro_categoria, 
                         p.categoria, p.marca, p.modelo, p.nombre,
                         p.color_principal, p.diametro, v.medida, v.stock_interno,
-                        (SELECT COALESCE(SUM(cantidad), 0) FROM Stock_Ubicaciones su WHERE su.sku = v.sku) as stock_asignado,
-                        (SELECT STRING_AGG(u.nombre || ' (' || su.cantidad || ' un.)', ' | ') 
-                         FROM Stock_Ubicaciones su 
-                         JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion 
-                         WHERE su.sku = v.sku AND su.cantidad > 0) as ubicacion_nueva,
-                        v.stock_externo, v.stock_transito, v.ubicacion as ubicacion_antigua, p.importacion,
+                        
+                        COALESCE(ru.stock_asignado, 0) AS stock_asignado,
+                        ru.ubicacion_nueva,
+                        
+                        v.stock_externo, v.stock_transito, v.ubicacion AS ubicacion_antigua, p.importacion,
                         p.url_compra, 
                         COALESCE(NULLIF(TRIM(v.url_imagen), ''), NULLIF(TRIM(p.url_imagen), '')) AS url_imagen,
                         
                         -- NUEVA COLUMNA 1: Costo promedio de compras de este año
-                        (SELECT COALESCE(AVG(m.costo_unitario), 0) 
-                         FROM Movimientos m 
-                         WHERE m.sku = v.sku 
-                           AND m.tipo_movimiento = 'PEDIDO_IMPORT' 
-                           AND EXTRACT(YEAR FROM m.fecha) = EXTRACT(YEAR FROM CURRENT_DATE)) AS costo_promedio_anual,
-                           
+                        COALESCE(rc.costo_promedio_anual, 0) AS costo_promedio_anual,
+                        
                         -- NUEVA COLUMNA 2: Último precio de compra (ya guardado en Variantes)
                         COALESCE(v.costo_compra, 0) AS ultimo_precio_compra
 
                     FROM Variantes v
                     JOIN Productos p ON v.id_producto = p.id_producto
+                    LEFT JOIN ResumenUbicaciones ru ON v.sku = ru.sku
+                    LEFT JOIN ResumenCostos rc ON v.sku = rc.sku
                     ORDER BY macro_categoria DESC, p.marca, p.modelo, v.sku ASC
                 """
                 st.session_state.df_inventario = pd.read_sql(text(q_inv), conn)

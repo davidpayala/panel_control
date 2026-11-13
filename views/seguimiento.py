@@ -59,47 +59,62 @@ def render_seguimiento():
     if 'df_seguimiento_cache' not in st.session_state:
         with engine.connect() as conn:
             query_seg = text("""
+                WITH ClientesActivos AS (
+                    SELECT id_cliente, nombre_corto, estado, fecha_seguimiento
+                    FROM Clientes
+                    WHERE activo = TRUE 
+                      AND (estado IS NULL OR TRIM(estado) NOT ILIKE 'sin empezar')
+                    ORDER BY fecha_seguimiento ASC
+                    LIMIT 500
+                ),
+                TelefonoPrincipal AS (
+                    SELECT DISTINCT ON (t.id_cliente) 
+                        t.id_cliente, t.telefono
+                    FROM telefonoscliente t
+                    INNER JOIN ClientesActivos ca ON t.id_cliente = ca.id_cliente
+                    WHERE t.activo = TRUE AND t.es_principal = TRUE
+                    ORDER BY t.id_cliente, t.id_telefono DESC
+                ),
+                UltimaVenta AS (
+                    SELECT DISTINCT ON (v2.id_cliente) 
+                        v2.id_cliente, v2.id_venta, v2.total_venta, v2.clave_seguridad, 
+                        v2.fecha_venta, v2.pendiente_pago
+                    FROM Ventas v2
+                    INNER JOIN ClientesActivos ca ON v2.id_cliente = ca.id_cliente
+                    WHERE v2.anulado = FALSE
+                    ORDER BY v2.id_cliente, v2.id_venta DESC
+                ),
+                ResumenItems AS (
+                    SELECT 
+                        d.id_venta,
+                        STRING_AGG(d.cantidad || 'x ' || d.descripcion, ', ') AS resumen_items
+                    FROM DetalleVenta d
+                    INNER JOIN UltimaVenta uv ON d.id_venta = uv.id_venta
+                    GROUP BY d.id_venta
+                ),
+                UltimaDireccion AS (
+                    SELECT DISTINCT ON (d2.id_cliente)
+                        d2.id_cliente, d2.id_direccion, d2.tipo_envio, d2.nombre_receptor, 
+                        d2.telefono_receptor, d2.direccion_texto, d2.distrito, d2.referencia, 
+                        d2.gps_link, d2.observacion, d2.dni_receptor, d2.agencia_nombre, d2.sede_entrega
+                    FROM Direcciones d2
+                    INNER JOIN ClientesActivos ca ON d2.id_cliente = ca.id_cliente
+                    WHERE d2.activo = TRUE
+                    ORDER BY d2.id_cliente, d2.es_principal DESC, d2.id_direccion DESC
+                )
                 SELECT 
                     c.id_cliente, c.nombre_corto, c.estado, c.fecha_seguimiento,
                     COALESCE(tc.telefono, 'Sin Contacto') AS telefono,
                     v.id_venta, v.total_venta, v.clave_seguridad, v.fecha_venta, v.pendiente_pago,
-                    v.resumen_items,
+                    ri.resumen_items,
                     dir.id_direccion, dir.tipo_envio, dir.nombre_receptor, dir.telefono_receptor,
                     dir.direccion_texto, dir.distrito, dir.referencia, dir.gps_link,
                     dir.observacion, dir.dni_receptor, dir.agencia_nombre, dir.sede_entrega
-                FROM Clientes c
-                
-                -- Extraer teléfono principal
-                LEFT JOIN LATERAL (
-                    SELECT telefono FROM telefonoscliente t
-                    WHERE t.id_cliente = c.id_cliente AND t.activo = TRUE AND t.es_principal = TRUE
-                    LIMIT 1
-                ) tc ON TRUE
-                
-                -- Extraer última venta válida
-                LEFT JOIN LATERAL (
-                    SELECT v2.id_venta, v2.total_venta, v2.clave_seguridad, v2.fecha_venta, v2.pendiente_pago,
-                           (SELECT STRING_AGG(d.cantidad || 'x ' || d.descripcion, ', ') 
-                            FROM DetalleVenta d WHERE d.id_venta = v2.id_venta) AS resumen_items
-                    FROM Ventas v2
-                    WHERE v2.id_cliente = c.id_cliente AND v2.anulado = FALSE
-                    ORDER BY v2.id_venta DESC
-                    LIMIT 1
-                ) v ON TRUE
-                
-                -- Extraer última dirección
-                LEFT JOIN LATERAL (
-                    SELECT id_direccion, tipo_envio, nombre_receptor, telefono_receptor,
-                           direccion_texto, distrito, referencia, gps_link, observacion,
-                           dni_receptor, agencia_nombre, sede_entrega
-                    FROM Direcciones d2
-                    WHERE d2.id_cliente = c.id_cliente AND d2.activo = TRUE
-                    ORDER BY d2.es_principal DESC, d2.id_direccion DESC
-                    LIMIT 1
-                ) dir ON TRUE
-                
-                WHERE c.activo = TRUE 
-                  AND (c.estado IS NULL OR c.estado NOT ILIKE 'Sin empezar')
+                FROM ClientesActivos c
+                LEFT JOIN TelefonoPrincipal tc ON c.id_cliente = tc.id_cliente
+                LEFT JOIN UltimaVenta v ON c.id_cliente = v.id_cliente
+                LEFT JOIN ResumenItems ri ON v.id_venta = ri.id_venta
+                LEFT JOIN UltimaDireccion dir ON c.id_cliente = dir.id_cliente
                 ORDER BY c.fecha_seguimiento ASC
             """)
             df_loaded = pd.read_sql(query_seg, conn)

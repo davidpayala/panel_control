@@ -282,47 +282,77 @@ def render_chat():
                 tabla = get_table_name(conn)
                 busqueda = st.text_input("🔍 Buscar:", placeholder="Nombre o teléfono...")
                 
+                # --- NUEVA CONSULTA MAESTRA OPTIMIZADA (SIN OR-JOIN NI SUBCONSULTAS CORRELACIONADAS) ---
                 query = f"""
                     WITH chat_summary AS (
+                        -- 1. Agrupar mensajes por teléfono
                         SELECT 
                             telefono, 
                             MAX(fecha) as ultima_interaccion, 
-                            SUM(CASE WHEN leido = FALSE AND tipo = 'ENTRANTE' THEN 1 ELSE 0 END) as no_leidos
-                        FROM mensajes
+                            SUM(CASE WHEN leido = FALSE AND tipo = 'ENTRANTE' THEN 1 ELSE 0 END) as no_leidos 
+                        FROM mensajes 
+                        WHERE telefono IS NOT NULL
                         GROUP BY telefono
                     ),
+                    mapa_telefonos AS (
+                        -- 2. Desglosar telefono y lid en una lista vertical indexable (Elimina el lento OR en el JOIN)
+                        SELECT telefono AS identificador, id_cliente 
+                        FROM telefonoscliente 
+                        WHERE activo = TRUE AND telefono IS NOT NULL AND telefono != ''
+                        UNION
+                        SELECT lid AS identificador, id_cliente 
+                        FROM telefonoscliente 
+                        WHERE activo = TRUE AND lid IS NOT NULL AND lid != ''
+                    ),
                     mapped_chats AS (
+                        -- 3. Cruce instantáneo mediante Hash Join directo
                         SELECT 
-                            cs.telefono, cs.ultima_interaccion, cs.no_leidos, 
-                            t.id_cliente
-                        FROM chat_summary cs
-                        LEFT JOIN telefonoscliente t ON (cs.telefono = t.telefono OR cs.telefono = t.lid) AND t.activo = TRUE
+                            cs.telefono, 
+                            cs.ultima_interaccion, 
+                            cs.no_leidos, 
+                            mt.id_cliente 
+                        FROM chat_summary cs 
+                        LEFT JOIN mapa_telefonos mt ON cs.telefono = mt.identificador
                     ),
                     chat_list AS (
+                        -- 4. Consolidar usando el chat_id
                         SELECT 
-                            COALESCE(CAST(id_cliente AS VARCHAR), telefono) as chat_id,
-                            MAX(id_cliente) as id_cliente,
-                            MAX(telefono) as telefono_contacto,
-                            MAX(ultima_interaccion) as ultima_interaccion,
-                            SUM(no_leidos) as no_leidos
-                        FROM mapped_chats
+                            COALESCE(CAST(id_cliente AS VARCHAR), telefono) as chat_id, 
+                            MAX(id_cliente) as id_cliente, 
+                            MAX(telefono) as telefono_contacto, 
+                            MAX(ultima_interaccion) as ultima_interaccion, 
+                            SUM(no_leidos) as no_leidos 
+                        FROM mapped_chats 
                         GROUP BY COALESCE(CAST(id_cliente AS VARCHAR), telefono)
+                    ),
+                    UltimaDireccion AS (
+                        -- 5. Pre-calcular el tipo de envío una sola vez para toda la tabla
+                        SELECT DISTINCT ON (id_cliente) 
+                            id_cliente, 
+                            tipo_envio
+                        FROM direcciones 
+                        WHERE activo = TRUE 
+                        ORDER BY id_cliente, es_principal DESC, id_direccion DESC
                     )
                     SELECT 
-                        COALESCE(cl.chat_id, CAST(c.id_cliente AS VARCHAR)) as chat_id,
-                        COALESCE(cl.id_cliente, c.id_cliente) as id_cliente,
-                        cl.telefono_contacto,
-                        cl.ultima_interaccion,
-                        COALESCE(cl.no_leidos, 0) as no_leidos,
-                        c.nombre_corto, c.estado, c.nivel_zombie, c.ultimo_msg_zombie,
-                        (SELECT tipo_envio FROM direcciones d WHERE d.id_cliente = COALESCE(cl.id_cliente, c.id_cliente) AND d.activo = TRUE ORDER BY es_principal DESC, id_direccion DESC LIMIT 1) as tipo_envio,
+                        COALESCE(cl.chat_id, CAST(c.id_cliente AS VARCHAR)) as chat_id, 
+                        COALESCE(cl.id_cliente, c.id_cliente) as id_cliente, 
+                        cl.telefono_contacto, 
+                        cl.ultima_interaccion, 
+                        COALESCE(cl.no_leidos, 0) as no_leidos, 
+                        c.nombre_corto, 
+                        c.estado, 
+                        c.nivel_zombie, 
+                        c.ultimo_msg_zombie, 
+                        dir.tipo_envio, 
                         CASE 
-                            WHEN c.nombre_corto IS NOT NULL AND c.nombre_corto != '' THEN c.nombre_corto
-                            WHEN cl.telefono_contacto IS NOT NULL THEN cl.telefono_contacto
-                            ELSE 'Desconocido'
-                        END as nombre
-                    FROM chat_list cl
-                    FULL OUTER JOIN {tabla} c ON cl.id_cliente = c.id_cliente AND c.activo = TRUE
+                            WHEN c.nombre_corto IS NOT NULL AND c.nombre_corto != '' THEN c.nombre_corto 
+                            WHEN cl.telefono_contacto IS NOT NULL THEN cl.telefono_contacto 
+                            ELSE 'Desconocido' 
+                        END as nombre 
+                    FROM chat_list cl 
+                    FULL OUTER JOIN {tabla} c ON cl.id_cliente = c.id_cliente AND c.activo = TRUE 
+                    LEFT JOIN UltimaDireccion dir ON COALESCE(cl.id_cliente, c.id_cliente) = dir.id_cliente
                     WHERE (c.activo = TRUE OR cl.chat_id IS NOT NULL)
                 """
                 
