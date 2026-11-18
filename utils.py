@@ -25,6 +25,7 @@ from reportlab.lib.enums import TA_CENTER
 # ==============================================================================
 WAHA_URL = os.getenv("WAHA_URL") 
 WAHA_KEY = os.getenv("WAHA_KEY") 
+from waha_motor import url_waha, headers_waha  # motor (NOWEB/WEBJS) por acción, configurable en Opciones
 
 # ==============================================================================
 # 🏆 1. NORMALIZACIÓN Y FORMATO (CRÍTICO)
@@ -246,7 +247,6 @@ def actualizar_en_google(google_id, nombre, apellido, telefonos):
 # ==============================================================================
 def marcar_chat_como_leido_waha(chat_id, session="default"):
     """Marca como leído soportando números normales y LIDs"""
-    if not WAHA_URL: return
     try:
         chat_id_str = str(chat_id)
         if chat_id_str.startswith("LID_"):
@@ -254,21 +254,18 @@ def marcar_chat_como_leido_waha(chat_id, session="default"):
         elif "@" not in chat_id_str: 
             chat_id = f"{chat_id_str}@c.us"
             
-        url = f"{WAHA_URL.rstrip('/')}/api/sendSeen"
+        url = f"{url_waha('marcar_leido')}/api/sendSeen"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         requests.post(url, json={"session": session, "chatId": chat_id}, headers=headers, timeout=3)
     except: pass
 
 def obtener_perfil_waha(telefono):
-    if not WAHA_URL: return None
     try:
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return None
-        url = f"{WAHA_URL.rstrip('/')}/api/contacts/{norm['waha']}"
-        headers = {"Content-Type": "application/json"}
-        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
-        r = requests.get(url, headers=headers, timeout=5)
+        url = f"{url_waha('contactos')}/api/contacts"
+        r = requests.get(url, params={"contactId": norm['waha'], "session": "default"}, headers=headers_waha(), timeout=5)
         if r.status_code == 200: return r.json()
     except: pass
     return None
@@ -294,8 +291,6 @@ def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default
                     conn.execute(text("INSERT INTO logs_marketing (fecha, mensaje) VALUES (NOW(), :m)"), {"m": msg})
             except: pass
 
-    if not WAHA_URL: return False
-    
     try:
         telefono_str = str(telefono)
         
@@ -339,9 +334,8 @@ def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default
                 img_payload = {"session": session, "chatId": chat_id, "file": {"url": url_imagen}, "caption": mensaje}
             
             if img_payload:
-                # 🚀 Redirigir dinámicamente el tráfico multimedia al motor NOWEB (Puerto 3001)
-                waha_noweb_url = WAHA_URL.replace('3000', '3001')
-                url_send = f"{waha_noweb_url.rstrip('/')}/api/sendImage"
+                # Motor elegido en Opciones → Motor WhatsApp (acción "enviar_imagen")
+                url_send = f"{url_waha('enviar_imagen')}/api/sendImage"
                 
                 r = requests.post(url_send, json=img_payload, headers=headers, timeout=45)
 
@@ -354,7 +348,7 @@ def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default
         # =================================================================
         # 🟡 INTENTO 2: FALLBACK (RESCATE SOLO CON TEXTO)
         # =================================================================
-        url_send = f"{WAHA_URL.rstrip('/')}/api/sendText"
+        url_send = f"{url_waha('enviar_texto')}/api/sendText"
         payload_text = {"session": session, "chatId": chat_id, "text": mensaje}
         
         r = requests.post(url_send, json=payload_text, headers=headers, timeout=45)
@@ -372,8 +366,6 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
     """Envía archivos adjuntos (Campañas) soportando LIDs"""
     import requests
     import base64
-    if not WAHA_URL: return False
-    
     try:
         telefono_str = str(telefono)
         
@@ -388,7 +380,7 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
         b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
         data_uri = f"data:{mime_type};base64,{b64_data}"
 
-        url = f"{WAHA_URL.rstrip('/')}/api/sendImage"
+        url = f"{url_waha('enviar_imagen')}/api/sendImage"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
 
@@ -417,13 +409,11 @@ def verificar_numero_waha(telefono):
     Verifica si el número tiene WhatsApp activo usando WAHA.
     Retorna True (existe), False (no existe), o None (error de conexión).
     """
-    if not WAHA_URL: return None
-    
     try:
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return False
         
-        url = f"{WAHA_URL.rstrip('/')}/api/contacts/check-exists"
+        url = f"{url_waha('contactos')}/api/contacts/check-exists"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
@@ -454,7 +444,7 @@ def obtener_lid_de_waha(telefono):
     Consulta a WAHA para obtener el código LID anónimo a partir de un número.
     Busca automáticamente en todas las sesiones activas para evitar falsos negativos.
     """
-    if not WAHA_URL or not telefono: return None
+    if not telefono: return None
     try:
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return None
@@ -467,7 +457,7 @@ def obtener_lid_de_waha(telefono):
         sesiones_a_probar = ["default", "principal"]
 
         for sesion in sesiones_a_probar:
-            url = f"{WAHA_URL.rstrip('/')}/api/{sesion}/lids/pn/{tel_safe}"
+            url = f"{url_waha('contactos')}/api/{sesion}/lids/pn/{tel_safe}"
             r = requests.get(url, headers=headers, timeout=5)
             
             if r.status_code == 200:
@@ -1172,7 +1162,7 @@ def subir_estado_whatsapp(session_name, texto, media_url=None):
     Delega el envío a la memoria interna (Store) de WAHA.
     Incluye cronómetro para monitorear la salud de la RAM del servidor.
     """
-    url_estados = WAHA_URL.replace("3000", "3001")
+    url_estados = url_waha('estados')
 
     try:
         payload = {}

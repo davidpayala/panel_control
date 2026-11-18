@@ -9,14 +9,47 @@ import time
 import psutil
 import platform
 
+def render_motor_whatsapp():
+    """Elige qué motor de WAHA (NOWEB o WEBJS) atiende cada acción de WhatsApp."""
+    from waha_motor import ACCIONES, MOTORES, CONTENEDORES, configuracion, guardar_configuracion, motores_en_uso
+
+    st.markdown("### 📱 Motor de WhatsApp por acción")
+    st.info("NOWEB (puerto 3001) es más liviano y estable; WEBJS (puerto 3000) usa un navegador Chromium y consume "
+            "mucha más RAM. Los cambios se aplican en todos los procesos en menos de 1 minuto. "
+            "Los mensajes entrantes llegan por el webhook desde cualquier motor encendido.")
+
+    actual = configuracion(forzar=True)
+    opciones_motor = list(MOTORES)
+    with st.form("form_motor_wsp"):
+        nueva = {}
+        for accion, descripcion in ACCIONES.items():
+            nueva[accion] = st.radio(descripcion, opciones_motor, index=opciones_motor.index(actual[accion]),
+                                     horizontal=True, key=f"motor_{accion}")
+        if st.form_submit_button("💾 Guardar", type="primary"):
+            guardar_configuracion(nueva)
+            st.success("✅ Configuración guardada.")
+            st.rerun()
+
+    en_uso = motores_en_uso()
+    sin_uso = [m for m in MOTORES if m not in en_uso]
+    st.caption(f"Motores en uso: **{', '.join(en_uso)}**. Solo estos se vigilan y se reinician automáticamente.")
+    if sin_uso:
+        st.caption("Sin uso: " + ", ".join(f"{m} (contenedor `{CONTENEDORES[m]}`)" for m in sin_uso)
+                   + ". Puedes apagarlo para liberar RAM: `docker stop " + " ".join(CONTENEDORES[m] for m in sin_uso) + "`")
+
+
 def render_opciones():
     # Estructura mejorada con nombres descriptivos para facilitar agregar nuevas pestañas
-    tab_estados, tab_jerarquia, tab_usuarios, tab_sistema = st.tabs([
+    tab_estados, tab_jerarquia, tab_usuarios, tab_sistema, tab_motor_wsp = st.tabs([
         "📋 Estados de Clientes", 
         "📁 Jerarquía de Categorías", 
         "👥 Usuarios",
-        "⚙️ Sistema y Mantenimiento" # <--- Tu nueva pestaña
+        "⚙️ Sistema y Mantenimiento",
+        "📱 Motor WhatsApp"
     ])
+
+    with tab_motor_wsp:
+        render_motor_whatsapp()
 
     # =========================================================================
     # PESTAÑA 1: GESTIÓN DE ETAPAS / ESTADOS
@@ -267,7 +300,13 @@ def render_opciones():
                         ROUND(AVG(cpu_pct), 1) as "Promedio CPU (%)",
                         ROUND((SUM(CASE WHEN cpu_pct >= 95 THEN 1 ELSE 0 END) * 100.0) / COUNT(*), 1) as "CPU al 100% (%)",
                         ROUND(AVG(ram_pct), 1) as "Promedio RAM (%)",
-                        ROUND((SUM(CASE WHEN ram_pct >= 95 THEN 1 ELSE 0 END) * 100.0) / COUNT(*), 1) as "RAM al 100% (%)"
+                        ROUND((SUM(CASE WHEN ram_pct >= 95 THEN 1 ELSE 0 END) * 100.0) / COUNT(*), 1) as "RAM al 100% (%)",
+                        MAX(waha_mb) as "WAHA web (MB máx)",
+                        MAX(waha_estados_mb) as "WAHA estados (MB máx)",
+                        MAX(ollama_mb) as "Ollama (MB máx)",
+                        MAX(panel_mb) as "Panel (MB máx)",
+                        MAX(webhook_mb) as "Webhook (MB máx)",
+                        MAX(postgres_mb) as "Postgres (MB máx)"
                     FROM Servidor_Metricas
                     WHERE fecha >= NOW() - INTERVAL '24 hours'
                     GROUP BY 1
@@ -300,13 +339,15 @@ def render_opciones():
         
         with col_dan1:
             with st.container(border=True):
+                from waha_motor import motores_en_uso, CONTENEDORES as CONTENEDORES_WAHA
+                contenedores_activos = [CONTENEDORES_WAHA[m] for m in motores_en_uso()]
                 st.markdown("#### ♻️ Motor WAHA (WhatsApp)")
-                st.caption("Limpia la memoria si notas lentitud en el envío masivo.")
+                st.caption(f"Limpia la memoria si notas lentitud en el envío masivo. Reinicia: {', '.join(contenedores_activos)}")
                 candado_waha = st.checkbox("🔓 Desbloquear WAHA")
                 if st.button("Reiniciar WAHA", type="primary", use_container_width=True, disabled=not candado_waha):
                     with st.spinner("⏳ Apagando y limpiando WAHA..."):
                         try:
-                            res = subprocess.run(["docker", "restart", "waha"], capture_output=True, text=True, timeout=30)
+                            res = subprocess.run(["docker", "restart", *contenedores_activos], capture_output=True, text=True, timeout=60)
                             if res.returncode == 0:
                                 time.sleep(3) 
                                 st.success("✅ WAHA reiniciado.")

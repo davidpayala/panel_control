@@ -305,19 +305,24 @@ def ejecutar_francotirador():
         waha_key = os.getenv("WAHA_KEY", "")
         waha_ok = False
         
-        # Contenedores reales en Docker: 'waha' (3000) y 'waha-estados' (3001)
+        # Solo se vigilan (y reinician) los motores que alguna acción usa (Opciones → Motor WhatsApp).
+        # Así un motor desactivado a propósito (ej. WEBJS) no se vuelve a levantar solo.
+        from waha_motor import motores_en_uso, url_motor, CONTENEDORES as CONTENEDORES_WAHA
+        sesion_referencia = {"WEBJS": "default", "NOWEB": "principal"}
         instancias_waha = [
-            {"puerto": 3000, "contenedor": "waha", "nombre_sesion": "default"},
-            {"puerto": 3001, "contenedor": "waha-estados", "nombre_sesion": "principal"}
+            {"puerto": url_motor(m).rsplit(":", 1)[-1], "url": url_motor(m), "contenedor": CONTENEDORES_WAHA[m],
+             "nombre_sesion": sesion_referencia[m]}
+            for m in motores_en_uso()
         ]
         
         def comprobar_estado_waha(puerto, nombre_sesion):
+            url_base = next((i["url"] for i in instancias_waha if i["puerto"] == puerto), f"http://localhost:{puerto}")
             try:
                 headers = {"Accept": "application/json"}
                 if waha_key:
                     headers["X-Api-Key"] = waha_key
                 
-                url = f"http://localhost:{puerto}/api/sessions?all=true"
+                url = f"{url_base}/api/sessions?all=true"
                 res = requests.get(url, headers=headers, timeout=10)
                 
                 if res.status_code == 200:
@@ -341,7 +346,7 @@ def ejecutar_francotirador():
         if tarea_objetivo in ['3', 'fb', 'facebook']:
             log_mkt("⏭️ Verificación de WAHA omitida (Modo exclusivo Facebook).")
         else:
-            log_mkt("🔍 Verificando salud de WAHA en puertos 3000 y 3001...")
+            log_mkt(f"🔍 Verificando salud de WAHA en puertos {', '.join(i['puerto'] for i in instancias_waha)}...")
             contenedores_reiniciados = []
             estados_finales = []
 

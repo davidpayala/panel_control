@@ -18,6 +18,7 @@ app = Flask(__name__)
 
 WAHA_KEY = os.getenv("WAHA_KEY")
 WAHA_URL = os.getenv("WAHA_URL") 
+from waha_motor import url_waha, url_media, headers_waha  # motor (NOWEB/WEBJS) por acción
 
 def log_info(msg):
     print(f"[INFO] {msg}", file=sys.stdout, flush=True)
@@ -63,22 +64,12 @@ def sync_google_fondo(id_cliente, nombre, telefono):
         else:
             log_error(f"❌ Falló sincronización con Google para: {nombre}")
 
-def descargar_media_plus(media_url):
+def descargar_media_plus(media_url, motor=None):
+    """Descarga el archivo desde el contenedor WAHA que lo recibió (motor del evento)."""
     try:
         if not media_url: return None
-        url_final = media_url
-        if not media_url.startswith("http"):
-             base = WAHA_URL.rstrip('/') if WAHA_URL else ""
-             path = media_url.lstrip('/')
-             url_final = f"{base}/{path}"
-        elif "localhost" in media_url or "waha:" in media_url:
-             if WAHA_URL:
-                path_real = media_url.split('/api/')[-1]
-                base = WAHA_URL.rstrip('/')
-                url_final = f"{base}/api/{path_real}"
-        headers = {}
-        if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY   
-        r = requests.get(url_final, headers=headers, timeout=10)
+        url_final = url_media(media_url, motor)
+        r = requests.get(url_final, headers=headers_waha(json=False), timeout=10)
         return r.content if r.status_code == 200 else None
     except: return None
 
@@ -168,10 +159,10 @@ def obtener_telefono_local(payload, from_me=False):
     except: return None
 
 def resolver_telefono_api(lid, session):
-    if not WAHA_URL or not lid: return None
+    if not lid: return None
     try:
         lid_safe = lid.replace('@', '%40')
-        url = f"{WAHA_URL.rstrip('/')}/api/{session}/lids/{lid_safe}"
+        url = f"{url_waha('contactos')}/api/{session}/lids/{lid_safe}"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         r = requests.get(url, headers=headers, timeout=5)
@@ -186,9 +177,10 @@ def resolver_telefono_api(lid, session):
     return None
 
 def obtener_nombre_waha(contact_id, session):
-    if not WAHA_URL or not contact_id: return None
+    if not contact_id: return None
     try:
-        url = f"{WAHA_URL.rstrip('/')}/api/contacts/contact"
+        # Ruta correcta de WAHA: GET /api/contacts?contactId=...&session=... (/api/contacts/contact no existe)
+        url = f"{url_waha('contactos')}/api/contacts"
         params = {"contactId": contact_id, "session": session}
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
@@ -223,8 +215,6 @@ def enviar_respuesta_zombie_async(telefono, session_name, respuesta, delay=30, m
         log_info(f"⏳ Hilo Zombie: Esperando {delay}s para responder a {telefono}...")
         time.sleep(delay)
         
-        if not WAHA_URL: return
-        
         # 🔥 BLINDAJE DE CHAT ID: Previene el error de JIDs malformados (ej. @lid@c.us)
         telefono_str = str(telefono).strip()
         if "@" in telefono_str:
@@ -232,7 +222,7 @@ def enviar_respuesta_zombie_async(telefono, session_name, respuesta, delay=30, m
         else:
             chat_id = f"{telefono_str}@c.us"
 
-        url = f"{WAHA_URL.rstrip('/')}/api/sendText"
+        url = f"{url_waha('enviar_texto')}/api/sendText"
         payload = {
             "chatId": chat_id,
             "text": respuesta,
@@ -293,6 +283,7 @@ def recibir_mensaje():
         for evento in eventos:
             tipo_evento = evento.get('event')
             session_name = evento.get('session', 'default')
+            motor_evento = evento.get('engine')  # 'NOWEB' / 'WEBJS': de qué contenedor vino el evento
             payload = evento.get('payload', {})
 
             msg_id_obj = payload.get('id')
@@ -424,11 +415,11 @@ def recibir_mensaje():
             has_media = payload.get('hasMedia') or tipo_mensaje_real in ['image', 'video', 'audio', 'document', 'sticker', 'ptt']
             media_url = payload.get('mediaUrl') or (payload.get('media') or {}).get('url')
 
-            if has_media and not media_url and WAHA_URL:
+            if has_media and not media_url:
                 msg_id_safe = str(whatsapp_id).replace('@', '%40')
-                media_url = f"{WAHA_URL.rstrip('/')}/api/{session_name}/messages/{msg_id_safe}/download"
+                media_url = f"/api/{session_name}/messages/{msg_id_safe}/download"
 
-            archivo_bytes = descargar_media_plus(media_url) if media_url else None
+            archivo_bytes = descargar_media_plus(media_url, motor_evento) if media_url else None
             
             if not archivo_bytes and has_media:
                 import base64

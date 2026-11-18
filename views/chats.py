@@ -8,6 +8,7 @@ import base64
 import zipfile
 import io
 import requests
+from collections import OrderedDict
 from datetime import datetime, timedelta
 
 from streamlit.config import cat
@@ -17,6 +18,7 @@ import re
 # --- CONFIGURACIÓN ---
 WAHA_URL = os.getenv("WAHA_URL")
 WAHA_KEY = os.getenv("WAHA_KEY")
+from waha_motor import url_waha  # motor (NOWEB/WEBJS) por acción, configurable en Opciones
 
 try:
     from utils import marcar_chat_como_leido_waha as marcar_leido_waha
@@ -24,6 +26,48 @@ try:
 except ImportError:
     def marcar_leido_waha(*args): pass
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
+
+# ==========================================
+# 🗃️ CACHÉ DE ARCHIVOS MULTIMEDIA (compartida entre usuarios, con tope de RAM)
+# ==========================================
+# Un archivo de WhatsApp nunca cambia una vez guardado, así que se lee de la base una sola vez.
+# Se descartan los menos usados al superar el tope.
+_CACHE_MEDIA_MAX_BYTES = 64 * 1024 * 1024
+_cache_media = OrderedDict()   # id_mensaje -> bytes
+_cache_media_bytes = 0
+_cache_media_lock = threading.Lock()
+
+
+def obtener_archivos_mensajes(conn, ids):
+    """Devuelve {id_mensaje: bytes} solo para los ids pedidos; consulta la base solo los que faltan en caché."""
+    global _cache_media_bytes
+    ids = [int(i) for i in ids]
+    if not ids:
+        return {}
+    with _cache_media_lock:
+        res = {}
+        for i in ids:
+            if i in _cache_media:
+                _cache_media.move_to_end(i)
+                res[i] = _cache_media[i]
+        faltan = [i for i in ids if i not in res]
+    if faltan:
+        filas = conn.execute(text("SELECT id_mensaje, archivo_data FROM mensajes WHERE id_mensaje = ANY(:ids)"),
+                             {"ids": faltan}).fetchall()
+        with _cache_media_lock:
+            for id_m, data in filas:
+                if data is None:
+                    continue
+                b = bytes(data)
+                res[id_m] = b
+                if id_m not in _cache_media and len(b) <= _CACHE_MEDIA_MAX_BYTES // 8:
+                    _cache_media[id_m] = b
+                    _cache_media_bytes += len(b)
+            while _cache_media_bytes > _CACHE_MEDIA_MAX_BYTES and _cache_media:
+                _, viejo = _cache_media.popitem(last=False)
+                _cache_media_bytes -= len(viejo)
+    return res
+
 
 def mostrar_resumen_compras_chat(telefono_activo):
     st.markdown("##### 🛍️ Historial de Compras")
@@ -89,10 +133,10 @@ def mostrar_resumen_compras_chat(telefono_activo):
 # 📡 RESOLUTOR API PARA LIDs E INTENTO DE VERIFICACIÓN
 # ==========================================
 def resolver_telefono_api(lid, session):
-    if not WAHA_URL or not lid: return None
+    if not lid: return None
     try:
         lid_safe = lid.replace('@', '%40')
-        url = f"{WAHA_URL.rstrip('/')}/api/{session}/lids/{lid_safe}"
+        url = f"{url_waha('contactos')}/api/{session}/lids/{lid_safe}"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
@@ -102,7 +146,7 @@ def resolver_telefono_api(lid, session):
             pn = data.get('pn')
             if pn:
                 pn_clean = pn.split('@')[0]
-                url_check = f"{WAHA_URL.rstrip('/')}/api/contacts/check-exists"
+                url_check = f"{url_waha('contactos')}/api/contacts/check-exists"
                 params = {"session": session, "phone": pn_clean}
                 r_check = requests.get(url_check, params=params, headers=headers, timeout=5)
                 
@@ -113,7 +157,6 @@ def resolver_telefono_api(lid, session):
     return None
 
 def mandar_mensaje_api(telefono, texto, sesion):
-    if not WAHA_URL: return False, "Falta WAHA_URL"
     try:
         telefono_str = str(telefono).strip()
         
@@ -130,7 +173,7 @@ def mandar_mensaje_api(telefono, texto, sesion):
             if not telefono_final: return False, "Número inválido"
             chat_id = f"{telefono_final}@c.us"
 
-        url = f"{WAHA_URL.rstrip('/')}/api/sendText"
+        url = f"{url_waha('enviar_texto')}/api/sendText"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
         
@@ -535,14 +578,19 @@ def render_chat():
                         where_clause = "telefono = :chat_id"
                         params = {"chat_id": str(chat_actual)}
 
-                    # Reducido el Límite de 100 a 60 para acelerar considerablemente el renderizado de la UI
+                    # Sin archivo_data: los archivos (fotos/audios) se cargan aparte desde una caché en RAM limitada,
+                    # así cada recarga del chat no vuelve a traer varios MB desde la base.
                     msgs = pd.read_sql(text(f"""
                         SELECT * FROM (
-                            SELECT * FROM mensajes
+                            SELECT id_mensaje, telefono, contenido, fecha, tipo, estado_waha, session_name,
+                                   reply_content, (archivo_data IS NOT NULL) AS tiene_archivo
+                            FROM mensajes
                             WHERE {where_clause}
                             ORDER BY fecha DESC LIMIT 60
                         ) sub ORDER BY fecha ASC
                     """), conn, params=params)
+                    media_por_id = obtener_archivos_mensajes(
+                        conn, msgs.loc[msgs['tiene_archivo'], 'id_mensaje'].tolist() if not msgs.empty else [])
                     
                     # Recuperar info de teléfonos para el selector en la misma conexión
                     tels_data = pd.DataFrame()
@@ -686,10 +734,9 @@ def render_chat():
                             reply_html = f"<div class='reply-box'>↪️ {str(m['reply_content'])}</div>"
 
                         media_html = ""
-                        raw_data = m.get('archivo_data')
-                        if raw_data is not None and not pd.isna(raw_data):
+                        b = media_por_id.get(m['id_mensaje']) if m.get('tiene_archivo') else None
+                        if b is not None:
                             try:
-                                b = bytes(raw_data)
                                 if b:
                                     b64 = base64.b64encode(b).decode('utf-8')
                                     mime, ext, nombre_archivo = 'application/octet-stream', 'bin', 'Documento'

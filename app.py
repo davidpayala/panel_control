@@ -82,10 +82,12 @@ def main():
         if waha_key:
             headers["X-Api-Key"] = waha_key
 
-        instancias_waha = [
-            {"nombre": "Principal (3000)", "url": waha_url_3000},
-            {"nombre": "Estados (3001)", "url": waha_url_3001}
-        ]
+        # Solo se vigilan los motores que alguna acción usa (Opciones → Motor WhatsApp)
+        from waha_motor import motores_en_uso
+        instancias_waha = [i for i in [
+            {"nombre": "WEBJS (3000)", "url": waha_url_3000, "motor": "WEBJS"},
+            {"nombre": "NOWEB (3001)", "url": waha_url_3001, "motor": "NOWEB"}
+        ] if i["motor"] in motores_en_uso()]
 
         # Monitorear cada instancia de forma independiente
         for instancia in instancias_waha:
