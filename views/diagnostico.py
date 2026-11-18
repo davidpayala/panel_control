@@ -238,6 +238,48 @@ def tab_logs_agente():
     except Exception as e:
         st.error(f"❌ Error leyendo la base de datos: {e}")
 
+def tab_logs_respaldo():
+    st.markdown("### 💾 Logs del Respaldo Semanal")
+    st.info("Respaldo de la base de datos y sesiones de WhatsApp hacia el Synology (domingos 4:00 am). "
+            "En el NAS se conservan 8 semanas de la base y 2 de WhatsApp.")
+
+    c_filtro, c_btn_log = st.columns([8, 2])
+    filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimos 7 días", "Últimos 30 días", "Últimos 90 días"],
+                                   horizontal=True, key="flt_respaldo")
+
+    if c_btn_log.button("🔄 Refrescar Logs Respaldo", key="btn_respaldo"):
+        st.rerun()
+
+    dias = {"Últimos 7 días": 7, "Últimos 30 días": 30, "Últimos 90 días": 90}[filtro_tiempo]
+
+    try:
+        with engine.begin() as conn_init:
+            conn_init.execute(text("""
+                CREATE TABLE IF NOT EXISTS logs_respaldo (
+                    id SERIAL PRIMARY KEY,
+                    fecha TIMESTAMP DEFAULT NOW(),
+                    mensaje TEXT
+                )
+            """))
+
+        with engine.connect() as conn:
+            df_logs = pd.read_sql(text("SELECT fecha, mensaje FROM logs_respaldo "
+                                       "WHERE fecha >= NOW() - make_interval(days => :d) ORDER BY id DESC"),
+                                  conn, params={"d": dias})
+
+        if not df_logs.empty:
+            ultimo_ok = df_logs[df_logs['mensaje'].str.startswith("✅")]
+            if not ultimo_ok.empty:
+                st.success(f"Último respaldo completo: {pd.to_datetime(ultimo_ok.iloc[0]['fecha']).strftime('%Y-%m-%d %H:%M')}")
+            df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
+            lineas_log = [f"[{row['fecha'].strftime('%Y-%m-%d %H:%M:%S')}] {row['mensaje']}" for _, row in df_logs.iterrows()]
+            st.code("\n".join(lineas_log), language="log")
+        else:
+            st.warning(f"Aún no hay registros de respaldo para el filtro: {filtro_tiempo}")
+
+    except Exception as e:
+        st.error(f"❌ Error leyendo la base de datos: {e}")
+
 # ==========================================================================
 # 🏗️ RENDERIZADOR PRINCIPAL (Estructura Dinámica)
 # ==========================================================================
@@ -249,7 +291,8 @@ def render_diagnostico():
         "📈 Logs Marketing": tab_logs_marketing,
         "📦 Logs Post-Venta": tab_logs_postventa,
         "📑 Logs Catálogos": tab_logs_catalogos,
-        "🧠 Logs Agente Semanal": tab_logs_agente
+        "🧠 Logs Agente Semanal": tab_logs_agente,
+        "💾 Logs Respaldo": tab_logs_respaldo
     }
     
     tabs_obj = st.tabs(list(pestanas.keys()))
