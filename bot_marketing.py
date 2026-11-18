@@ -58,6 +58,83 @@ def log_mkt(mensaje):
             print(f"Error crítico escribiendo log en BD: {e2}", flush=True)
 
 # ==============================================================================
+# 👥 GRUPOS DE MARKETING (los calcula agente_semanal.py cada domingo en la tabla bot_grupos)
+#   1 Recompra | 2 Escribió sin comprar | 3 Cliente antiguo | 4 Contacto frío
+#   Cada grupo tiene su espera mínima (columna espera_dias) y su instrucción de texto para la IA.
+#   El filtro estado = 'Sin empezar' se mantiene: los grupos son un filtro ADICIONAL.
+# ==============================================================================
+SQL_PROSPECTOS = """
+    WITH Prospectos_Random AS (
+        SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono,
+               bg.grupo, bg.instruccion_ia, bg.escribio_real, bg.actualizado
+        FROM clientes c
+        JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
+        JOIN bot_grupos bg ON bg.id_cliente = c.id_cliente
+        WHERE c.activo = TRUE
+          AND c.estado = 'Sin empezar'
+          AND COALESCE(c.excluir_publicidad, FALSE) = FALSE
+          AND COALESCE(c.nivel_zombie, 0) = 0
+          AND t.activo = TRUE
+          AND t.es_principal = TRUE
+          AND length(t.telefono) > 6
+          -- espera propia de cada grupo desde el último mensaje del bot
+          AND NOT EXISTS (
+              SELECT 1 FROM mensajes m_sal
+              WHERE m_sal.telefono = t.telefono
+                AND m_sal.tipo = 'SALIENTE_BOT'
+                AND m_sal.fecha > NOW() - (bg.espera_dias * INTERVAL '1 day')
+          )
+          -- no interrumpir una conversación: nada (entrante o saliente) en los últimos 14 días
+          AND NOT EXISTS (
+              SELECT 1 FROM mensajes m_rec
+              WHERE m_rec.telefono = t.telefono AND m_rec.fecha > NOW() - INTERVAL '14 days'
+          )
+          -- si compró esta semana, lo atiende la post-venta, no el marketing
+          AND NOT EXISTS (
+              SELECT 1 FROM ventas v
+              WHERE v.id_cliente = c.id_cliente AND COALESCE(v.anulado, FALSE) = FALSE
+                AND v.fecha_venta > NOW() - INTERVAL '60 days'
+          )
+          -- «frío» = nunca escribió un mensaje REAL (las respuestas automáticas de empresas no cuentan;
+          -- el agente semanal las descarta). Si escribió después de la última actualización, ya es cliente tibio.
+          AND (
+              :bloquear_frios = FALSE
+              OR bg.escribio_real
+              OR EXISTS (
+                  SELECT 1 FROM mensajes m2
+                  WHERE m2.telefono = t.telefono AND m2.tipo = 'ENTRANTE' AND m2.fecha > bg.actualizado
+              )
+          )
+        ORDER BY bg.prioridad, RANDOM()
+        LIMIT 50
+    )
+    SELECT
+        pr.*,
+        CASE WHEN pr.escribio_real OR EXISTS (
+            SELECT 1 FROM mensajes m2 WHERE m2.telefono = pr.telefono AND m2.tipo = 'ENTRANTE' AND m2.fecha > pr.actualizado
+        ) THEN 1 ELSE 0 END as total_entrantes,
+        (SELECT session_name FROM mensajes m3 WHERE m3.telefono = pr.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1) as ultima_sesion_entrante
+    FROM Prospectos_Random pr
+    ORDER BY pr.grupo
+"""
+
+
+def grupos_listos(conn):
+    """Devuelve (ok, motivo). Sin grupos recientes el bot NO envía a ciegas."""
+    try:
+        existe = conn.execute(text("SELECT to_regclass('public.bot_grupos')")).scalar()
+        if not existe:
+            return False, "No existe la tabla bot_grupos. Ejecuta agente_semanal.py una vez."
+        r = conn.execute(text("SELECT COUNT(*), MAX(actualizado) FROM bot_grupos")).fetchone()
+        if not r[0]:
+            return False, "La tabla bot_grupos está vacía. Revisa el último reporte del agente semanal."
+        if r[1] is not None and (datetime.now() - r[1]).days > 21:
+            return False, f"Los grupos tienen más de 21 días (última actualización {r[1]:%d/%m/%Y}). Revisa el agente semanal."
+        return True, ""
+    except Exception as e:
+        return False, f"No se pudieron leer los grupos: {e}"
+
+# ==============================================================================
 # 🧠 MOTOR DE SELECCIÓN DE PRODUCTOS (Optimizado en RAM)
 # ==============================================================================
 def buscar_producto_dinamico(conn, col_probabilidad):
@@ -327,9 +404,16 @@ def ejecutar_francotirador():
         elif not dentro_de_horario:
             log_mkt(f"⏰ TAREA 1 OMITIDA: Fuera de horario comercial ({config.hora_inicio} a {config.hora_fin}).")
         else:
+            with engine.connect() as conn_g:
+                grupos_ok, motivo_grupos = grupos_listos(conn_g)
+            if not grupos_ok:
+                log_mkt(f"⏸️ TAREA 1 OMITIDA: {motivo_grupos}")
+                obreros_tarea1 = []
+            else:
+                obreros_tarea1 = obreros
             log_mkt("▶️ INICIANDO TAREA 1: Evaluando líneas de envío independientes...")            
             
-            for obrero in obreros:
+            for obrero in obreros_tarea1:
                 limite_nuevos_sesion = obrero["limite_nuevos"]
                 limite_total_sesion = obrero["limite_total"]
                 prob_sesion = obrero["probabilidad"]
@@ -374,42 +458,8 @@ def ejecutar_francotirador():
                     if not prod_elegido: 
                         continue
 
-                    # 🛠️ OPTIMIZACIÓN RAM: Uso de EXISTS y NOT EXISTS en lugar de NOT IN y COUNT(*)
-                    query_clientes = text("""
-                        WITH Prospectos_Random AS (
-                            SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono 
-                            FROM clientes c
-                            JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
-                            WHERE c.activo = TRUE 
-                              AND c.estado = 'Sin empezar' 
-                              AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
-                              AND t.activo = TRUE 
-                              AND t.es_principal = TRUE 
-                              AND length(t.telefono) > 6
-                              AND NOT EXISTS (
-                                  SELECT 1 FROM mensajes m_sal 
-                                  WHERE m_sal.telefono = t.telefono 
-                                    AND m_sal.tipo = 'SALIENTE_BOT' 
-                                    AND m_sal.fecha > NOW() - INTERVAL '60 days'
-                              )
-                              AND (
-                                  :bloquear_frios = FALSE 
-                                  OR EXISTS (
-                                      SELECT 1 FROM mensajes m2 
-                                      WHERE m2.telefono = t.telefono AND m2.tipo = 'ENTRANTE'
-                                  )
-                              )
-                            ORDER BY RANDOM()
-                            LIMIT 50
-                        )
-                        SELECT 
-                            pr.*,
-                            CASE WHEN EXISTS (
-                                SELECT 1 FROM mensajes m2 WHERE m2.telefono = pr.telefono AND m2.tipo = 'ENTRANTE'
-                            ) THEN 1 ELSE 0 END as total_entrantes,
-                            (SELECT session_name FROM mensajes m3 WHERE m3.telefono = pr.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1) as ultima_sesion_entrante
-                        FROM Prospectos_Random pr
-                    """)
+                    # Prospectos filtrados por GRUPO (ver SQL_PROSPECTOS arriba)
+                    query_clientes = text(SQL_PROSPECTOS)
                     clientes_validos = conn.execute(query_clientes, {"bloquear_frios": bloquear_frios_sql}).fetchall()
 
                 if not clientes_validos: 
@@ -444,7 +494,10 @@ def ejecutar_francotirador():
                         nom_ia = cliente.nombre_ia.strip() if cliente.nombre_ia else ""
                         cabecera = f"{saludo} {nom_ia} 👋" if nom_ia else "¡Hola! 👋"
 
-                        cuerpo_ia = generar_texto_producto_ia(prod_elegido, es_estado=False, cliente_info={"etiquetas": cliente.etiquetas or ""})
+                        # Cada grupo tiene su propio texto: se agrega su instrucción al contexto de la IA
+                        prod_cliente = dict(prod_elegido)
+                        prod_cliente['contexto_ia_extra'] = f"{prod_elegido.get('contexto_ia_extra', '')} {cliente.instruccion_ia or ''}".strip()
+                        cuerpo_ia = generar_texto_producto_ia(prod_cliente, es_estado=False, cliente_info={"etiquetas": cliente.etiquetas or ""})
                         mensaje_completo = f"{cabecera}\n\n{cuerpo_ia}"
 
                         if enviar_mensaje_whatsapp(telefono_final, mensaje_completo, prod_elegido['url_imagen'], session=obrero['sesion']):
@@ -454,7 +507,7 @@ def ejecutar_francotirador():
                                     VALUES (:idc, :t, 'SALIENTE_BOT', :c, (NOW() AT TIME ZONE 'America/Lima'), TRUE, :sess)
                                 """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
                             
-                            log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']}). Frío: {'Sí' if es_cliente_frio else 'No'}.")
+                            log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']}). Grupo {cliente.grupo}. Frío: {'Sí' if es_cliente_frio else 'No'}.")
                             disparo_exitoso = True
                             break  
                         else:

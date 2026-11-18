@@ -11,3 +11,4 @@ from . import campanas
 from . import diagnostico
 from . import opciones
 from . import estadisticas
+from . import reporte_semanal

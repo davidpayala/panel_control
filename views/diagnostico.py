@@ -200,6 +200,44 @@ def tab_logs_catalogos():
     except Exception as e:
         st.error(f"❌ Error leyendo la base de datos: {e}")
 
+def tab_logs_agente():
+    st.markdown("### 🧠 Logs del Agente Semanal")
+    st.info("Lo que hizo el agente de análisis semanal (domingos 7:00 am). El reporte completo está en «Reporte semanal».")
+
+    c_filtro, c_btn_log = st.columns([8, 2])
+    filtro_tiempo = c_filtro.radio("⏳ Mostrar eventos de:", ["Últimas 24h", "Últimos 7 días", "Últimos 30 días"],
+                                   horizontal=True, key="flt_agente")
+
+    if c_btn_log.button("🔄 Refrescar Logs Agente", key="btn_agente"):
+        st.rerun()
+
+    condicion_tiempo = "fecha >= NOW() - INTERVAL '24 hours'" if filtro_tiempo == "Últimas 24h" else \
+                       "fecha >= NOW() - INTERVAL '7 days'" if filtro_tiempo == "Últimos 7 días" else \
+                       "fecha >= NOW() - INTERVAL '30 days'"
+
+    try:
+        with engine.begin() as conn_init:
+            conn_init.execute(text("""
+                CREATE TABLE IF NOT EXISTS logs_agente (
+                    id SERIAL PRIMARY KEY,
+                    fecha TIMESTAMP DEFAULT NOW(),
+                    mensaje TEXT
+                )
+            """))
+
+        with engine.connect() as conn:
+            df_logs = pd.read_sql(text(f"SELECT fecha, mensaje FROM logs_agente WHERE {condicion_tiempo} ORDER BY id DESC"), conn)
+
+        if not df_logs.empty:
+            df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
+            lineas_log = [f"[{row['fecha'].strftime('%Y-%m-%d %H:%M:%S')}] {row['mensaje']}" for _, row in df_logs.iterrows()]
+            st.code("\n".join(lineas_log), language="log")
+        else:
+            st.warning(f"Aún no hay registros del agente semanal para el filtro: {filtro_tiempo}")
+
+    except Exception as e:
+        st.error(f"❌ Error leyendo la base de datos: {e}")
+
 # ==========================================================================
 # 🏗️ RENDERIZADOR PRINCIPAL (Estructura Dinámica)
 # ==========================================================================
@@ -210,7 +248,8 @@ def render_diagnostico():
         "⚖️ Auditoría WOO": tab_auditoria_woo,
         "📈 Logs Marketing": tab_logs_marketing,
         "📦 Logs Post-Venta": tab_logs_postventa,
-        "📑 Logs Catálogos": tab_logs_catalogos # <--- AÑADIDO AQUÍ
+        "📑 Logs Catálogos": tab_logs_catalogos,
+        "🧠 Logs Agente Semanal": tab_logs_agente
     }
     
     tabs_obj = st.tabs(list(pestanas.keys()))

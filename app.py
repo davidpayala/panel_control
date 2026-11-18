@@ -13,7 +13,7 @@ from database import engine
 import utils 
 
 # Importar las vistas (¡ELIMINAMOS FACTURACION!)
-from views import ventas, compras, productos, clientes, seguimiento, catalogo, chats, campanas, diagnostico, opciones, estadisticas 
+from views import ventas, compras, productos, clientes, seguimiento, catalogo, chats, campanas, diagnostico, opciones, estadisticas, reporte_semanal 
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="K&M Ventas", layout="wide", page_icon="🛍️")
@@ -192,7 +192,7 @@ def main():
         # --- ORDEN ACTUALIZADO Y SIN FACTURACIÓN ---
         OPCIONES_BASE = [
             "PRODUCTOS", "VENTA", "COMPRAS", "CLIENTES",
-            "SEGUIMIENTO", "CATALOGO", "CHAT", "CAMPANAS", "DIAGNOSTICO", "ESTADISTICAS"
+            "SEGUIMIENTO", "CATALOGO", "CHAT", "CAMPANAS", "DIAGNOSTICO", "ESTADISTICAS", "REPORTE"
         ]
 
         # Lógica de Roles
@@ -210,7 +210,7 @@ def main():
                 "PRODUCTOS": "📦 Productos", "VENTA": "🛒 Venta (POS)", "COMPRAS": "📦 Compras", 
                 "CLIENTES": "👤 Clientes", "SEGUIMIENTO": "📆 Seguimiento", "CATALOGO": "🔧 Catálogo",
                 "CHAT": texto_dinamico_chat, "CAMPANAS": "📢 Campañas", "DIAGNOSTICO": "🕵️ Diagnóstico",
-                "ESTADISTICAS": "📊 Estadísticas", "OPCIONES": "⚙️ Opciones"
+                "ESTADISTICAS": "📊 Estadísticas", "REPORTE": "🧠 Reporte semanal", "OPCIONES": "⚙️ Opciones"
             }
             return mapeo.get(opcion, opcion)
 
@@ -244,6 +244,7 @@ def main():
     elif seleccion_interna == "CAMPANAS": campanas.render_campanas()
     elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico()
     elif seleccion_interna == "ESTADISTICAS": estadisticas.render_estadisticas()
+    elif seleccion_interna == "REPORTE": reporte_semanal.render_reporte_semanal()
     elif seleccion_interna == "OPCIONES": opciones.render_opciones()
 
 if __name__ == "__main__":
