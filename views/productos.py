@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
+import re
 from sqlalchemy import text
 from database import engine
 import utils
@@ -35,7 +36,7 @@ except Exception:
 def vista_productos():
     st.title("📦 Gestión de Productos e Inventario")
     
-    tab_gestion, tab_importar, tab_ubicaciones = st.tabs(["📊 Gestión de Inventario Avanzada", "📦 Importar Stock Externo (CSV)", "📍 Distribuir Ubicaciones"])
+    tab_gestion, tab_medidas, tab_importar, tab_ubicaciones = st.tabs(["📊 Gestión de Inventario Avanzada", "👓 Buscar por Medidas", "📦 Importar Stock Externo (CSV)", "📍 Distribuir Ubicaciones"])
     # ==============================================================================
     # --- PESTAÑA 1: GESTIÓN DE INVENTARIO ---
     # ==============================================================================
@@ -329,6 +330,12 @@ def vista_productos():
                             )
                         except Exception as e:
                             st.error(f"Error al generar el PDF: {e}")
+    # ==============================================================================
+    # --- PESTAÑA 1A: BUSCAR MODELOS DE LENTES POR VARIAS MEDIDAS ---
+    # ==============================================================================
+    with tab_medidas:
+        vista_buscar_por_medidas()
+
     # ==============================================================================
     # --- PESTAÑA 1B: IMPORTAR STOCK EXTERNO (CSV) ---
     # ==============================================================================
@@ -629,3 +636,110 @@ def vista_productos():
                         mime="text/csv",
                         use_container_width=True
                     )
+
+# ==============================================================================
+# BUSCADOR: ¿QUÉ MODELOS DE LENTES TIENEN TODAS ESTAS MEDIDAS?
+# Solo Lentes. Las variantes con medida viven en laboratorio (stock externo),
+# por eso la disponibilidad se mide con stock_externo (+ interno por si acaso).
+# Agrupa variantes (NL001A-0200, NL001A-0800...) en su producto (NL001A).
+# ==============================================================================
+URL_LENTES_MIOPIA = "https://kmlentes.pe/lentes-para-miopia/"
+
+
+def vista_buscar_por_medidas():
+    st.markdown("### 👓 ¿Qué lentes tengo en estas medidas?")
+    st.caption("Elige dos (o más) graduaciones y verás los modelos que tienen **todas** ellas. "
+               "Las medidas se surten desde laboratorio, por eso se revisa el **stock externo**.")
+
+    with engine.connect() as conn:
+        df = pd.read_sql(text("""
+            SELECT v.sku, v.id_producto, v.medida, v.precio,
+                   COALESCE(v.stock_interno, 0) AS stock_interno,
+                   COALESCE(v.stock_externo, 0) AS stock_externo,
+                   p.marca, p.modelo, p.nombre, p.categoria, p.color_principal, p.diametro,
+                   COALESCE(NULLIF(TRIM(p.url_imagen), ''), NULLIF(TRIM(v.url_imagen), '')) AS url_imagen
+            FROM Variantes v
+            JOIN Productos p ON v.id_producto = p.id_producto
+            WHERE NOT (p.macro_categoria ILIKE 'peluca%' OR v.sku ILIKE 'WB-%' OR v.sku ILIKE 'WIG-%')
+        """), conn)
+
+    if df.empty:
+        st.info("No hay lentes registrados.")
+        return
+
+    df['medida'] = df['medida'].apply(utils.normalizar_medida_lente)
+    df['medida_num'] = pd.to_numeric(df['medida'], errors='coerce')
+    df_med = df[df['medida_num'].notna() & (df['medida_num'] != 0)]
+
+    # Negativas de menor a mayor graduación (-0.50, -0.75 ... -8.00), luego positivas
+    medidas_disp = sorted(df_med['medida'].unique().tolist(), key=lambda m: (float(m) > 0, abs(float(m))))
+
+    c_sel, c_stk = st.columns([3, 1.3])
+    seleccion = c_sel.multiselect("🔢 Medidas que pide el cliente:", medidas_disp,
+                                  placeholder="Ej: -2.00 y -8.00", key="busq_medidas_sel")
+    solo_stock = c_stk.toggle("Solo con stock disponible", value=True, key="busq_medidas_stock",
+                              help="Cuenta una medida solo si tiene stock externo (laboratorio) o interno > 0.")
+
+    if not seleccion:
+        st.info("👆 Selecciona al menos una medida.")
+        return
+
+    candidatas = df_med[df_med['medida'].isin(seleccion)].copy()
+    candidatas['disponible'] = candidatas['stock_externo'] + candidatas['stock_interno']
+    if solo_stock:
+        candidatas = candidatas[candidatas['disponible'] > 0]
+
+    # Productos que cubren TODAS las medidas elegidas
+    cobertura = candidatas.groupby('id_producto')['medida'].nunique()
+    ids_ok = cobertura[cobertura == len(seleccion)].index
+    candidatas = candidatas[candidatas['id_producto'].isin(ids_ok)]
+
+    if candidatas.empty:
+        st.warning(f"Ningún modelo tiene {' y '.join(seleccion)}" + (" con stock disponible." if solo_stock else "."))
+        return
+
+    filas = []
+    for idp, grp in candidatas.groupby('id_producto'):
+        base = grp.iloc[0]
+        codigo = re.sub(r'-\d{4}$', '', str(grp['sku'].iloc[0]))
+        fila = {
+            'url_imagen': base['url_imagen'],
+            'codigo': codigo,
+            'producto': " ".join(str(x) for x in [base['marca'], base['modelo'], base['nombre']] if pd.notna(x) and str(x).strip()),
+            'color': str(base['color_principal']).strip() if pd.notna(base['color_principal']) and str(base['color_principal']).strip() else 'Otros',
+            'categoria': base['categoria'],
+            'diametro': base['diametro'],
+            'precio': grp['precio'].max(),
+        }
+        for m in seleccion:
+            v = grp[grp['medida'] == m].iloc[0]
+            fila[f"Stock {m}"] = int(v['disponible'])
+        filas.append(fila)
+
+    df_res = pd.DataFrame(filas)
+    df_res['_orden_color'] = df_res['color'].eq('Otros')  # 'Otros' al final
+    df_res = df_res.sort_values(['_orden_color', 'color', 'producto']).drop(columns='_orden_color')
+    st.success(f"✅ **{len(df_res)} modelo(s)** tienen {' y '.join(seleccion)}.")
+
+    col_cfg = {
+        "url_imagen": st.column_config.ImageColumn("Foto 📸", width="small"),
+        "codigo": st.column_config.TextColumn("Código", width="small"),
+        "producto": st.column_config.TextColumn("Producto", width="large"),
+        "color": st.column_config.TextColumn("Color 🎨", width="small"),
+        "categoria": st.column_config.TextColumn("Subcat."),
+        "diametro": st.column_config.TextColumn("Diám. (mm)", width="small"),
+        "precio": st.column_config.NumberColumn("Precio", format="S/ %.2f", width="small"),
+    }
+    for m in seleccion:
+        col_cfg[f"Stock {m}"] = st.column_config.NumberColumn(f"Stock {m}", format="%d", width="small")
+
+    st.dataframe(df_res, column_config=col_cfg, hide_index=True, width='stretch')
+
+    # Texto listo para copiar y responder al cliente por WhatsApp
+    lineas = [f"Claro, tenemos estos modelos disponibles 👓 en medida {' y '.join(seleccion)}:"]
+    for color, grp_c in df_res.groupby('color', sort=False):
+        lineas.append(f"*Color {color}*")
+        lineas += [f"* {r['producto']} ({r['codigo']})" for _, r in grp_c.iterrows()]
+    lineas += ["", "Puedes ver las imágenes de los modelos en", URL_LENTES_MIOPIA]
+    with st.expander("💬 Texto para responder al cliente"):
+        st.code("\n".join(lineas), language=None)

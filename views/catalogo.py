@@ -99,7 +99,7 @@ def render_catalogo():
                                             VALUES (:sku, :idp, '', :med, :si, :pre, :ubi)
                                         """), {
                                             "sku": sku_new.strip(), "idp": int(id_producto_real), 
-                                            "med": medida_new, "si": stock_ini, "pre": precio_new, "ubi": ubi_new
+                                            "med": utils.medida_para_guardar(medida_new, df_prods.iloc[idx_prod]['macro_categoria']), "si": stock_ini, "pre": precio_new, "ubi": ubi_new
                                         })
                                         conn.commit()
                                     st.success(f"SKU {sku_new} creado exitosamente.")
@@ -196,7 +196,7 @@ def render_catalogo():
                                                     VALUES (:sku, :idp, '', :med, 0, :pr, :prr, :ub)
                                                 """), {
                                                     "sku": v_item['sku'].strip(), "idp": new_id, 
-                                                    "med": v_item['medida'], "pr": v_item['precio'], 
+                                                    "med": utils.medida_para_guardar(v_item['medida'], n_macro), "pr": v_item['precio'], 
                                                     "prr": v_item['precio_rebajado'], "ub": v_item['ubicacion']
                                                 })
                                             trans.commit()
@@ -259,7 +259,7 @@ def render_catalogo():
                                     conn.execute(text("""
                                         INSERT INTO Variantes (sku, id_producto, nombre_variante, medida, stock_interno, precio, ubicacion)
                                         VALUES (:sku, :idp, '', :med, 0, :pr, :ub)
-                                    """), {"sku": sku_1.strip(), "idp": new_id, "med": medida_1, "pr": prec_1, "ub": ubi_1})
+                                    """), {"sku": sku_1.strip(), "idp": new_id, "med": utils.medida_para_guardar(medida_1, macro_sel), "pr": prec_1, "ub": ubi_1})
                                     trans.commit()
                                 st.success(f"Producto '{nombre_prod}' creado con éxito bajo el SKU '{sku_1}'.")
                             except Exception as e: st.error(f"Error: {e}")
@@ -384,7 +384,7 @@ def render_catalogo():
                                             SET sku=:n_sku, medida=:n_med, precio=:n_pre, precio_rebajado=:n_prer, url_imagen=:uimg_v 
                                             WHERE sku=:old_sku
                                         """), {
-                                            "n_sku": new_sku_val, "n_med": new_medida, "n_pre": new_precio, 
+                                            "n_sku": new_sku_val, "n_med": utils.medida_para_guardar(new_medida, new_macro), "n_pre": new_precio, 
                                             "n_prer": final_rebajado, "uimg_v": new_url_img_v.strip() if new_url_img_v.strip() else None, 
                                             "old_sku": curr['sku']
                                         })

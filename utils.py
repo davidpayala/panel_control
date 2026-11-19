@@ -1516,3 +1516,27 @@ def obtener_imagen_jpg_b64(url_imagen):
         print(f"🔥 Error convirtiendo imagen a JPG: {e}", flush=True)
     
     return None
+
+# =========================================================================
+# NORMALIZACIÓN DE MEDIDAS (SOLO LENTES)
+# En Pelucas el campo 'medida' guarda el largo (ej. 100cm), no se toca.
+# =========================================================================
+def normalizar_medida_lente(valor):
+    """Devuelve la graduación con 2 decimales: -2 / -2.0 / '-2,00' -> '-2.00'; vacío -> '0.00'."""
+    s = str(valor if valor is not None else '').strip().replace(',', '.')
+    if s.lower() in ('', 'nan', 'none'):
+        return "0.00"
+    try:
+        f = float(s)
+    except ValueError:
+        return str(valor).strip()
+    if abs(f) < 0.005:
+        f = 0.0
+    return f"{f:.2f}"
+
+
+def medida_para_guardar(valor, macro_categoria):
+    """Normaliza la medida solo si el producto es de la línea Lentes."""
+    if 'peluca' in str(macro_categoria or '').lower():
+        return valor
+    return normalizar_medida_lente(valor)
