@@ -9,6 +9,7 @@ load_dotenv(ruta_env)
 
 from woocommerce import API
 from sqlalchemy import create_engine, text
+from seo_woo import robots_para_sync
 
 engine = create_engine(os.getenv("DATABASE_URL"))
 
@@ -26,6 +27,34 @@ def log_woo(mensaje):
                 )
         except Exception as e:
             print(f"Error crítico escribiendo log en BD: {e}")
+
+def guardar_permalinks(engine, nombre_tienda, permalinks):
+    """Guarda la URL real de cada SKU (la usa el feed de Meta y otros enlaces del panel)."""
+    if not permalinks:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS woo_permalinks (
+                    sku VARCHAR(100) PRIMARY KEY,
+                    tienda VARCHAR(50),
+                    permalink TEXT,
+                    actualizado TIMESTAMP DEFAULT NOW()
+                )
+            """))
+            conn.execute(
+                text("""
+                    INSERT INTO woo_permalinks (sku, tienda, permalink, actualizado)
+                    VALUES (:sku, :t, :url, NOW())
+                    ON CONFLICT (sku) DO UPDATE SET tienda = EXCLUDED.tienda,
+                        permalink = EXCLUDED.permalink, actualizado = NOW()
+                """),
+                [{"sku": k, "t": nombre_tienda, "url": v} for k, v in permalinks.items()]
+            )
+        log_woo(f"🔗 {len(permalinks)} URLs de producto guardadas para {nombre_tienda}.")
+    except Exception as e:
+        log_woo(f"⚠️ No se pudieron guardar las URLs de producto: {e}")
+
 
 def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     """
@@ -49,6 +78,7 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
     mapa_variaciones = {}     # {parent_id: {sku: variation_id}}
     nombres_web = {}          # {sku: "Nombre Web (Solo para lectura humana)"}
     woo_skus_totales = set()  # Saco absoluto de todos los SKUs vivos en esta web
+    permalinks = {}           # {sku: URL real de la ficha} (las variaciones apuntan a su padre)
 
     pagina = 1
     while True:
@@ -67,7 +97,10 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
             p_sku = p.get("sku", "").strip()
             p_type = p.get("type")
             p_title = p.get("name", "Producto sin título")
+            p_link = p.get("permalink", "")
             
+            if p_type == "variable" and p_sku and p_link:
+                permalinks[p_sku] = p_link
             if p_type == "variable":
                 if p_id not in mapa_variaciones:
                     mapa_variaciones[p_id] = {}
@@ -82,6 +115,7 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
                         if v_sku:
                             mapa_variaciones[p_id][v_sku] = v["id"]
                             woo_skus_totales.add(v_sku)
+                            if p_link: permalinks[v_sku] = p_link
                             
                             opciones = [attr.get('option', '') for attr in v.get('attributes', [])]
                             nombres_web[v_sku] = f"{p_title} ({' '.join(opciones)})".strip()
@@ -89,11 +123,13 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
             elif p_sku: 
                 mapa_simples[p_sku] = p_id
                 woo_skus_totales.add(p_sku)
+                if p_link: permalinks[p_sku] = p_link
                 nombres_web[p_sku] = p_title
                 
         pagina += 1
 
     log_woo(f"🔗 Mapeo de {nombre_tienda} listo. SKUs totales detectados en la Web: {len(woo_skus_totales)}.")
+    guardar_permalinks(engine, nombre_tienda, permalinks)
 
     # =========================================================================
     # 2. AUDITORÍA CRUZADA DE CONJUNTOS POR SKU
@@ -139,7 +175,9 @@ def sincronizar_tienda_woo(engine, nombre_tienda, wcapi, stock_local_tienda):
                 "id": mapa_simples[sku],
                 "manage_stock": True,
                 "stock_quantity": stock_real,
-                "catalog_visibility": visibilidad
+                "catalog_visibility": visibilidad,
+                # SEO: lo que se oculta del catálogo tampoco se indexa en Google
+                "meta_data": robots_para_sync(visibilidad == "visible") if "kmlentes" in nombre_tienda else []
             })
 
     simples_enviados_ok = 0

@@ -599,6 +599,9 @@ def sync_woo_background(skus_a_sincronizar):
                         # Solo los productos simples/padres soportan cambio de visibilidad
                         visibilidad = "visible" if (stock_real > 0 or stock_camino > 0) else "hidden"
                         data_update["catalog_visibility"] = visibilidad
+                        # SEO: lo oculto del catálogo tampoco se indexa en Google
+                        from seo_woo import robots_para_sync
+                        data_update["meta_data"] = robots_para_sync(visibilidad == "visible")
                         wcapi.put(f"products/{woo_id}", data_update)
 
         print(f"⚡ Sync en tiempo real completada para: {skus_a_sincronizar}")

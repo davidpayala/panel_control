@@ -43,7 +43,10 @@ def render_catalogo():
     macros_disponibles = list(mapa_cat.keys())
 
     # TABS PARA ORGANIZAR MEJOR
-    tab_gestion, tab_marketing = st.tabs(["🛠️ Gestión de Inventario", "📢 Marketing & Feed Meta"])
+    tab_gestion, tab_marketing, tab_seo = st.tabs(["🛠️ Gestión de Inventario", "📢 Marketing & Feed Meta", "🌐 SEO Web"])
+
+    with tab_seo:
+        render_seo_web()
 
     # ==============================================================================
     # TAB 1: GESTIÓN DE INVENTARIO
@@ -590,7 +593,19 @@ def render_catalogo():
                         df_feed['availability'] = df_raw['stock_total'].apply(lambda x: 'in_stock' if x > 0 else 'out_of_stock')
                         df_feed['condition'] = 'new'
                         df_feed['price'] = df_raw['precio'].astype(str) + ' PEN'
-                        df_feed['link'] = df_raw.apply(lambda r: f"https://pelucat.pe/producto/{r['sku']}" if r['macro_categoria'] == 'Pelucas' else f"https://kmlentes.pe/producto/{r['sku']}", axis=1)
+                        # URL real de la ficha (la guarda sync_woo.py; las variantes con medida apuntan a su padre).
+                        # Si aún no está guardada, se usa el formato de la tienda: /product/<sku en minúsculas>/
+                        try:
+                            with engine.connect() as conn:
+                                mapa_links = dict(conn.execute(text("SELECT sku, permalink FROM woo_permalinks")).fetchall())
+                        except Exception:
+                            mapa_links = {}
+                        def _link(r):
+                            if r['sku'] in mapa_links:
+                                return mapa_links[r['sku']]
+                            dominio = "pelucat.pe" if r['macro_categoria'] == 'Pelucas' else "kmlentes.pe"
+                            return f"https://{dominio}/product/{str(r['sku']).strip().lower()}/"
+                        df_feed['link'] = df_raw.apply(_link, axis=1)
                         df_feed['image_link'] = df_raw['url_imagen']
                         df_feed['brand'] = df_raw['marca'].fillna('K&M')
                         df_feed['custom_label_0'] = df_raw['macro_categoria'].fillna('Lentes')
@@ -602,3 +617,42 @@ def render_catalogo():
                         st.download_button("📥 DESCARGAR FEED META (CSV)", data=csv, file_name="feed_meta_unificado.csv", mime="text/csv")
 
                 except Exception as e: st.error(f"Error generando feed: {e}")
+
+# ==============================================================================
+# TAB 3: SEO DE KMLENTES.PE (títulos, meta descripciones, alts y noindex)
+# ==============================================================================
+def render_seo_web():
+    import seo_woo
+    st.header("🌐 SEO de kmlentes.pe")
+    st.caption("Genera en español el título SEO, la meta descripción (Rank Math) y el texto alternativo de las "
+               "imágenes de cada producto, y marca como *noindex* los productos ocultos (agotados). "
+               "No modifica títulos ni descripciones que se hayan escrito a mano en Rank Math.")
+
+    skus_txt = st.text_input("Limitar a SKUs (opcional, separados por coma):", placeholder="Ej: NL001A, FL027I",
+                             key="seo_skus")
+    skus = [s for s in skus_txt.split(",") if s.strip()] or None
+
+    c1, c2 = st.columns(2)
+    if c1.button("🔎 Previsualizar cambios", use_container_width=True):
+        with st.spinner("Leyendo catálogo de kmlentes.pe..."):
+            try:
+                st.session_state["seo_preview"] = seo_woo.ejecutar(aplicar=False, skus=skus, log=st.write)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    prev = st.session_state.get("seo_preview")
+    if prev is not None:
+        if not prev:
+            st.success("✅ Todo al día: no hay mejoras pendientes.")
+        else:
+            df = pd.DataFrame(prev)
+            columnas = [c for c in ["sku", "nombre_web", "titulo_nuevo", "descripcion_nueva", "robots_nuevo", "alts_nuevos"] if c in df]
+            st.dataframe(df[columnas], hide_index=True, use_container_width=True)
+            confirmar = c2.checkbox(f"Confirmo aplicar {len(prev)} cambios en la web", key="seo_confirmar")
+            if c2.button("🚀 Aplicar en kmlentes.pe", type="primary", disabled=not confirmar, use_container_width=True):
+                with st.spinner("Escribiendo en WooCommerce (puede tardar unos minutos)..."):
+                    try:
+                        seo_woo.ejecutar(aplicar=True, skus=skus, log=st.write)
+                        st.session_state.pop("seo_preview", None)
+                    except Exception as e:
+                        st.error(f"Error: {e}")
