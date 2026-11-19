@@ -600,13 +600,20 @@ def procesar_evento(evento):
 
                 if not existe and not is_echo:
                     conn.execute(text("""
-                        INSERT INTO mensajes (telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content, estado_waha, session_name)
-                        VALUES (:t, :tipo, :txt, NOW(), :leido, :d, :wid, :rid, :rbody, :est, :sess)
+                        INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, archivo_data, whatsapp_id, reply_to_id, reply_content, estado_waha, session_name)
+                        VALUES (:idc, :t, :tipo, :txt, NOW(), :leido, :d, :wid, :rid, :rbody, :est, :sess)
                     """), {
-                        "t": t_msg, "tipo": tipo_msg, "txt": body, "leido": (tipo_msg == 'SALIENTE_BOT'), "d": archivo_bytes,
+                        "idc": int(id_cliente_final), "t": t_msg, "tipo": tipo_msg, "txt": body, "leido": (tipo_msg == 'SALIENTE_BOT'), "d": archivo_bytes,
                         "wid": whatsapp_id, "rid": reply_id, "rbody": reply_content, "est": 'recibido' if tipo_msg == 'ENTRANTE' else 'enviado', "sess": session_name
                     })
                     fue_insertado = True
+
+                # Mantiene mensajes.id_cliente al día: llena los que quedaron vacíos (mensajes fusionados, historial
+                # que pasó del LID al teléfono) y corrige los de clientes fusionados por duplicado.
+                conn.execute(text("""
+                    UPDATE mensajes SET id_cliente = :idc
+                    WHERE telefono = :t AND id_cliente IS DISTINCT FROM :idc
+                """), {"idc": int(id_cliente_final), "t": t_msg})
 
                 conn.execute(text("UPDATE sync_estado SET version = version + 1 WHERE id = 1"))
 
