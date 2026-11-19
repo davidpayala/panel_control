@@ -28,7 +28,8 @@ from utils import (
     subir_estado_whatsapp,
     generar_texto_producto_ia,
     publicar_en_facebook_via_webhook,
-    obtener_imagen_jpg_b64
+    obtener_imagen_jpg_b64,
+    es_lid,
 )
 from marketing_grupos import (
     asegurar_esquema,
@@ -81,7 +82,8 @@ def log_mkt(mensaje):
 # ==============================================================================
 SQL_PROSPECTOS = """
     WITH Candidatos AS (
-        SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono,
+        -- destino = teléfono; si el número está oculto, su LID (así se guardan sus mensajes en la tabla mensajes)
+        SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, COALESCE(NULLIF(TRIM(t.telefono), ''), t.lid) AS telefono,
                bg.grupo, bg.instruccion_ia, bg.escribio_real, bg.actualizado, bg.prioridad
         FROM clientes c
         JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
@@ -92,20 +94,20 @@ SQL_PROSPECTOS = """
           AND COALESCE(c.nivel_zombie, 0) = 0
           AND t.activo = TRUE
           AND t.es_principal = TRUE
-          AND length(t.telefono) > 6
+          AND length(COALESCE(NULLIF(TRIM(t.telefono), ''), t.lid)) > 6
           -- solo grupos activos que aún tienen cupo hoy en ESTA cuenta (límites del panel)
           AND bg.grupo = ANY(:grupos)
           -- espera propia de cada grupo desde el último mensaje del bot
           AND NOT EXISTS (
               SELECT 1 FROM mensajes m_sal
-              WHERE m_sal.telefono = t.telefono
+              WHERE m_sal.telefono = COALESCE(NULLIF(TRIM(t.telefono), ''), t.lid)
                 AND m_sal.tipo = 'SALIENTE_BOT'
                 AND m_sal.fecha > NOW() - (bg.espera_dias * INTERVAL '1 day')
           )
           -- no interrumpir una conversación: nada (entrante o saliente) en los últimos 14 días
           AND NOT EXISTS (
               SELECT 1 FROM mensajes m_rec
-              WHERE m_rec.telefono = t.telefono AND m_rec.fecha > NOW() - INTERVAL '14 days'
+              WHERE m_rec.telefono = COALESCE(NULLIF(TRIM(t.telefono), ''), t.lid) AND m_rec.fecha > NOW() - INTERVAL '14 days'
           )
           -- si compró en los últimos 60 días, lo atiende la post-venta, no el marketing
           AND NOT EXISTS (
@@ -505,12 +507,15 @@ def ejecutar_francotirador():
                             descartes["otra_sesion"] += 1
                             continue
 
-                    norm = normalizar_telefono_maestro(cliente.telefono)
-                    if not norm: 
-                        descartes["formato_invalido"] += 1
-                        continue
-                        
-                    telefono_final = norm['db']
+                    if es_lid(cliente.telefono):
+                        # número oculto: se le escribe a su LID tal cual (no es un teléfono, no se normaliza)
+                        telefono_final = str(cliente.telefono).strip()
+                    else:
+                        norm = normalizar_telefono_maestro(cliente.telefono)
+                        if not norm: 
+                            descartes["formato_invalido"] += 1
+                            continue
+                        telefono_final = norm['db']
                     
                     if verificar_numero_waha(telefono_final) is True:
                         saludo = random.choice(["Hola", "¡Hola!", "¡Qué tal", "Saludos", "Buen día"])
@@ -703,7 +708,8 @@ def ejecutar_francotirador():
                     query_zombies = text("""
                         WITH Zombies_Base AS (
                             SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, 
-                                   c.nivel_zombie, c.ultimo_msg_zombie, t.telefono
+                                   c.nivel_zombie, c.ultimo_msg_zombie,
+                                   COALESCE(NULLIF(TRIM(t.telefono), ''), t.lid) AS telefono  -- LID si el número está oculto
                             FROM Clientes c
                             JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
                             WHERE c.activo = TRUE 
@@ -763,8 +769,8 @@ def ejecutar_francotirador():
                             conn_up.execute(text("UPDATE Clientes SET nivel_zombie = :n WHERE id_cliente = :id"), {"n": nivel_actual, "id": zombie.id_cliente})
                         log_mkt(f"🔄 Cliente {ref_cliente}: Zombie Lvl {nivel_guardado} → Lvl {nivel_actual} (día {dias_transcurridos}).")
 
-                    if not zombie.telefono or len(str(zombie.telefono)) <= 6:
-                        continue  # sin número real (solo LID): no se le puede escribir
+                    if not zombie.telefono:
+                        continue  # sin teléfono ni LID: no hay a dónde escribir
 
                     limite_usuario = limites_zombie.get(nivel_actual, 1)
                     if zombie.msgs_enviados_hoy >= limite_usuario:

@@ -23,8 +23,10 @@ from waha_motor import url_waha  # motor (NOWEB/WEBJS) por acción, configurable
 
 try:
     from utils import marcar_chat_como_leido_waha as marcar_leido_waha
-    from utils import normalizar_telefono_maestro, obtener_historial_compras
+    from utils import normalizar_telefono_maestro, obtener_historial_compras, es_lid, lid_canonico
 except ImportError:
+    def es_lid(v): return str(v or "").strip().lower().endswith("@lid") or str(v or "").startswith("LID_")
+    def lid_canonico(v): return str(v)
     def marcar_leido_waha(*args): pass
     def normalizar_telefono_maestro(t): return {"db": "".join(filter(str.isdigit, str(t)))}
 
@@ -648,13 +650,18 @@ def render_chat():
                                         if es_sin_empezar:
                                             conn.execute(text("UPDATE Ventas SET pendiente_pago = 0 WHERE id_cliente = :id"), {"id": existente.id_cliente})
                                     else:
+                                        # Número oculto (LID): el teléfono queda vacío y el LID va en su propia columna
+                                        chat_es_lid = es_lid(chat_actual)
+                                        tel_nuevo = None if chat_es_lid else str(chat_actual)
+                                        lid_nuevo = lid_canonico(chat_actual) if chat_es_lid else None
                                         res = conn.execute(text(f"""
-                                            INSERT INTO {tabla} (nombre_corto, telefono, estado, id_etapa, activo, fecha_registro) 
-                                            VALUES (:nc, :t, :e, :id_etapa, TRUE, NOW()) 
+                                            INSERT INTO {tabla} (nombre_corto, telefono, whatsapp_internal_id, estado, id_etapa, activo, fecha_registro) 
+                                            VALUES (:nc, :t, :lid, :e, :id_etapa, TRUE, NOW()) 
                                             RETURNING id_cliente
-                                        """), {"nc": str(chat_actual), "t": str(chat_actual), "e": nuevo_estado, "id_etapa": id_etapa_val})
+                                        """), {"nc": str(chat_actual), "t": tel_nuevo, "lid": lid_nuevo, "e": nuevo_estado, "id_etapa": id_etapa_val})
                                         nuevo_id = res.fetchone()[0]
-                                        conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, es_principal) VALUES (:id, :t, TRUE)"), {"id": nuevo_id, "t": str(chat_actual)})
+                                        conn.execute(text("INSERT INTO telefonoscliente (id_cliente, telefono, lid, es_principal) VALUES (:id, :t, :lid, TRUE)"),
+                                                     {"id": nuevo_id, "t": tel_nuevo, "lid": lid_nuevo})
                                         st.session_state['chat_actual_id'] = str(nuevo_id)
                             st.rerun()
                         except Exception as e:

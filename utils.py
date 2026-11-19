@@ -86,6 +86,34 @@ def normalizar_telefono_maestro(entrada):
     }
 
 # ==============================================================================
+# 🆔 LID (número oculto de WhatsApp)
+#   Algunos contactos no muestran su número: WhatsApp solo entrega un LID ("123456789012345@lid").
+#   Formatos que existen en la base: "123...@lid" (actual) y "LID_123..." (antiguo).
+#   Un LID NO es un teléfono: no se debe normalizar como número (daría un "51..."@c.us falso).
+# ==============================================================================
+def es_lid(valor):
+    v = str(valor or "").strip()
+    return v.lower().endswith("@lid") or v.startswith("LID_")
+
+
+def lid_canonico(valor):
+    """'LID_123' / '123@lid' → '123@lid' (formato que usa WAHA y el webhook)."""
+    v = str(valor or "").strip()
+    digitos = "".join(filter(str.isdigit, v.replace("LID_", "").split("@")[0]))
+    return f"{digitos}@lid" if digitos else None
+
+
+def chat_id_waha(destino):
+    """chatId para WAHA a partir de un teléfono o un LID. None si no es válido."""
+    if not destino:
+        return None
+    if es_lid(destino):
+        return lid_canonico(destino)
+    norm = normalizar_telefono_maestro(destino)
+    return norm['waha'] if norm else None
+
+
+# ==============================================================================
 # 🔍 2. FUNCIONES DE GOOGLE CONTACTS
 # ==============================================================================
 def get_google_service():
@@ -249,8 +277,8 @@ def marcar_chat_como_leido_waha(chat_id, session="default"):
     """Marca como leído soportando números normales y LIDs"""
     try:
         chat_id_str = str(chat_id)
-        if chat_id_str.startswith("LID_"):
-            chat_id = f"{chat_id_str.replace('LID_', '')}@lid"
+        if es_lid(chat_id_str):
+            chat_id = lid_canonico(chat_id_str)
         elif "@" not in chat_id_str: 
             chat_id = f"{chat_id_str}@c.us"
             
@@ -292,14 +320,9 @@ def enviar_mensaje_whatsapp(telefono, mensaje, url_imagen=None, session="default
             except: pass
 
     try:
-        telefono_str = str(telefono)
-        
-        if telefono_str.startswith("LID_"):
-            chat_id = f"{telefono_str.replace('LID_', '')}@lid"
-        else:
-            norm = normalizar_telefono_maestro(telefono)
-            if not norm: return False
-            chat_id = norm['waha']
+        # Teléfono normal → 51...@c.us | LID (número oculto, "...@lid" o "LID_...") → ...@lid
+        chat_id = chat_id_waha(telefono)
+        if not chat_id: return False
             
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
@@ -367,15 +390,9 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
     import requests
     import base64
     try:
-        telefono_str = str(telefono)
-        
-        # 🛡️ ENRUTAMIENTO INTELIGENTE: LID vs Número Normal (Agregado aquí)
-        if telefono_str.startswith("LID_"):
-            chat_id = f"{telefono_str.replace('LID_', '')}@lid"
-        else:
-            norm = normalizar_telefono_maestro(telefono)
-            if not norm: return False
-            chat_id = norm['waha']
+        # 🛡️ ENRUTAMIENTO: LID (número oculto) vs número normal
+        chat_id = chat_id_waha(telefono)
+        if not chat_id: return False
 
         b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
         data_uri = f"data:{mime_type};base64,{b64_data}"
@@ -410,6 +427,11 @@ def verificar_numero_waha(telefono):
     Retorna True (existe), False (no existe), o None (error de conexión).
     """
     try:
+        # Un LID solo existe porque esa persona nos escribió por WhatsApp: no se puede (ni hace falta) verificar.
+        # Antes se normalizaba como número falso → WAHA decía «no existe» → el bot lo marcaba «Sin WhatsApp».
+        if es_lid(telefono):
+            return True
+
         norm = normalizar_telefono_maestro(telefono)
         if not norm: return False
         

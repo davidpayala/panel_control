@@ -280,6 +280,73 @@ def tab_logs_respaldo():
     except Exception as e:
         st.error(f"❌ Error leyendo la base de datos: {e}")
 
+def tab_agente_waha():
+    st.markdown("### 🔎 Agente WAHA · @usuario (alias)")
+    st.info("WhatsApp permite ocultar el número y mostrar un **@usuario**. Se guardará en *telefonoscliente.alias*, "
+            "pero WAHA todavía no lo entrega, así que el webhook no llena ese campo. Este agente revisa los días 1 y 15 "
+            "de cada mes si tu WAHA ya lo devuelve y si las novedades de WAHA lo mencionan.")
+    if st.button("🔄 Refrescar", key="btn_agente_waha"):
+        st.rerun()
+    try:
+        with engine.connect() as conn:
+            existe = conn.execute(text("SELECT to_regclass('public.agente_waha_revisiones')")).scalar()
+            if not existe:
+                st.warning("El agente aún no se ha ejecutado. Corre: python recurrente/agente_waha_alias.py")
+                return
+            df = pd.read_sql(text("""
+                SELECT fecha, version_local, ultima_version, soportado_local, mencionado_upstream, resumen
+                FROM agente_waha_revisiones ORDER BY id DESC LIMIT 30
+            """), conn)
+            df_logs = pd.read_sql(text("SELECT fecha, mensaje FROM logs_agente_waha ORDER BY id DESC LIMIT 200"), conn)
+
+        # 🧠 Informe de Claude (tarea programada cada 2 semanas: lee el changelog de WAHA y lo cruza con tu código)
+        with engine.connect() as conn:
+            hay_ana = conn.execute(text("SELECT to_regclass('public.agente_waha_analisis')")).scalar()
+            df_ana = pd.read_sql(text("SELECT fecha, version_revisada, alias_disponible, nivel, resumen, informe "
+                                      "FROM agente_waha_analisis ORDER BY id DESC LIMIT 12"), conn) if hay_ana else pd.DataFrame()
+        st.markdown("#### 🧠 Informe de Claude: changelog de WAHA vs tu app")
+        if df_ana.empty:
+            st.caption("Aún no hay informes. La tarea programada corre los días 1 y 15 de cada mes.")
+        else:
+            a = df_ana.iloc[0]
+            icono = {"riesgo": "🔴", "mejora": "🟡", "ok": "🟢"}.get(str(a["nivel"]), "⚪")
+            cabecera = (f"{icono} **{pd.to_datetime(a['fecha']).strftime('%Y-%m-%d')}** · WAHA hasta {a['version_revisada']} · "
+                        f"@usuario: {'✅ disponible' if a['alias_disponible'] else '⏳ aún no'} — {a['resumen']}")
+            {"riesgo": st.error, "mejora": st.warning}.get(str(a["nivel"]), st.success)(cabecera)
+            with st.expander("📄 Ver informe completo", expanded=str(a["nivel"]) != "ok"):
+                st.markdown(a["informe"] or "_(sin detalle)_")
+            if len(df_ana) > 1:
+                with st.expander("🗂️ Informes anteriores"):
+                    for _, r in df_ana.iloc[1:].iterrows():
+                        st.markdown(f"**{pd.to_datetime(r['fecha']).strftime('%Y-%m-%d')}** · {r['nivel']} · {r['resumen']}")
+        st.markdown("#### 🔬 Prueba automática contra tu WAHA")
+
+        if df.empty:
+            st.warning("Sin revisiones registradas todavía.")
+            return
+        ult = df.iloc[0]
+        fecha_ult = pd.to_datetime(ult["fecha"]).strftime("%Y-%m-%d %H:%M")
+        if ult["soportado_local"]:
+            st.success(f"**{fecha_ult}** — {ult['resumen']}")
+        elif ult["mencionado_upstream"]:
+            st.warning(f"**{fecha_ult}** — {ult['resumen']}")
+        else:
+            st.info(f"**{fecha_ult}** — {ult['resumen']}")
+
+        df["fecha"] = pd.to_datetime(df["fecha"]).dt.strftime("%Y-%m-%d %H:%M")
+        st.dataframe(df.rename(columns={
+            "fecha": "Fecha", "version_local": "WAHA instalado", "ultima_version": "Última versión",
+            "soportado_local": "¿Tu WAHA lo entrega?", "mencionado_upstream": "¿Mencionado en novedades?",
+            "resumen": "Resumen"}), hide_index=True, use_container_width=True)
+
+        if not df_logs.empty:
+            with st.expander("📜 Detalle de las revisiones (logs)"):
+                df_logs["fecha"] = pd.to_datetime(df_logs["fecha"])
+                st.code("\n".join(f"[{r['fecha'].strftime('%Y-%m-%d %H:%M')}] {r['mensaje']}" for _, r in df_logs.iterrows()),
+                        language="log")
+    except Exception as e:
+        st.error(f"❌ Error leyendo la base de datos: {e}")
+
 # ==========================================================================
 # 🏗️ RENDERIZADOR PRINCIPAL (Estructura Dinámica)
 # ==========================================================================
@@ -292,7 +359,8 @@ def render_diagnostico():
         "📦 Logs Post-Venta": tab_logs_postventa,
         "📑 Logs Catálogos": tab_logs_catalogos,
         "🧠 Logs Agente Semanal": tab_logs_agente,
-        "💾 Logs Respaldo": tab_logs_respaldo
+        "💾 Logs Respaldo": tab_logs_respaldo,
+        "🔎 Agente WAHA (@alias)": tab_agente_waha
     }
     
     tabs_obj = st.tabs(list(pestanas.keys()))
