@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
+from marketing_grupos import ZOMBIE_VENTANAS, fecha_inicio_para_nivel
 import time
 import os
 import threading
@@ -663,9 +664,9 @@ def render_chat():
                     nivel_z = info.nivel_zombie if info and hasattr(info, 'nivel_zombie') and info.nivel_zombie is not None else 0
                     niveles_map = {
                         0: "🟢 Cliente Normal", 
-                        1: "🧟 Zombie (Espera N1)", 
-                        2: "🧟 Zombie (Espera N2)", 
-                        3: "🧟 Nivel 2 Enviado"
+                        1: f"🧟 Zombie Lvl 1 · {ZOMBIE_VENTANAS[1]}", 
+                        2: f"🧟 Zombie Lvl 2 · {ZOMBIE_VENTANAS[2]}", 
+                        3: f"🧟 Zombie Lvl 3 · {ZOMBIE_VENTANAS[3]}"
                     }
                     idx_z = nivel_z if nivel_z in niveles_map else 0
                     
@@ -680,7 +681,9 @@ def render_chat():
                     
                     if nuevo_nivel != nivel_z:
                         with engine.begin() as conn:
-                            tiempo_update = ", ultimo_msg_zombie = NOW()" if nuevo_nivel > 0 else ""
+                            # el bot calcula el nivel por días: se fecha el inicio para que caiga en la ventana elegida
+                            tiempo_update = (f", ultimo_msg_zombie = NOW() - INTERVAL '{fecha_inicio_para_nivel(nuevo_nivel)} days'"
+                                             if nuevo_nivel > 0 else "")
                             if es_cliente:
                                 conn.execute(text(f"UPDATE {tabla} SET nivel_zombie = :n {tiempo_update} WHERE id_cliente = :id"), {"n": nuevo_nivel, "id": int(chat_actual)})
                             else:

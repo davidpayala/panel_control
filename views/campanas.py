@@ -3,6 +3,7 @@ import pandas as pd
 from sqlalchemy import text
 from database import engine
 import datetime
+from marketing_grupos import asegurar_esquema, leer_limites, NOMBRE_GRUPO, SESIONES, ZOMBIE_VENTANAS, ZOMBIE_DIA_SALIDA
 
 # ==============================================================================
 # 🧩 FUNCIONES AUXILIARES VISUALES
@@ -41,11 +42,70 @@ def mostrar_indicador_suma_fb(df, col_gen, col_pel, col_len):
         else: st.warning(f"⚠️ **FB Lentes: {s_len}%** (Rec: 100%)")
 
 # ==============================================================================
+# 📨 REPORTE: ENVÍOS POR GRUPO (mensajes directos) Y POR TAREA ZOMBIE
+# ==============================================================================
+def render_reporte_envios_por_grupo():
+    st.markdown("**👥 Envíos del bot por grupo y Zombies**")
+    periodo = st.radio("Periodo", ["Hoy", "Últimos 7 días", "Últimos 30 días"], horizontal=True,
+                       key="periodo_envios_grupo", label_visibility="collapsed")
+    dias = {"Hoy": 0, "Últimos 7 días": 6, "Últimos 30 días": 29}[periodo]
+
+    with engine.connect() as conn:
+        # Un «envío» = un cliente contactado en un día (evita contar doble el eco del webhook)
+        filas = conn.execute(text("""
+            SELECT TRIM(COALESCE(session_name, 'default')) AS sesion,
+                   COALESCE(origen_bot, 'SIN') AS origen,
+                   COUNT(DISTINCT (telefono, fecha::date)) AS envios
+            FROM mensajes
+            WHERE tipo = 'SALIENTE_BOT' AND fecha >= CURRENT_DATE - (:d * INTERVAL '1 day')
+            GROUP BY 1, 2
+        """), {"d": dias}).fetchall()
+        limites = leer_limites(conn)
+
+    conteo = {}
+    for sesion, origen, n in filas:
+        conteo[(sesion, origen)] = conteo.get((sesion, origen), 0) + int(n)
+
+    filas_directos, filas_zombie = [], []
+    for g, nombre in NOMBRE_GRUPO.items():
+        lim = limites.get(g, {})
+        fila = {"Grupo": f"G{g} · {lim.get('nombre', nombre)}" + ("" if lim.get("activo", True) else " (apagado)")}
+        for ses, vis in SESIONES.items():
+            n = conteo.get((ses, f"G{g}"), 0)
+            fila[vis] = f"{n} / {lim.get(ses, 0)}" if dias == 0 else str(n)
+        fila["Total"] = sum(conteo.get((ses, f"G{g}"), 0) for ses in SESIONES)
+        filas_directos.append(fila)
+    for nivel in (1, 2, 3):
+        fila = {"Nivel": f"🧟 Zombie Lvl {nivel}"}
+        for ses, vis in SESIONES.items():
+            fila[vis] = conteo.get((ses, f"Z{nivel}"), 0)
+        fila["Total"] = sum(conteo.get((ses, f"Z{nivel}"), 0) for ses in SESIONES)
+        filas_zombie.append(fila)
+
+    tot_dir = sum(f["Total"] for f in filas_directos)
+    tot_zom = sum(f["Total"] for f in filas_zombie)
+    tot_sin = sum(conteo.get((ses, "SIN"), 0) for ses in SESIONES)
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("📨 Mensajes directos (grupos)", tot_dir)
+    k2.metric("🧟 Reactivación Zombie", tot_zom)
+    k3.metric("✍️ Otros salientes sin etiqueta", tot_sin,
+              help="Mensajes salientes que NO envió el bot: escritos desde el teléfono, o enviados antes de "
+                   "que el bot empezara a etiquetar cada mensaje con su grupo.")
+
+    c_dir, c_zom = st.columns([3, 2])
+    with c_dir:
+        st.caption("Mensajes directos por grupo" + (" (enviados / límite diario)" if dias == 0 else ""))
+        st.dataframe(pd.DataFrame(filas_directos), hide_index=True, use_container_width=True)
+    with c_zom:
+        st.caption("Tarea Zombie (nivel del cliente al enviar)")
+        st.dataframe(pd.DataFrame(filas_zombie), hide_index=True, use_container_width=True)
+
+
+# ==============================================================================
 # 📊 PESTAÑA 1: GENERAL
 # ==============================================================================
 def render_tab_general(config):
-    st.subheader("📊 1.1 Reporte de Operaciones Diarias")
-    
     if config and config.bot_activo: 
         st.success("🟢 **ESTADO GLOBAL: BOT ACTIVO Y DISPARANDO**")
     else: 
@@ -53,7 +113,6 @@ def render_tab_general(config):
 
     # --- CONSULTAS DE MÉTRICAS ---
     with engine.connect() as conn:
-        # Estados
         est_counts = {str(row[0]): int(row[1]) for row in conn.execute(text("""
             SELECT TRIM(LOWER(COALESCE(session_name, 'principal'))) as sesion, COUNT(*) as total
             FROM Historial_Estados 
@@ -61,7 +120,6 @@ def render_tab_general(config):
             GROUP BY 1
         """)).fetchall()}
 
-        # Facebook
         fb_counts = {str(row[0]): int(row[1]) for row in conn.execute(text("""
             SELECT TRIM(LOWER(COALESCE(pagina, 'general'))) as pagina, COUNT(*) as total
             FROM Historial_Facebook 
@@ -69,38 +127,6 @@ def render_tab_general(config):
             GROUP BY 1
         """)).fetchall()}
 
-        # 🛠️ CORRECCIÓN 1: Mensajes Totales usando COUNT(DISTINCT) y TRIM() sin desfase horario
-        env_principal = conn.execute(text("""
-            SELECT COUNT(DISTINCT telefono) FROM mensajes 
-            WHERE tipo = 'SALIENTE_BOT' 
-              AND TRIM(COALESCE(session_name, 'principal')) = 'principal' 
-              AND fecha >= CURRENT_DATE
-        """)).scalar() or 0
-        
-        env_lentes = conn.execute(text("""
-            SELECT COUNT(DISTINCT telefono) FROM mensajes 
-            WHERE tipo = 'SALIENTE_BOT' 
-              AND TRIM(COALESCE(session_name, 'default')) = 'default' 
-              AND fecha >= CURRENT_DATE
-        """)).scalar() or 0
-
-        # 🛠️ CORRECCIÓN 2: Mensajes Nuevos/Fríos aplicando TRIM() en el agrupamiento
-        query_nuevos_sesion = text("""
-            SELECT 
-                TRIM(COALESCE(m.session_name, 'default')) AS sesion,
-                COUNT(DISTINCT m.telefono) AS total_nuevos
-            FROM mensajes m
-            WHERE m.tipo = 'SALIENTE_BOT' 
-              AND m.fecha >= CURRENT_DATE
-              AND NOT EXISTS (
-                  SELECT 1 FROM mensajes me 
-                  WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
-              )
-            GROUP BY 1
-        """)
-        nuevos_counts = {str(row[0]): int(row[1]) for row in conn.execute(query_nuevos_sesion).fetchall()}
-
-        # Avance Cobertura
         row_avance = conn.execute(text("""
             WITH enviados_recientes AS (
                 SELECT DISTINCT telefono FROM mensajes 
@@ -123,68 +149,49 @@ def render_tab_general(config):
     total_habilitados = a_enviados + b_pendientes
     c_porcentaje = (a_enviados / total_habilitados * 100.0) if total_habilitados > 0 else 0.0
 
-# Extracción de valores de mensajes fríos independientes
-    nuevos_principal = nuevos_counts.get('principal', 0)
-    nuevos_lentes = nuevos_counts.get('default', 0)
-    
-    max_nuevos_pri = getattr(config, 'max_nuevos_principal', 10) if config else 10
-    max_nuevos_len = getattr(config, 'max_nuevos_default', 10) if config else 10
+    # ==================================================================
+    # 📊 1.1 REPORTE DE OPERACIONES DIARIAS
+    # ==================================================================
+    with st.container(border=True):
+        st.subheader("📊 1.1 Reporte de Operaciones Diarias")
+        render_reporte_envios_por_grupo()
 
-    # 🛠️ NUEVO: Extracción de límites TOTALES independientes (heredando el general si falla)
-    max_tot_pri = getattr(config, 'max_mensajes_principal', getattr(config, 'max_mensajes_dia', 10)) if config else 10
-    max_tot_len = getattr(config, 'max_mensajes_default', getattr(config, 'max_mensajes_dia', 10)) if config else 10
+        st.write("")
+        st.markdown("**📈 Cobertura de la Base de Datos** · clientes en estado 'Sin empezar'")
+        c_rep1, c_rep2, c_rep3 = st.columns(3)
+        c_rep1.metric("Impactados (Últ. 60 días)", f"{a_enviados} clientes")
+        c_rep2.metric("En Cola (Pendientes)", f"{b_pendientes} clientes")
+        c_rep3.metric("Cobertura Total", f"{c_porcentaje:.1f}%")
+        if total_habilitados > 0: 
+            st.progress(c_porcentaje / 100.0)
+        else: 
+            st.info("No hay clientes en estado 'Sin empezar' disponibles.")
 
-    # --- UI MÉTRICAS ---
-    st.write("")
-    st.markdown("**🧊 Restricción Meta: Mensajes Fríos (Nuevos Contactos)**")
-    c_frio1, c_frio2 = st.columns(2)
-    
-    with c_frio1:
-        st.metric("Nuevos Contactos (Principal)", f"{nuevos_principal} / {max_nuevos_pri}")
-        progreso_pri = min(nuevos_principal / max_nuevos_pri, 1.0) if max_nuevos_pri > 0 else 0.0
-        st.progress(progreso_pri)
-
-    with c_frio2:
-        st.metric("Nuevos Contactos (Lentes)", f"{nuevos_lentes} / {max_nuevos_len}")
-        progreso_len = min(nuevos_lentes / max_nuevos_len, 1.0) if max_nuevos_len > 0 else 0.0
-        st.progress(progreso_len)
-
-    st.write("")
-    st.markdown("**📨 Mensajes Directos Totales (DMs) Enviados Hoy**")
-    c_m1, c_m2 = st.columns(2)
-    
-    # 🛠️ CORRECCIÓN: Uso de variables separadas y barras de progreso para totales
-    with c_m1:
-        st.metric("Avance DMs (Principal)", f"{env_principal} / {max_tot_pri}")
-        prog_tot_pri = min(env_principal / max_tot_pri, 1.0) if max_tot_pri > 0 else 0.0
-        st.progress(prog_tot_pri)
-
-    with c_m2:
-        st.metric("Avance DMs (Lentes)", f"{env_lentes} / {max_tot_len}")
-        prog_tot_len = min(env_lentes / max_tot_len, 1.0) if max_tot_len > 0 else 0.0
-        st.progress(prog_tot_len)
+    # ==================================================================
+    # 📱 1.2 ESTADOS DE WHATSAPP Y FACEBOOK
+    # ==================================================================
+    with st.container(border=True):
+        st.subheader("📱 1.2 Estados de WhatsApp y 📘 Facebook (hoy)")
+        c_wsp, c_fb = st.columns(2)
+        with c_wsp:
+            st.markdown("**📱 Estados de WhatsApp**")
+            e1, e2, e3 = st.columns(3)
+            e1.metric("Principal", est_counts.get("principal", 0))
+            e2.metric("Lentes", est_counts.get("default", 0))
+            e3.metric("Total", sum(est_counts.values()))
+        with c_fb:
+            st.markdown("**📘 Posts de Facebook / Instagram**")
+            f1, f2, f3 = st.columns(3)
+            f1.metric("Pelucas", fb_counts.get("pelucas", 0))
+            f2.metric("Lentes", fb_counts.get("lentes", 0))
+            f3.metric("Total", sum(fb_counts.values()))
 
     st.write("")
-    st.markdown("**📱 Estados de WhatsApp & 📘 Facebook**")
-    c_e1, c_e2, c_f4 = st.columns(3)
-    c_e1.metric("Total Estados (WSP)", sum(est_counts.values()))
-    c_e2.metric("Total Posts (FB)", sum(fb_counts.values()))
 
-    st.write("")
-    st.caption("📈 Cobertura de la Base de Datos (Clientes en estado 'Sin empezar')")
-    c_rep1, c_rep2, c_rep3 = st.columns(3)
-    c_rep1.metric("Impactados (Últ. 60 días)", f"{a_enviados} clientes")
-    c_rep2.metric("En Cola (Pendientes)", f"{b_pendientes} clientes")
-    c_rep3.metric("Cobertura Total", f"{c_porcentaje:.1f}%")
-    if total_habilitados > 0: 
-        st.progress(c_porcentaje / 100.0)
-    else: 
-        st.info("No hay clientes en estado 'Sin empezar' disponibles.")
-    
-    st.divider()
-
-    # --- CONFIGURACIÓN GENERAL ---
-    st.subheader("⚙️ 1.2 Configuración General")
+    # ==================================================================
+    # ⚙️ 2. CONFIGURACIÓN GENERAL
+    # ==================================================================
+    st.subheader("⚙️ 2. Configuración General")
     with st.form("form_config_general"):
         nuevo_estado = st.toggle("Activar Francotirador Automático Global", value=config.bot_activo if config else False)
         
@@ -265,56 +272,83 @@ def render_tab_general(config):
                     })
             st.success("✅ Descripciones guardadas.")
 # ==============================================================================
+# 👥 LÍMITES DIARIOS POR GRUPO (mensajes directos)
+# ==============================================================================
+def render_limites_por_grupo():
+    st.markdown("**👥 Límites diarios por grupo**")
+    st.caption(
+        "Cuántos clientes de cada grupo puede contactar cada cuenta por día (el total diario de la cuenta es la suma "
+        "de sus grupos activos). El bot reparte el día dando prioridad al grupo con menos avance respecto a su límite. "
+        "G3 y G4 son los contactos fríos (nunca escribieron): mantenlos bajos para cuidar la cuenta ante Meta. "
+        "Los grupos los recalcula el agente semanal cada domingo."
+    )
+    with engine.connect() as conn:
+        df_lim = pd.read_sql(text("""
+            SELECT l.grupo, l.nombre, l.activo, l.limite_principal, l.limite_default,
+                   (SELECT COUNT(*) FROM bot_grupos bg WHERE bg.grupo = l.grupo) AS clientes
+            FROM bot_grupos_limites l ORDER BY l.grupo
+        """), conn)
+
+    df_edit_lim = st.data_editor(
+        df_lim,
+        column_config={
+            "grupo": st.column_config.NumberColumn("Grupo", disabled=True),
+            "nombre": st.column_config.TextColumn("Nombre", disabled=True),
+            "activo": st.column_config.CheckboxColumn("Activo"),
+            "limite_principal": st.column_config.NumberColumn("Límite/día Principal", min_value=0, max_value=500, step=1),
+            "limite_default": st.column_config.NumberColumn("Límite/día Lentes", min_value=0, max_value=500, step=1),
+            "clientes": st.column_config.NumberColumn("Clientes en el grupo", disabled=True),
+        },
+        hide_index=True, key="editor_limites_grupo", use_container_width=True
+    )
+    if st.button("💾 Guardar Límites por Grupo", type="primary"):
+        with engine.begin() as conn:
+            for _, row in df_edit_lim.iterrows():
+                conn.execute(text("""
+                    UPDATE bot_grupos_limites
+                    SET activo = :a, limite_principal = :lp, limite_default = :ld
+                    WHERE grupo = :g
+                """), {
+                    "a": bool(row["activo"]),
+                    "lp": int(row["limite_principal"]) if pd.notna(row["limite_principal"]) else 0,
+                    "ld": int(row["limite_default"]) if pd.notna(row["limite_default"]) else 0,
+                    "g": int(row["grupo"]),
+                })
+        st.success("✅ Límites por grupo guardados.")
+
+
+# ==============================================================================
 # 💬 2PESTAÑA: CONFIGURACIÓN DE MENSAJES
 # ==============================================================================
 def render_tab_mensajes(config):
     st.subheader("💬 Configuración de Mensajes Directos")
     
     with st.form("form_config_mensajes"):
-        st.markdown("**📱 Cuenta 1: KM (Principal)**")
-        c_p1, c_p2, c_p3 = st.columns(3)
-        
-        # Leemos el nuevo valor, si no existe o es NULL, heredamos el antiguo valor general
-        nuevo_max_pri = c_p1.number_input("Límite Total (Principal)", min_value=1, max_value=500, value=getattr(config, 'max_mensajes_principal', getattr(config, 'max_mensajes_dia', 10)))
-        nuevo_max_frios_pri = c_p2.number_input("Límite Fríos (Principal)", min_value=1, max_value=300, value=getattr(config, 'max_nuevos_principal', 10))
-        
+        st.markdown("**🎲 Probabilidad de disparo por ejecución**")
+        st.caption("El bot se ejecuta cada 30 min; en cada ejecución cada cuenta tira un dado y solo envía si cae dentro de este %.")
+        c_p, c_l = st.columns(2)
+
         val_prob_pri = getattr(config, 'intervalo_mensajes_principal', config.intervalo_mensajes) if config else 100
         val_prob_pri = int(val_prob_pri) if str(val_prob_pri).isdigit() else 100
-        nuevo_int_pri = c_p3.number_input("Probabilidad (Principal) %", min_value=0, max_value=100, value=val_prob_pri)
+        nuevo_int_pri = c_p.number_input("📱 Principal (KM) %", min_value=0, max_value=100, value=val_prob_pri)
 
-        st.divider()
-        st.markdown("**👓 Cuenta 2: Lentes (Default)**")
-        c_l1, c_l2, c_l3 = st.columns(3)
-        
-        nuevo_max_len = c_l1.number_input("Límite Total (Lentes)", min_value=1, max_value=500, value=getattr(config, 'max_mensajes_default', getattr(config, 'max_mensajes_dia', 10)))
-        nuevo_max_frios_len = c_l2.number_input("Límite Fríos (Lentes)", min_value=1, max_value=300, value=getattr(config, 'max_nuevos_default', 10))
-        
         val_prob_len = getattr(config, 'intervalo_mensajes_default', config.intervalo_mensajes) if config else 100
         val_prob_len = int(val_prob_len) if str(val_prob_len).isdigit() else 100
-        nuevo_int_len = c_l3.number_input("Probabilidad (Lentes) %", min_value=0, max_value=100, value=val_prob_len)
+        nuevo_int_len = c_l.number_input("👓 Lentes %", min_value=0, max_value=100, value=val_prob_len)
 
-        if st.form_submit_button("💾 Guardar Parámetros de Mensajes", type="primary") and config:
+        if st.form_submit_button("💾 Guardar Probabilidades por Cuenta", type="primary") and config:
             with engine.begin() as conn_w:
                 conn_w.execute(text("""
                     UPDATE Configuracion_Campanas 
-                    SET max_mensajes_principal = :max_tot_pri, 
-                        max_mensajes_default = :max_tot_len,
-                        max_nuevos_principal = :max_pri, 
-                        max_nuevos_default = :max_len, 
-                        intervalo_mensajes_principal = :int_pri,
+                    SET intervalo_mensajes_principal = :int_pri,
                         intervalo_mensajes_default = :int_len
                     WHERE id = :id
-                """), {
-                    "max_tot_pri": nuevo_max_pri,
-                    "max_tot_len": nuevo_max_len,
-                    "max_pri": nuevo_max_frios_pri, 
-                    "max_len": nuevo_max_frios_len, 
-                    "int_pri": str(nuevo_int_pri), 
-                    "int_len": str(nuevo_int_len),
-                    "id": config.id
-                })
-            st.toast("✅ Parámetros independientes actualizados.")
+                """), {"int_pri": str(nuevo_int_pri), "int_len": str(nuevo_int_len), "id": config.id})
+            st.toast("✅ Probabilidades por cuenta actualizadas.")
             st.rerun()
+
+    st.divider()
+    render_limites_por_grupo()
 
     st.divider()
     st.markdown("**🎯 Probabilidad de Envío por Subcategoría**")
@@ -461,22 +495,27 @@ def render_tab_zombies(config):
     # --- 1. CONFIGURACIÓN DE NIVELES ZOMBIE ---
     with st.form("form_config_zombies"):
         st.markdown("**⚙️ Límites y Probabilidades por Nivel**")
-        st.caption("Controla cuántos mensajes se envían por día y la probabilidad de disparo según la antigüedad del Zombie.")
+        st.caption(
+            "Un cliente queda como Zombie cuando su primer mensaje es una frase clave (tabla de abajo). El nivel lo "
+            "decide la antigüedad en días calendario y las ventanas no se cruzan; si vuelve a enviar la frase, reinicia "
+            f"en Lvl 1, y si escribe texto propio o multimedia deja de ser zombie. Desde el día {ZOMBIE_DIA_SALIDA} sale solo. "
+            "«Límite diario» = máximo de mensajes por cliente al día en ese nivel; «Probabilidad» = dado en cada ejecución (cada 30 min)."
+        )
         
         c1, c2, c3 = st.columns(3)
         
         with c1:
-            st.markdown("**Lvl 1 (Mismo Día)**")
+            st.markdown(f"**Lvl 1 · {ZOMBIE_VENTANAS[1]}**")
             m_z1 = st.number_input("Límite Diario Lvl 1", min_value=0, value=getattr(config, 'max_zombies_lvl1', 10))
             p_z1 = st.number_input("Probabilidad Lvl 1 (%)", min_value=0, max_value=100, value=getattr(config, 'prob_zombie_lvl1', 10))
             
         with c2:
-            st.markdown("**Lvl 2 (Día Siguiente)**")
+            st.markdown(f"**Lvl 2 · {ZOMBIE_VENTANAS[2]}**")
             m_z2 = st.number_input("Límite Diario Lvl 2", min_value=0, value=getattr(config, 'max_zombies_lvl2', 10))
             p_z2 = st.number_input("Probabilidad Lvl 2 (%)", min_value=0, max_value=100, value=getattr(config, 'prob_zombie_lvl2', 20))
             
         with c3:
-            st.markdown("**Lvl 3 (Semana)**")
+            st.markdown(f"**Lvl 3 · {ZOMBIE_VENTANAS[3]}**")
             m_z3 = st.number_input("Límite Diario Lvl 3", min_value=0, value=getattr(config, 'max_zombies_lvl3', 10))
             p_z3 = st.number_input("Probabilidad Lvl 3 (%)", min_value=0, max_value=100, value=getattr(config, 'prob_zombie_lvl3', 30))
             
@@ -583,6 +622,8 @@ def render_campanas():
     st.title("🎯 Gestión de Campañas y Automatizaciones")
     
     # 1. LECTURA ÚNICA GLOBAL DE LA CONFIGURACIÓN BASE
+    with engine.begin() as conn:
+        asegurar_esquema(conn)  # columna mensajes.origen_bot y tabla bot_grupos_limites
     with engine.connect() as conn:
         config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
 

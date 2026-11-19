@@ -2,11 +2,17 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# 1. Inyectar variables de entorno
-ruta_env = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+# 1. Este archivo vive en recurrente/: la raíz del proyecto (database.py, utils.py, .env) es la carpeta superior.
+RAIZ_PROYECTO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if RAIZ_PROYECTO not in sys.path:
+    sys.path.insert(0, RAIZ_PROYECTO)
+os.chdir(RAIZ_PROYECTO)  # rutas relativas (token.json, token_google...) igual que si corriera desde la raíz
+
+# 2. Inyectar variables de entorno
+ruta_env = os.path.join(RAIZ_PROYECTO, '.env')
 load_dotenv(ruta_env)
 
-# 2. Módulos de infraestructura
+# 3. Módulos de infraestructura
 import requests
 import random
 import time
@@ -23,6 +29,16 @@ from utils import (
     generar_texto_producto_ia,
     publicar_en_facebook_via_webhook,
     obtener_imagen_jpg_b64
+)
+from marketing_grupos import (
+    asegurar_esquema,
+    leer_limites,
+    enviados_hoy_por_grupo,
+    origen_grupo,
+    origen_zombie,
+    dias_zombie,
+    nivel_zombie_por_dias,
+    ZOMBIE_DIA_SALIDA,
 )
 
 # ==============================================================================
@@ -64,9 +80,9 @@ def log_mkt(mensaje):
 #   El filtro estado = 'Sin empezar' se mantiene: los grupos son un filtro ADICIONAL.
 # ==============================================================================
 SQL_PROSPECTOS = """
-    WITH Prospectos_Random AS (
+    WITH Candidatos AS (
         SELECT c.id_cliente, c.nombre_corto, c.nombre_ia, c.etiquetas, t.telefono,
-               bg.grupo, bg.instruccion_ia, bg.escribio_real, bg.actualizado
+               bg.grupo, bg.instruccion_ia, bg.escribio_real, bg.actualizado, bg.prioridad
         FROM clientes c
         JOIN telefonoscliente t ON c.id_cliente = t.id_cliente
         JOIN bot_grupos bg ON bg.id_cliente = c.id_cliente
@@ -77,6 +93,8 @@ SQL_PROSPECTOS = """
           AND t.activo = TRUE
           AND t.es_principal = TRUE
           AND length(t.telefono) > 6
+          -- solo grupos activos que aún tienen cupo hoy en ESTA cuenta (límites del panel)
+          AND bg.grupo = ANY(:grupos)
           -- espera propia de cada grupo desde el último mensaje del bot
           AND NOT EXISTS (
               SELECT 1 FROM mensajes m_sal
@@ -89,33 +107,40 @@ SQL_PROSPECTOS = """
               SELECT 1 FROM mensajes m_rec
               WHERE m_rec.telefono = t.telefono AND m_rec.fecha > NOW() - INTERVAL '14 days'
           )
-          -- si compró esta semana, lo atiende la post-venta, no el marketing
+          -- si compró en los últimos 60 días, lo atiende la post-venta, no el marketing
           AND NOT EXISTS (
               SELECT 1 FROM ventas v
               WHERE v.id_cliente = c.id_cliente AND COALESCE(v.anulado, FALSE) = FALSE
                 AND v.fecha_venta > NOW() - INTERVAL '60 days'
           )
-          -- «frío» = nunca escribió un mensaje REAL (las respuestas automáticas de empresas no cuentan;
-          -- el agente semanal las descarta). Si escribió después de la última actualización, ya es cliente tibio.
-          AND (
-              :bloquear_frios = FALSE
-              OR bg.escribio_real
-              OR EXISTS (
-                  SELECT 1 FROM mensajes m2
-                  WHERE m2.telefono = t.telefono AND m2.tipo = 'ENTRANTE' AND m2.fecha > bg.actualizado
-              )
-          )
-        ORDER BY bg.prioridad, RANDOM()
-        LIMIT 50
+    ),
+    Clasificados AS (
+        SELECT ca.*,
+               -- «tibio» = escribió un mensaje REAL (las respuestas automáticas de empresas no cuentan;
+               -- el agente semanal las descarta) o escribió después de la última actualización de grupos.
+               (ca.escribio_real OR EXISTS (
+                   SELECT 1 FROM mensajes m2
+                   WHERE m2.telefono = ca.telefono AND m2.tipo = 'ENTRANTE' AND m2.fecha > ca.actualizado
+               )) AS tibio,
+               us.session_name AS ultima_sesion_entrante
+        FROM Candidatos ca
+        LEFT JOIN LATERAL (
+            SELECT m3.session_name FROM mensajes m3
+            WHERE m3.telefono = ca.telefono AND m3.tipo = 'ENTRANTE'
+            ORDER BY m3.fecha DESC LIMIT 1
+        ) us ON TRUE
     )
-    SELECT
-        pr.*,
-        CASE WHEN pr.escribio_real OR EXISTS (
-            SELECT 1 FROM mensajes m2 WHERE m2.telefono = pr.telefono AND m2.tipo = 'ENTRANTE' AND m2.fecha > pr.actualizado
-        ) THEN 1 ELSE 0 END as total_entrantes,
-        (SELECT session_name FROM mensajes m3 WHERE m3.telefono = pr.telefono AND m3.tipo = 'ENTRANTE' ORDER BY fecha DESC LIMIT 1) as ultima_sesion_entrante
-    FROM Prospectos_Random pr
-    ORDER BY pr.grupo
+    SELECT cl.*, CASE WHEN cl.tibio THEN 1 ELSE 0 END AS total_entrantes
+    FROM Clasificados cl
+    WHERE
+        -- Tibio: solo lo contacta la cuenta con la que conversó por última vez (antes se descartaba en Python
+        -- DESPUÉS del LIMIT, y por eso la cuenta Lentes recibía lotes llenos de clientes de Principal).
+        (cl.tibio AND TRIM(COALESCE(cl.ultima_sesion_entrante, 'default')) = :sess)
+        -- Frío: cualquier cuenta (su cupo lo controla el límite de G3/G4 en el panel).
+        OR NOT cl.tibio
+    -- primero el grupo con menos avance respecto a su límite (reparte el día entre grupos)
+    ORDER BY array_position(CAST(:orden_grupos AS int[]), cl.grupo), RANDOM()
+    LIMIT 50
 """
 
 
@@ -124,7 +149,7 @@ def grupos_listos(conn):
     try:
         existe = conn.execute(text("SELECT to_regclass('public.bot_grupos')")).scalar()
         if not existe:
-            return False, "No existe la tabla bot_grupos. Ejecuta agente_semanal.py una vez."
+            return False, "No existe la tabla bot_grupos. Ejecuta recurrente/agente_semanal.py una vez."
         r = conn.execute(text("SELECT COUNT(*), MAX(actualizado) FROM bot_grupos")).fetchone()
         if not r[0]:
             return False, "La tabla bot_grupos está vacía. Revisa el último reporte del agente semanal."
@@ -235,6 +260,8 @@ def ejecutar_francotirador():
             log_mkt(f"🧪 MODO TEST AISLADO: Se ejecutará únicamente la Tarea {tarea_objetivo}")
 
     try:
+        with engine.begin() as conn:
+            asegurar_esquema(conn)  # columna mensajes.origen_bot y tabla bot_grupos_limites
         with engine.connect() as conn:
             config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
         
@@ -259,16 +286,12 @@ def ejecutar_francotirador():
                 "sesion": "principal", 
                 "col_prob": "prob_msg_principal", 
                 "nombre_vis": "Principal", 
-                "limite_nuevos": getattr(config, 'max_nuevos_principal', getattr(config, 'max_mensajes_nuevos_dia', 10)),
-                "limite_total": getattr(config, 'max_mensajes_principal', config.max_mensajes_dia),
                 "probabilidad": obtener_probabilidad(getattr(config, 'intervalo_mensajes_principal', config.intervalo_mensajes))
             },
             {
                 "sesion": "default", 
                 "col_prob": "prob_msg_default", 
                 "nombre_vis": "Lentes", 
-                "limite_nuevos": getattr(config, 'max_nuevos_default', getattr(config, 'max_mensajes_nuevos_dia', 10)),
-                "limite_total": getattr(config, 'max_mensajes_default', config.max_mensajes_dia),
                 "probabilidad": obtener_probabilidad(getattr(config, 'intervalo_mensajes_default', config.intervalo_mensajes))
             }
         ]
@@ -405,12 +428,13 @@ def ejecutar_francotirador():
         elif not config.bot_activo:
             log_mkt("⏸️ TAREA 1 OMITIDA: El Sniper Bot está apagado.")
         elif not tiempo_ok_msg:
-            log_mkt(f"⏳ TAREA 1: Aún no pasan los 30 min base (Han pasado {int(min_pasados_msg)} min).")
+            log_mkt(f"⏳ TAREA 1: Aún no pasan los 10 min mínimos (Han pasado {int(min_pasados_msg)} min).")
         elif not dentro_de_horario:
             log_mkt(f"⏰ TAREA 1 OMITIDA: Fuera de horario comercial ({config.hora_inicio} a {config.hora_fin}).")
         else:
             with engine.connect() as conn_g:
                 grupos_ok, motivo_grupos = grupos_listos(conn_g)
+                limites_grupo = leer_limites(conn_g)
             if not grupos_ok:
                 log_mkt(f"⏸️ TAREA 1 OMITIDA: {motivo_grupos}")
                 obreros_tarea1 = []
@@ -419,8 +443,6 @@ def ejecutar_francotirador():
             log_mkt("▶️ INICIANDO TAREA 1: Evaluando líneas de envío independientes...")            
             
             for obrero in obreros_tarea1:
-                limite_nuevos_sesion = obrero["limite_nuevos"]
-                limite_total_sesion = obrero["limite_total"]
                 prob_sesion = obrero["probabilidad"]
                 
                 dado_msg = random.randint(1, 100)
@@ -431,47 +453,47 @@ def ejecutar_francotirador():
                 log_mkt(f"🎯 [{obrero['nombre_vis']}] APROBADO: El dado cayó en {dado_msg}.")
                 
                 with engine.connect() as conn:
-                    query_conteo = text("""
-                        SELECT COUNT(DISTINCT telefono) FROM mensajes 
-                        WHERE tipo = 'SALIENTE_BOT' 
-                        AND TRIM(COALESCE(session_name, 'default')) = TRIM(:sess) 
-                        AND fecha >= (NOW() AT TIME ZONE 'America/Lima')::date
-                    """)
-                    enviados_por_mi = conn.execute(query_conteo, {"sess": obrero["sesion"]}).scalar() or 0
+                    # 👥 Cupo por grupo (Campañas → Mensajes → Límites por grupo)
+                    por_grupo = enviados_hoy_por_grupo(conn, obrero["sesion"])
+                    clave_lim = "principal" if obrero["sesion"] == "principal" else "default"
+                    estado_grupos, grupos_con_cupo = [], []
+                    enviados_hoy = sum(por_grupo.values())
+                    for g, lim in sorted(limites_grupo.items()):
+                        env_g, max_g = por_grupo.get(g, 0), lim[clave_lim]
+                        if not lim["activo"] or max_g <= 0:
+                            estado_grupos.append(f"G{g}: off")
+                            continue
+                        estado_grupos.append(f"G{g}: {env_g}/{max_g}")
+                        if env_g < max_g:
+                            grupos_con_cupo.append((env_g / max_g, g))
+                    # el grupo con menos avance (proporcional a su límite) va primero
+                    orden_grupos = [g for _, g in sorted(grupos_con_cupo)]
 
-                    if enviados_por_mi >= limite_total_sesion:
-                        log_mkt(f"🚫 [{obrero['nombre_vis']}] Límite total diario alcanzado ({enviados_por_mi}/{limite_total_sesion}).")
+                    log_mkt(f"📊 [{obrero['nombre_vis']}] Directos hoy: {enviados_hoy} | {' · '.join(estado_grupos)}")
+
+                    if not orden_grupos:
+                        log_mkt(f"🚫 [{obrero['nombre_vis']}] Todos los grupos activos llegaron a su límite diario (o están apagados).")
                         continue
-
-                    query_conteo_nuevos = text("""
-                        SELECT COUNT(DISTINCT m.telefono)
-                        FROM mensajes m
-                        WHERE m.tipo = 'SALIENTE_BOT'
-                        AND TRIM(COALESCE(m.session_name, 'default')) = TRIM(:sess)
-                        AND m.fecha >= (NOW() AT TIME ZONE 'America/Lima')::date
-                        AND NOT EXISTS (
-                            SELECT 1 FROM mensajes me
-                            WHERE me.telefono = m.telefono AND me.tipo = 'ENTRANTE' AND me.fecha < m.fecha
-                        )
-                    """)
-                    enviados_nuevos_mi_sesion = conn.execute(query_conteo_nuevos, {"sess": obrero["sesion"]}).scalar() or 0
-                    bloquear_frios_sql = enviados_nuevos_mi_sesion >= limite_nuevos_sesion
-
-                    log_mkt(f"📊 [{obrero['nombre_vis']}] Fríos hoy: {enviados_nuevos_mi_sesion}/{limite_nuevos_sesion} | Totales hoy: {enviados_por_mi}/{limite_total_sesion}")
 
                     prod_elegido = buscar_producto_dinamico(conn, obrero['col_prob'])
                     if not prod_elegido: 
+                        log_mkt(f"⚠️ [{obrero['nombre_vis']}] Sin producto disponible (stock 0 o probabilidades en 0%).")
                         continue
 
-                    # Prospectos filtrados por GRUPO (ver SQL_PROSPECTOS arriba)
+                    # Prospectos filtrados por GRUPO y por CUENTA (ver SQL_PROSPECTOS arriba)
                     query_clientes = text(SQL_PROSPECTOS)
-                    clientes_validos = conn.execute(query_clientes, {"bloquear_frios": bloquear_frios_sql}).fetchall()
+                    clientes_validos = conn.execute(query_clientes, {
+                        "sess": obrero["sesion"],
+                        "grupos": orden_grupos,
+                        "orden_grupos": orden_grupos,
+                    }).fetchall()
 
                 if not clientes_validos: 
+                    log_mkt(f"💤 [{obrero['nombre_vis']}] Sin prospectos disponibles hoy en los grupos con cupo ({', '.join(f'G{g}' for g in orden_grupos)}).")
                     continue
                 prospectos = list(clientes_validos)
 
-                descartes = {"otra_sesion": 0, "limite_frios_alcanzado": 0, "formato_invalido": 0, "sin_waha": 0, "error_api": 0}
+                descartes = {"otra_sesion": 0, "formato_invalido": 0, "sin_waha": 0, "error_api": 0}
                 disparo_exitoso = False
 
                 for cliente in prospectos:
@@ -481,10 +503,6 @@ def ejecutar_francotirador():
                         ultima_ses = str(cliente.ultima_sesion_entrante or 'default').strip()
                         if ultima_ses != obrero['sesion']:
                             descartes["otra_sesion"] += 1
-                            continue
-                    else:
-                        if enviados_nuevos_mi_sesion >= limite_nuevos_sesion:
-                            descartes["limite_frios_alcanzado"] += 1
                             continue
 
                     norm = normalizar_telefono_maestro(cliente.telefono)
@@ -508,9 +526,10 @@ def ejecutar_francotirador():
                         if enviar_mensaje_whatsapp(telefono_final, mensaje_completo, prod_elegido['url_imagen'], session=obrero['sesion']):
                             with engine.begin() as conn_save:
                                 conn_save.execute(text("""
-                                    INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) 
-                                    VALUES (:idc, :t, 'SALIENTE_BOT', :c, (NOW() AT TIME ZONE 'America/Lima'), TRUE, :sess)
-                                """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion']})
+                                    INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name, origen_bot) 
+                                    VALUES (:idc, :t, 'SALIENTE_BOT', :c, (NOW() AT TIME ZONE 'America/Lima'), TRUE, :sess, :origen)
+                                """), {"idc": cliente.id_cliente, "t": telefono_final, "c": mensaje_completo, "sess": obrero['sesion'],
+                                       "origen": origen_grupo(cliente.grupo)})
                             
                             log_mkt(f"✅ Disparo a {telefono_final} ({obrero['nombre_vis']}). Grupo {cliente.grupo}. Frío: {'Sí' if es_cliente_frio else 'No'}.")
                             disparo_exitoso = True
@@ -538,7 +557,6 @@ def ejecutar_francotirador():
                         f"Descartes -> Otra Sesión: {descartes['otra_sesion']} | "
                         f"Inválido: {descartes['formato_invalido']} | "
                         f"Sin WA: {descartes['sin_waha']} | "
-                        f"Bloq. Fríos: {descartes['limite_frios_alcanzado']} | "
                         f"Err API: {descartes['error_api']}"
                     )
 
@@ -726,25 +744,27 @@ def ejecutar_francotirador():
                     if not zombie.ultimo_msg_zombie:
                         continue
                         
-                    dias_transcurridos = (datetime.now() - zombie.ultimo_msg_zombie).days
-                    nivel_actual = zombie.nivel_zombie
-                    nuevo_nivel = nivel_actual
-                    
-                    if dias_transcurridos >= 14:
+                    # El nivel se CALCULA por la ventana de días (ver marketing_grupos.ZOMBIE_VENTANAS), así los
+                    # 3 niveles nunca se cruzan: Lvl 1 = día 0 | Lvl 2 = días 1-6 | Lvl 3 = días 7-13 | día 14 → sale.
+                    # Si el cliente vuelve a mandar la frase clave, el webhook reinicia ultimo_msg_zombie y vuelve a Lvl 1.
+                    ref_cliente = zombie.telefono or f"id {zombie.id_cliente}"
+                    dias_transcurridos = dias_zombie(zombie.ultimo_msg_zombie)
+                    nivel_guardado = int(zombie.nivel_zombie or 0)
+                    nivel_actual = nivel_zombie_por_dias(dias_transcurridos)
+
+                    if nivel_actual == 0:
                         with engine.begin() as conn_up:
                             conn_up.execute(text("UPDATE Clientes SET nivel_zombie = 0 WHERE id_cliente = :id"), {"id": zombie.id_cliente})
-                        log_mkt(f"🚶 Cliente {zombie.telefono} dejó de ser zombie (Pasaron 14 días en silencio).")
+                        log_mkt(f"🚶 Cliente {ref_cliente} dejó de ser zombie (pasaron {ZOMBIE_DIA_SALIDA} días en silencio).")
                         continue
-                    elif dias_transcurridos >= 7 and nivel_actual < 3:
-                        nuevo_nivel = 3
-                    elif dias_transcurridos >= 1 and nivel_actual < 2:
-                        nuevo_nivel = 2
-                        
-                    if nuevo_nivel != nivel_actual:
+
+                    if nivel_actual != nivel_guardado:
                         with engine.begin() as conn_up:
-                            conn_up.execute(text("UPDATE Clientes SET nivel_zombie = :n WHERE id_cliente = :id"), {"n": nuevo_nivel, "id": zombie.id_cliente})
-                        log_mkt(f"⬆️ Cliente {zombie.telefono} avanzó a Zombie Lvl {nuevo_nivel}.")
-                        nivel_actual = nuevo_nivel
+                            conn_up.execute(text("UPDATE Clientes SET nivel_zombie = :n WHERE id_cliente = :id"), {"n": nivel_actual, "id": zombie.id_cliente})
+                        log_mkt(f"🔄 Cliente {ref_cliente}: Zombie Lvl {nivel_guardado} → Lvl {nivel_actual} (día {dias_transcurridos}).")
+
+                    if not zombie.telefono or len(str(zombie.telefono)) <= 6:
+                        continue  # sin número real (solo LID): no se le puede escribir
 
                     limite_usuario = limites_zombie.get(nivel_actual, 1)
                     if zombie.msgs_enviados_hoy >= limite_usuario:
@@ -782,9 +802,10 @@ def ejecutar_francotirador():
                     if enviar_mensaje_whatsapp(zombie.telefono, mensaje_completo, prod_zombie['url_imagen'], session=obrero['sesion']):
                         with engine.begin() as conn_save:
                             conn_save.execute(text("""
-                                INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name) 
-                                VALUES (:idc, :t, 'SALIENTE_BOT', :c, (NOW() AT TIME ZONE 'America/Lima'), TRUE, :sess)
-                            """), {"idc": zombie.id_cliente, "t": zombie.telefono, "c": mensaje_completo, "sess": obrero['sesion']})
+                                INSERT INTO mensajes (id_cliente, telefono, tipo, contenido, fecha, leido, session_name, origen_bot) 
+                                VALUES (:idc, :t, 'SALIENTE_BOT', :c, (NOW() AT TIME ZONE 'America/Lima'), TRUE, :sess, :origen)
+                            """), {"idc": zombie.id_cliente, "t": zombie.telefono, "c": mensaje_completo, "sess": obrero['sesion'],
+                                   "origen": origen_zombie(nivel_actual)})
                         
                         log_mkt(f"🧟✅ Disparo ZOMBIE (Lvl {nivel_actual}) exitoso a {zombie.telefono} ({obrero['sesion']}).")
                         log_mkt("⏳ Esperando 60 segundos antes de evaluar al siguiente cliente para evitar spam...")
