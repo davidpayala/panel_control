@@ -29,7 +29,7 @@ MOTORES = {
 # Nombre del contenedor Docker de cada motor (para chequeos de salud y reinicios)
 CONTENEDORES = {"GOWS": "waha-gows", "NOWEB": "waha-estados", "WEBJS": "waha"}
 
-MOTOR_POR_DEFECTO = "NOWEB"
+MOTOR_POR_DEFECTO = "GOWS"  # si la base no responde, se usa este (NOWEB y WEBJS están apagados)
 
 # Acción -> descripción que se muestra en Opciones
 ACCIONES = {

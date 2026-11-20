@@ -21,7 +21,7 @@ SERVICIOS = {
     "postgres_mb": "system-postgresql.slice",
 }
 # Columna en la tabla -> nombre del contenedor Docker
-CONTENEDORES = {"waha_mb": "waha", "waha_estados_mb": "waha-estados"}
+CONTENEDORES = {"waha_mb": "waha", "waha_estados_mb": "waha-estados", "waha_gows_mb": "waha-gows"}
 
 
 def ram_cgroup_mb(ruta):

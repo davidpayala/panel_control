@@ -16,10 +16,14 @@ fi
 # Definir la ruta absoluta de Docker (Vital para que Cron no falle)
 DOCKER_CMD="/usr/bin/docker"
 
+# Motor en uso: GOWS (contenedor waha-gows, puerto 3002). WEBJS (waha, 3000) y NOWEB (waha-estados, 3001) están apagados.
+CONTENEDOR="waha-gows"
+WAHA_URL="${WAHA_URL_GOWS:-http://localhost:3002}"
+
 # 1. Comprobar si el contenedor está corriendo a nivel físico
-if ! $DOCKER_CMD ps --format '{{.Names}}' | grep -Eq "^waha$"; then
-    echo "Fallo crítico: Contenedor 'waha' apagado. Reiniciando..."
-    $DOCKER_CMD restart waha
+if ! $DOCKER_CMD ps --format '{{.Names}}' | grep -Eq "^${CONTENEDOR}$"; then
+    echo "Fallo crítico: Contenedor '$CONTENEDOR' apagado. Reiniciando..."
+    $DOCKER_CMD restart "$CONTENEDOR"
     curl -s -X POST -H "Content-Type: application/json" -d '{"tipo": "ALERTA_CRITICA", "mensaje": "Contenedor WAHA estaba apagado. Reinicio automático ejecutado."}' $PANEL_WEBHOOK
     exit 1
 fi
@@ -29,7 +33,7 @@ HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}\n" --max-time 10 "$WAHA_URL/
 
 if [ "$HTTP_STATUS" != "200" ]; then
     echo "Fallo crítico: La API de WAHA no responde (HTTP $HTTP_STATUS). Reiniciando contenedor..."
-    $DOCKER_CMD restart waha
+    $DOCKER_CMD restart "$CONTENEDOR"
     curl -s -X POST -H "Content-Type: application/json" -d '{"tipo": "ALERTA_CRITICA", "mensaje": "La API de WAHA se colgó. Reinicio automático ejecutado."}' $PANEL_WEBHOOK
     exit 1
 fi

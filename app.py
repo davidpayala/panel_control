@@ -73,9 +73,8 @@ def main():
         # ==========================================
         import requests
         
-        # Definir ambas instancias de WAHA
-        waha_url_3000 = os.getenv("WAHA_URL", "http://localhost:3000")
-        waha_url_3001 = os.getenv("WAHA_URL_ESTADOS", "http://localhost:3001")
+        # Las URLs de cada motor salen de waha_motor.MOTORES (una sola fuente para todo el sistema)
+        from waha_motor import MOTORES, motores_en_uso
         waha_key = os.getenv("WAHA_KEY", "")
         
         headers = {"Accept": "application/json"}
@@ -83,12 +82,10 @@ def main():
             headers["X-Api-Key"] = waha_key
 
         # Solo se vigilan los motores que alguna acción usa (Opciones → Motor WhatsApp)
-        from waha_motor import motores_en_uso
-        instancias_waha = [i for i in [
-            {"nombre": "WEBJS (3000)", "url": waha_url_3000, "motor": "WEBJS"},
-            {"nombre": "NOWEB (3001)", "url": waha_url_3001, "motor": "NOWEB"},
-            {"nombre": "GOWS (3002)", "url": os.getenv("WAHA_URL_GOWS", "http://localhost:3002"), "motor": "GOWS"}
-        ] if i["motor"] in motores_en_uso()]
+        instancias_waha = [
+            {"nombre": f"{m} ({MOTORES[m].rsplit(':', 1)[-1]})", "url": MOTORES[m], "motor": m}
+            for m in motores_en_uso()
+        ]
 
         # Monitorear cada instancia de forma independiente
         for instancia in instancias_waha:
@@ -172,20 +169,21 @@ def main():
                 headers = {"Accept": "application/json"}
                 if key: headers["X-Api-Key"] = key
                 
-                loc_res = requests.get(f"{url}/api/environment", headers=headers, timeout=2)
+                # /api/environment ya no existe en WAHA 2026.x: la versión está en /api/server/version
+                loc_res = requests.get(f"{url}/api/server/version", headers=headers, timeout=2)
                 if loc_res.status_code == 200:
                     version_local = loc_res.json().get("version", "").replace("v", "")
                     
                     # 3. Comparar versiones
                     if version_local and ultima_version and version_local != ultima_version:
-                        return f"⚠️ **Actualización Disponible**\n\nTienes WAHA `{version_local}` y la última es `{ultima_version}`.\n\nPara actualizar, lanza en tu terminal SSH:\n`sudo docker-compose pull`\n`sudo docker-compose up -d`"
+                        return f"⚠️ **Actualización Disponible**\n\nTienes WAHA `{version_local}` y la última es `{ultima_version}`.\n\nPara actualizar, lanza en tu terminal SSH:\n`docker compose pull waha-gows`\n`docker compose up -d waha-gows`"
                 
                 return None
             except:
                 return None # Si no hay internet o falla, ignorar silenciosamente
 
-        # CORRECCIÓN: Usamos waha_url_3000 en lugar del antiguo waha_url
-        alerta_update = verificar_actualizacion_waha(waha_url_3000, waha_key)
+        # Versión del WAHA que está en uso (antes se consultaba siempre el 3000, que está apagado)
+        alerta_update = verificar_actualizacion_waha(instancias_waha[0]["url"], waha_key) if instancias_waha else None
         if alerta_update:
             st.warning(alerta_update)
         # ==========================================

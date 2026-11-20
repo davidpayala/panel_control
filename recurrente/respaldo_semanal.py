@@ -3,7 +3,7 @@ respaldo_semanal.py — Respaldo semanal del ERP hacia el Synology (NAS local).
 
 Qué hace (domingos 4:00 am, desde cron):
   1. Saca un pg_dump (formato custom, comprimido) de la base de datos y verifica que se pueda leer.
-  2. Empaqueta las sesiones de WhatsApp (contenedores waha y waha-estados) SIN los cachés de Chromium.
+  2. Empaqueta las sesiones de WhatsApp de los contenedores WAHA encendidos (waha-gows; antes waha y waha-estados) SIN los cachés de Chromium.
   3. Sube todo al Synology por SSH (llave dedicada, sin contraseñas).
   4. En el NAS conserva las últimas 8 copias de la base y las últimas 2 de WhatsApp.
   5. En el servidor deja solo la copia más reciente de la base (para restaurar rápido).
@@ -51,7 +51,9 @@ LOCAL = Path(os.path.expanduser(os.getenv("RESPALDO_LOCAL", "~/respaldos")))
 SEMANAS_BD = int(os.getenv("RESPALDO_SEMANAS_BD", "8"))
 SEMANAS_WSP = int(os.getenv("RESPALDO_SEMANAS_WSP", "2"))
 
-CONTENEDORES_WSP = ["waha", "waha-estados"]
+# Contenedores WAHA posibles; se respaldan solo los que están encendidos (docker exec no funciona en uno apagado).
+# waha-gows es el motor en uso desde el 20/11/2026; waha (WEBJS) y waha-estados (NOWEB) quedaron apagados.
+CONTENEDORES_WSP = ["waha-gows", "waha", "waha-estados"]
 # Cachés de Chromium: se regeneran solos y pesan GB. La sesión vinculada está en IndexedDB/Local Storage.
 EXCLUIR_WSP = ["Cache", "Code Cache", "GPUCache", "GrShaderCache", "ShaderCache", "DawnGraphiteCache",
                "DawnWebGPUCache", "GPUPersistentCache", "CacheStorage", "component_crx_cache",
@@ -131,7 +133,9 @@ def respaldar_wsp(sello):
     excl = " ".join(f"--exclude={shlex.quote(e)}" for e in EXCLUIR_WSP)
     nuevo_archivo(parcial)
     with tarfile.open(parcial, mode="w:gz", compresslevel=6) as paquete:
-        for cont in CONTENEDORES_WSP:
+        encendidos = set(subprocess.run(["docker", "ps", "--format", "{{.Names}}"],
+                                        capture_output=True, text=True, timeout=30).stdout.split())
+        for cont in [c for c in CONTENEDORES_WSP if c in encendidos]:
             tmp = LOCAL / f"{cont}.tar.parcial"
             nuevo_archivo(tmp)
             try:

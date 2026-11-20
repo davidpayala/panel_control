@@ -325,7 +325,7 @@ def ejecutar_francotirador():
         tiempo_ok_fb  = es_modo_test or (min_pasados_fb >= 10)
 
         # ==================================================================
-        # 🛡️ VERIFICACIÓN DE SALUD WAHA (Puertos 3000 y 3001)
+        # 🛡️ VERIFICACIÓN DE SALUD WAHA (solo los motores en uso, ver waha_motor.py)
         # ==================================================================
         waha_key = os.getenv("WAHA_KEY", "")
         waha_ok = False
