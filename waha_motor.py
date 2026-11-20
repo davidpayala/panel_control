@@ -1,5 +1,5 @@
 """
-waha_motor.py — Elige qué motor de WAHA (NOWEB o WEBJS) usa cada acción de WhatsApp.
+waha_motor.py — Elige qué motor de WAHA (GOWS, NOWEB o WEBJS) usa cada acción de WhatsApp.
 
 La elección se guarda en la tabla `waha_motores` y se cambia desde Opciones → Motor WhatsApp.
 Si la tabla no existe o la base no responde, todas las acciones usan MOTOR_POR_DEFECTO.
@@ -18,12 +18,16 @@ from sqlalchemy import text
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 # URL de cada contenedor. WAHA_URL siempre apuntó al contenedor WEBJS (puerto 3000).
+#   GOWS  (3002): motor en Go (whatsmeow). Liviano y estable con contactos LID.
+#   NOWEB (3001): motor en Node (Baileys). Con la 7.0.0-rc14 perdía mensajes entrantes de la sesión principal.
+#   WEBJS (3000): navegador Chromium. Mucha RAM.
 MOTORES = {
+    "GOWS": (os.getenv("WAHA_URL_GOWS") or "http://localhost:3002").rstrip("/"),
     "NOWEB": (os.getenv("WAHA_URL_NOWEB") or os.getenv("WAHA_URL_ESTADOS") or "http://localhost:3001").rstrip("/"),
     "WEBJS": (os.getenv("WAHA_URL_WEBJS") or os.getenv("WAHA_URL") or "http://localhost:3000").rstrip("/"),
 }
 # Nombre del contenedor Docker de cada motor (para chequeos de salud y reinicios)
-CONTENEDORES = {"NOWEB": "waha-estados", "WEBJS": "waha"}
+CONTENEDORES = {"GOWS": "waha-gows", "NOWEB": "waha-estados", "WEBJS": "waha"}
 
 MOTOR_POR_DEFECTO = "NOWEB"
 
@@ -51,10 +55,12 @@ def _crear_tabla(conn):
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS waha_motores (
             accion TEXT PRIMARY KEY,
-            motor TEXT NOT NULL CHECK (motor IN ('NOWEB', 'WEBJS')),
+            motor TEXT NOT NULL,
             actualizado TIMESTAMP DEFAULT NOW()
         )
     """))
+    # Tablas creadas antes de GOWS tenían CHECK (motor IN ('NOWEB','WEBJS')): se quita, la validación la hace MOTORES.
+    conn.execute(text("ALTER TABLE waha_motores DROP CONSTRAINT IF EXISTS waha_motores_motor_check"))
 
 
 def configuracion(forzar=False):

@@ -395,19 +395,27 @@ def enviar_mensaje_media(telefono, caption, archivo_bytes, nombre_archivo, mime_
         if not chat_id: return False
 
         b64_data = base64.b64encode(archivo_bytes).decode('utf-8')
-        data_uri = f"data:{mime_type};base64,{b64_data}"
 
-        url = f"{url_waha('enviar_imagen')}/api/sendImage"
+        # Cada tipo por su endpoint: un PDF mandado por sendImage le llega al cliente como imagen rota
+        # (imageMessage); por sendFile llega como documento con su nombre (probado en GOWS).
+        mime = (mime_type or "").lower()
+        if mime.startswith("image/") and mime != "image/gif":
+            endpoint = "sendImage"
+        elif mime.startswith("video/"):
+            endpoint = "sendVideo"
+        else:
+            endpoint = "sendFile"
+        url = f"{url_waha('enviar_imagen')}/api/{endpoint}"
         headers = {"Content-Type": "application/json"}
         if WAHA_KEY: headers["X-Api-Key"] = WAHA_KEY
 
         payload = {
             "session": session,
-            "chatId": chat_id,  # <--- Ahora usa la variable correcta
+            "chatId": chat_id,
             "file": {
                 "mimetype": mime_type,
                 "filename": nombre_archivo,
-                "url": data_uri
+                "data": b64_data  # formato documentado (file.data en base64), válido en todos los motores
             },
             "caption": caption
         }

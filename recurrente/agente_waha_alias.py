@@ -120,7 +120,7 @@ def _buscar_evidencia(obj, ruta=""):
 
 def revisar_waha_local():
     from waha_motor import MOTORES, url_motor, headers_waha
-    sesion_de = {"WEBJS": "default", "NOWEB": "principal"}
+    sesion_de = {"WEBJS": "default", "NOWEB": "principal", "GOWS": "principal"}
 
     with engine.connect() as conn:
         lids = [r[0] for r in conn.execute(text("""

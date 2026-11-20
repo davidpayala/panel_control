@@ -6,6 +6,7 @@ token.json
 __pycache__/
 datos-noweb/
 datos-webjs/
+datos-gows/
 *.pyc
 .sessions/
 *.sql

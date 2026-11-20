@@ -333,7 +333,7 @@ def ejecutar_francotirador():
         # Solo se vigilan (y reinician) los motores que alguna acción usa (Opciones → Motor WhatsApp).
         # Así un motor desactivado a propósito (ej. WEBJS) no se vuelve a levantar solo.
         from waha_motor import motores_en_uso, url_motor, CONTENEDORES as CONTENEDORES_WAHA
-        sesion_referencia = {"WEBJS": "default", "NOWEB": "principal"}
+        sesion_referencia = {"WEBJS": "default", "NOWEB": "principal", "GOWS": "principal"}
         instancias_waha = [
             {"puerto": url_motor(m).rsplit(":", 1)[-1], "url": url_motor(m), "contenedor": CONTENEDORES_WAHA[m],
              "nombre_sesion": sesion_referencia[m]}

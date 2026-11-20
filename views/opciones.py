@@ -10,11 +10,12 @@ import psutil
 import platform
 
 def render_motor_whatsapp():
-    """Elige qué motor de WAHA (NOWEB o WEBJS) atiende cada acción de WhatsApp."""
+    """Elige qué motor de WAHA (GOWS, NOWEB o WEBJS) atiende cada acción de WhatsApp."""
     from waha_motor import ACCIONES, MOTORES, CONTENEDORES, configuracion, guardar_configuracion, motores_en_uso
 
     st.markdown("### 📱 Motor de WhatsApp por acción")
-    st.info("NOWEB (puerto 3001) es más liviano y estable; WEBJS (puerto 3000) usa un navegador Chromium y consume "
+    st.info("GOWS (puerto 3002) es el recomendado: liviano y estable con contactos de número oculto (LID). "
+            "NOWEB (puerto 3001) perdía mensajes entrantes; WEBJS (puerto 3000) usa un navegador Chromium y consume "
             "mucha más RAM. Los cambios se aplican en todos los procesos en menos de 1 minuto. "
             "Los mensajes entrantes llegan por el webhook desde cualquier motor encendido.")
 

@@ -113,48 +113,56 @@ def comprimir_imagen_waha(image_bytes, max_bytes=2097152):
         return None
 
 
-def obtener_lid_local(payload, from_me=False):
+def _sin_dispositivo(jid):
+    """'51941380271:62@s.whatsapp.net' → '51941380271@s.whatsapp.net' (GOWS agrega el n° de dispositivo)."""
+    if not jid or not isinstance(jid, str) or '@' not in jid:
+        return jid
+    usuario, dominio = jid.split('@', 1)
+    return f"{usuario.split(':')[0]}@{dominio}"
+
+
+def _candidatos_chat(payload, from_me):
+    """JIDs donde puede venir el contacto, en orden de preferencia, para NOWEB, WEBJS y GOWS.
+    En los mensajes propios (fromMe) NOWEB y GOWS ponen el chat en 'from' y dejan 'to' vacío."""
+    _data = _dic(payload.get('_data'))
+    key = _dic(_data.get('key'))
+    info = _dic(_data.get('Info'))  # GOWS
+    remote_id = _dic(_data.get('id')).get('remote')
+    target = (payload.get('to') or payload.get('from')) if from_me else payload.get('from')
+    crudos = [
+        remote_id, target, payload.get('participant'),
+        key.get('remoteJid'), key.get('remoteJidAlt'),
+        info.get('Chat'),
+        info.get('RecipientAlt') if from_me else info.get('SenderAlt'),
+        None if from_me else info.get('Sender'),
+        _data.get('lid'), _data.get('chatId'),
+    ]
+    return [_sin_dispositivo(c) for c in crudos if c and isinstance(c, str)]
+
+
+def obtener_lid_local(payload, from_me=False, me=None):
     try:
-        me_lid = _dic(payload.get('me')).get('lid', '')
-        target = payload.get('to') if from_me else payload.get('from')
-
-        _data = _dic(payload.get('_data'))
-        key = _dic(_data.get('key'))
-        remote_id = _dic(_data.get('id')).get('remote')
-
-        candidatos = [
-            remote_id, target, payload.get('participant'),
-            key.get('remoteJid'), _data.get('lid'), _data.get('chatId')
-        ]
-        for c in candidatos:
-            if c and isinstance(c, str) and '@lid' in c:
-                if c != me_lid:
-                    return c
+        me_lid = _sin_dispositivo(_dic(me).get('lid') or _dic(payload.get('me')).get('lid') or '')
+        for c in _candidatos_chat(payload, from_me):
+            if '@lid' in c and c != me_lid:
+                return c
         return None
-    except: return None
+    except Exception: return None
 
-def obtener_telefono_local(payload, from_me=False):
+def obtener_telefono_local(payload, from_me=False, me=None):
     try:
-        me_id = _dic(payload.get('me')).get('id', '')
+        me_id = _dic(me).get('id') or _dic(payload.get('me')).get('id') or ''
         me_phone = me_id.split('@')[0] if me_id else ''
 
-        target = payload.get('to') if from_me else payload.get('from')
-
         _data = _dic(payload.get('_data'))
-        key = _dic(_data.get('key'))
-        remote_id = _dic(_data.get('id')).get('remote')
 
         call_creator = payload.get('callCreator') or _data.get('callCreator') or payload.get('peerJid')
         if call_creator and isinstance(call_creator, str) and ('@s.whatsapp.net' in call_creator or '@c.us' in call_creator):
-            num = call_creator.split('@')[0]
+            num = _sin_dispositivo(call_creator).split('@')[0]
             if num != me_phone: return num
 
-        candidatos = [
-            remote_id, target, key.get('remoteJidAlt'), 
-            key.get('remoteJid'), payload.get('participant')
-        ]
-        for c in candidatos:
-            if c and isinstance(c, str) and ('@s.whatsapp.net' in c or '@c.us' in c):
+        for c in _candidatos_chat(payload, from_me):
+            if '@s.whatsapp.net' in c or '@c.us' in c:
                 num = c.split('@')[0]
                 if num != me_phone: return num
 
@@ -163,7 +171,7 @@ def obtener_telefono_local(payload, from_me=False):
             if str(user_id) != me_phone: return str(user_id)
 
         return None
-    except: return None
+    except Exception: return None
 
 def resolver_telefono_api(lid, session):
     if not lid: return None
@@ -385,8 +393,9 @@ def procesar_evento(evento):
     if tipo_evento == "message" and from_me:
         return
 
-    wspid_lid = obtener_lid_local(payload, from_me)
-    telefono_crudo = obtener_telefono_local(payload, from_me)
+    me_evento = evento.get('me')  # WAHA manda la cuenta propia a nivel del evento, no dentro de payload
+    wspid_lid = obtener_lid_local(payload, from_me, me_evento)
+    telefono_crudo = obtener_telefono_local(payload, from_me, me_evento)
 
     telefono_num = None
     if telefono_crudo:
@@ -395,6 +404,11 @@ def procesar_evento(evento):
         else: telefono_num = norm
 
     log_info(f"🏁 Inicio Proceso: Tel={telefono_num} | LID={wspid_lid}")
+
+    if not telefono_num and not wspid_lid:
+        # Sin número ni LID no se sabe de quién es: antes se creaba un cliente vacío. Se descarta y se deja constancia.
+        log_error(f"⚠️ Evento sin contacto identificable (motor {motor_evento}, sesión {session_name}, id {whatsapp_id}). Descartado.")
+        return
 
     body = "📞 Llamada entrante" if tipo_evento == 'call.received' else payload.get('body', '')
 
@@ -488,10 +502,18 @@ def procesar_evento(evento):
                 viejo_tel = cliente_lid.telefono
                 if telefono_num:
                     conn.execute(text("UPDATE mensajes SET telefono=:n WHERE telefono=:o OR telefono=:lid_str"), {"n": telefono_num, "o": viejo_tel, "lid_str": wspid_lid})
+                # El LID es único: se suelta de todas las filas y se asigna a UNA sola (antes se ponía en todas las
+                # filas del cliente viejo y, si tenía más de un teléfono, chocaba con la llave única y el mensaje se perdía).
+                conn.execute(text("UPDATE telefonoscliente SET lid = NULL WHERE lid = :lid"), {"lid": wspid_lid})
                 conn.execute(text("""
-                    UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE, lid = :lid
+                    UPDATE telefonoscliente SET id_cliente = :new, es_principal = FALSE
                     WHERE id_cliente = :old
-                """), {"new": cliente_tel.id_cliente, "old": cliente_lid.id_cliente, "lid": wspid_lid})
+                """), {"new": cliente_tel.id_cliente, "old": cliente_lid.id_cliente})
+                conn.execute(text("""
+                    UPDATE telefonoscliente SET lid = :lid
+                    WHERE id_telefono = (SELECT id_telefono FROM telefonoscliente
+                                         WHERE id_cliente = :new AND telefono = :t ORDER BY es_principal DESC LIMIT 1)
+                """), {"lid": wspid_lid, "new": cliente_tel.id_cliente, "t": telefono_num})
                 conn.execute(text("UPDATE Clientes SET estado='Duplicado', activo=FALSE, whatsapp_internal_id=NULL WHERE id_cliente=:old"), {"old": cliente_lid.id_cliente})
                 conn.execute(text("UPDATE Clientes SET activo=TRUE WHERE id_cliente=:new"), {"new": cliente_tel.id_cliente})
                 id_cliente_final = cliente_tel.id_cliente

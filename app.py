@@ -86,7 +86,8 @@ def main():
         from waha_motor import motores_en_uso
         instancias_waha = [i for i in [
             {"nombre": "WEBJS (3000)", "url": waha_url_3000, "motor": "WEBJS"},
-            {"nombre": "NOWEB (3001)", "url": waha_url_3001, "motor": "NOWEB"}
+            {"nombre": "NOWEB (3001)", "url": waha_url_3001, "motor": "NOWEB"},
+            {"nombre": "GOWS (3002)", "url": os.getenv("WAHA_URL_GOWS", "http://localhost:3002"), "motor": "GOWS"}
         ] if i["motor"] in motores_en_uso()]
 
         # Monitorear cada instancia de forma independiente
