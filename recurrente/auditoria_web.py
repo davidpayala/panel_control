@@ -85,9 +85,11 @@ _JS_METRICAS = """() => new Promise(res => {
     const n = performance.getEntriesByType('navigation')[0];
     const r = performance.getEntriesByType('resource');
     let kb = n.transferSize; for (const x of r) kb += x.transferSize;
+    const pesadas = r.filter(x => x.initiatorType === 'img' && x.transferSize > 300 * 1024)
+      .map(x => [x.name.split('?')[0], Math.round(x.transferSize / 1024)]);
     const terceros = new Set(r.map(x => new URL(x.name).host).filter(h => !h.endsWith('kmlentes.pe')));
     res({...o, ttfb: n.responseStart, carga: n.loadEventEnd, peticiones: r.length + 1,
-         kb: Math.round(kb / 1024), dominios_externos: [...terceros]});
+         kb: Math.round(kb / 1024), dominios_externos: [...terceros], pesadas});
   }, 8000);
 })"""
 
@@ -147,6 +149,7 @@ def medir_navegador(urls):
                         "tbt_ms": round(m.get("tbt", 0)), "ttfb_ms": round(m.get("ttfb", 0)),
                         "carga_ms": round(m.get("carga", 0)), "peticiones": m.get("peticiones"),
                         "kb": m.get("kb"), "dominios_externos": sorted(m.get("dominios_externos", [])),
+                        "imagenes_pesadas": m.get("pesadas", [])[:5],
                         "cargas_del_documento": len(docs),
                         "ga4_page_view": ga.count("page_view"),
                         "ga4_eventos_basura": sum(1 for e in ga if e.startswith("gtm.")),
@@ -328,6 +331,10 @@ def acciones(a, anterior=None):
                           "Revisar qué scripts de terceros se agregaron.")
         if (m.get("cls") or 0) > LIMITE_CLS:
             claude.append(f"{nombre}: la página salta al cargar (CLS {m['cls']}). Buscar imágenes sin tamaño o banners.")
+        if m.get("imagenes_pesadas"):
+            img, kb = m["imagenes_pesadas"][0]
+            claude.append(f"{nombre}: se descarga una imagen de {kb} KB ({img.rsplit('/', 1)[-1]}). Si es el zoom de la "
+                          "galería, proponer desactivarlo en celular; si es una foto subida pesada, recomprimirla.")
         if m.get("errores_js"):
             claude.append(f"{nombre}: errores de JavaScript: {m['errores_js'][0]}")
     if nav and not nav.get("disponible"):
