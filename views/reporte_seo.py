@@ -88,11 +88,14 @@ def render_reporte_seo():
         st.markdown(ult.analisis)
 
     with st.expander("📊 Evolución semanal"):
-        hist = []
+        # Un reporte por día (si se generó más de uno, manda el más reciente): la fecha es el nombre de columna
+        por_dia = {}
         for f in reversed(filas):
             kk = _dict(f.kpis)
-            hist.append({"Semana": f.fecha.strftime("%d/%m"), **{ETIQUETAS[c]: kk.get(c) for c in ETIQUETAS}})
-        st.dataframe(pd.DataFrame(hist).set_index("Semana").T, use_container_width=True)
+            por_dia[f.fecha.strftime("%d/%m")] = {ETIQUETAS[c]: kk.get(c) for c in ETIQUETAS}
+        hist = pd.DataFrame([{"Semana": d, **v} for d, v in por_dia.items()]).set_index("Semana").T
+        hist = hist.apply(lambda col: col.map(lambda v: "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)))
+        st.dataframe(hist, use_container_width=True)
 
     det = _dict(ult.detalle)
     with st.expander("🔍 Detalle técnico"):

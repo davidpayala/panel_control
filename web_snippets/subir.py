@@ -8,6 +8,7 @@ load_dotenv(os.path.join(RAIZ, '.env'))
 SNIPPETS = {
     'KM SEO: marcas y schema': 'web_snippets/km_seo_marcas.php',
     'KM: purgar caché': 'web_snippets/km_purgar_cache.php',
+    'KM: Site Kit con contraseña de aplicación': 'web_snippets/km_sitekit_app_password.php',
 }
 B = 'https://kmlentes.pe/wp-json/code-snippets/v1/snippets'
 
