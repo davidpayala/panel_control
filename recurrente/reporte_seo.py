@@ -11,7 +11,10 @@ Qué hace (una vez por semana, lo dispara la tarea programada de Claude del fin 
   4. Reseñas nuevas y pendientes de aprobar, agradecimientos postventa enviados.
   5. Blog: publicados, programados y días desde el último artículo.
   6. Revisa enlaces internos rotos en el blog y en las páginas principales.
-  7. Arma una lista de acciones separadas en "Claude" y "Tú", y guarda todo en la
+  7. Auditoría técnica (recurrente/auditoria_web.py): velocidad en celular, doble carga,
+     visitas duplicadas en Analytics/Meta, marca del schema, páginas de marca, blog,
+     descripciones con promociones o errores, plugins nuevos.
+  8. Arma una lista de acciones separadas en "Claude" y "Tú", y guarda todo en la
      tabla seo_reportes para verlo en el panel (REPORTE → SEO web) y comparar semanas.
 
 SOLO LECTURA sobre la web. No cambia nada en WooCommerce ni en WordPress.
@@ -44,6 +47,7 @@ load_dotenv(os.path.join(_RAIZ, ".env"))
 
 from database import engine  # noqa: E402
 import seo_woo  # noqa: E402
+from recurrente import auditoria_web  # noqa: E402
 
 SITIO = "https://kmlentes.pe"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"
@@ -76,9 +80,13 @@ def _get_json(s, url, **kw):
 # ------------------------------------------------------------------------------
 # 1. Catálogo
 # ------------------------------------------------------------------------------
+_CACHE = {}
+
+
 def revisar_catalogo(wcapi):
     from mejoras_merchant import calcular as calcular_merchant, marcas_db
     productos = seo_woo.descargar_productos(wcapi)
+    _CACHE["productos"] = productos
     visibles = [p for p in productos if p.get("catalog_visibility") != "hidden"]
     hace7 = datetime.now() - timedelta(days=7)
 
@@ -322,6 +330,14 @@ def construir_acciones(d, anterior):
     s_ant = mc.get("shopping_semana_anterior", {}).get("clicks")
     if s_act is not None and s_ant and s_ant >= 20 and s_act < s_ant * 0.7:
         claude.append(f"Los clics de Shopping bajaron de {s_ant} a {s_act}: revisar productos que perdieron visibilidad.")
+    if d.get("auditoria"):
+        prev = None
+        if anterior is not None and getattr(anterior, "detalle", None):
+            det = anterior.detalle if isinstance(anterior.detalle, dict) else json.loads(anterior.detalle)
+            prev = det.get("auditoria")
+        extra = auditoria_web.acciones(d["auditoria"], prev)
+        claude += extra["claude"]
+        usuario += extra["usuario"]
     return {"claude": claude, "usuario": usuario}
 
 
@@ -330,7 +346,7 @@ def kpis(d):
     st = mc.get("estadisticas") or {}
     return {
         "productos_visibles": d["catalogo"]["productos_visibles"],
-        "productos_en_sitemap": sum(v for k, v in d["sitio"].get("sitemaps", {}).items() if k.startswith("product")),
+        "productos_en_sitemap": sum(v for k, v in d["sitio"].get("sitemaps", {}).items() if k.startswith("product-sitemap")),
         "google_activos": st.get("active"),
         "google_rechazados": st.get("disapproved"),
         "shopping_clics_7d": mc.get("shopping_semana", {}).get("clicks"),
@@ -341,6 +357,7 @@ def kpis(d):
         "resenas_aprobadas": d["resenas"]["resenas_aprobadas"],
         "articulos_publicados": d["blog"]["publicados"],
         "enlaces_rotos": len(d["sitio"]["enlaces_rotos"]),
+        **auditoria_web.kpis(d.get("auditoria") or {}),
     }
 
 
@@ -361,7 +378,7 @@ def _tabla(conn):
 def ultimo_reporte():
     with engine.begin() as conn:
         _tabla(conn)
-        fila = conn.execute(text("SELECT id, fecha, kpis, acciones FROM seo_reportes ORDER BY fecha DESC LIMIT 1")).fetchone()
+        fila = conn.execute(text("SELECT id, fecha, kpis, acciones, detalle FROM seo_reportes ORDER BY fecha DESC LIMIT 1")).fetchone()
     return fila
 
 
@@ -381,6 +398,11 @@ def generar(guardar=True):
     d["blog"] = revisar_blog(s)
     log("🌐 Revisando el sitio y enlaces...")
     d["sitio"] = revisar_sitio(d["blog"]["urls_publicadas"])
+    log("🧪 Auditoría técnica (velocidad, seguimiento, SEO)...")
+    try:
+        d["auditoria"] = auditoria_web.revisar(_CACHE.get("productos") or [], log=log)
+    except Exception as e:
+        d["auditoria"] = {"error": str(e)[:200]}
 
     anterior = ultimo_reporte()
     acciones = construir_acciones(d, anterior)

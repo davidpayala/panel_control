@@ -24,8 +24,13 @@ ETIQUETAS = {
     "resenas_aprobadas": "Reseñas aprobadas",
     "articulos_publicados": "Artículos del blog",
     "enlaces_rotos": "Enlaces internos rotos",
+    "lcp_movil_ms": "Carga en celular (ms, peor página)",
+    "bloqueo_movil_ms": "Bloqueo por scripts (ms)",
+    "visitas_ga4_por_vista": "Visitas en Analytics por visita",
+    "html_categoria_kb": "Peso HTML categoría (KB)",
 }
-MENOS_ES_MEJOR = {"google_rechazados", "enlaces_rotos", "organico_posicion"}
+MENOS_ES_MEJOR = {"google_rechazados", "enlaces_rotos", "organico_posicion", "lcp_movil_ms",
+                  "bloqueo_movil_ms", "visitas_ga4_por_vista", "html_categoria_kb"}
 
 
 def _dict(v):
@@ -103,6 +108,17 @@ def render_reporte_seo():
         if sc.get("disponible") and sc.get("top_busquedas"):
             st.markdown("**Búsquedas principales en Google**")
             st.dataframe(pd.DataFrame(sc["top_busquedas"]), hide_index=True, use_container_width=True)
+        pags = ((det.get("auditoria") or {}).get("navegador") or {}).get("paginas") or {}
+        if pags:
+            st.markdown("**Velocidad en celular (4G, CPU media)**")
+            st.dataframe(pd.DataFrame([{"Página": n, "Carga principal (ms)": m.get("lcp_ms"),
+                                        "Bloqueo (ms)": m.get("tbt_ms"), "Saltos (CLS)": m.get("cls"),
+                                        "Peticiones": m.get("peticiones"), "KB": m.get("kb"),
+                                        "Cargas del documento": m.get("cargas_del_documento"),
+                                        "Visitas Analytics": m.get("ga4_page_view"),
+                                        "Elemento principal": m.get("lcp_elemento")}
+                                       for n, m in pags.items() if not m.get("error")]),
+                         hide_index=True, use_container_width=True)
         top = (det.get("merchant") or {}).get("shopping_top_28d") or []
         if top:
             st.markdown("**Productos con más clics en Shopping (28 días)**")
