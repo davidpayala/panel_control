@@ -82,7 +82,7 @@ def nombre_comercial(prod):
     """'Lens FreshLady Cleopatra Hazel (NL001A)' -> 'FreshLady Cleopatra Hazel'."""
     nombre = _limpiar(prod.get("name", ""))
     nombre = re.sub(r"\s*\([^)]*\)\s*$", "", nombre)            # quita "(SKU)"
-    nombre = re.sub(r"^(lens|lente|lentes)\s+", "", nombre, flags=re.I)
+    nombre = re.sub(r"^(lentes de contacto(\s+de)?(\s+fantas[ií]a)?|lens|lentes?)\s+", "", nombre, flags=re.I)
     nombre = nombre.replace(" – ", " ").replace(" - ", " ")
     return " ".join(nombre.split())
 

@@ -41,6 +41,40 @@ def calcular_dias_sin_domingos(fecha_inicio, fecha_fin):
             
     return dias_validos
 
+def enlaces_resena(id_cliente, maximo=2):
+    """URLs (con la pestaña de opiniones abierta) de los productos de la última venta del cliente.
+    Las reseñas generan las estrellas que Google muestra en los resultados de búsqueda."""
+    try:
+        with engine.connect() as conn:
+            skus = [r[0] for r in conn.execute(text("""
+                SELECT d.sku FROM DetalleVenta d
+                WHERE d.id_venta = (
+                    SELECT id_venta FROM Ventas
+                    WHERE id_cliente = :id AND COALESCE(anulado, FALSE) = FALSE
+                    ORDER BY fecha_venta DESC LIMIT 1)
+                  AND COALESCE(d.sku, '') <> ''
+                ORDER BY d.subtotal DESC NULLS LAST
+            """), {"id": int(id_cliente)}).fetchall()]
+            if not skus:
+                return []
+            mapa = dict(conn.execute(text("SELECT sku, permalink FROM woo_permalinks")).fetchall())
+    except Exception as e:
+        log_mkt(f"⚠️ No se pudieron armar enlaces de reseña para cliente {id_cliente}: {e}")
+        return []
+
+    enlaces = []
+    for sku in skus:
+        sku = sku.strip()
+        url = mapa.get(sku)
+        if not url and "-" in sku:                       # NL032C-0000 -> NL032C
+            url = mapa.get(sku.rsplit("-", 1)[0])
+        if url and url not in enlaces:
+            enlaces.append(url)
+        if len(enlaces) >= maximo:
+            break
+    return [u.split("#")[0] + "#reviews" for u in enlaces]
+
+
 def ejecutar_agradecimientos_automaticos():
     if engine is None:
         log_mkt("❌ Error fatal: No se pudo conectar a la base de datos (engine es None).")
@@ -128,6 +162,14 @@ def ejecutar_agradecimientos_automaticos():
                     f"Queríamos tomar un momento para decirte: *¡Muchas gracias por tu compra y por confiar en nosotros!*\n\n"
                     f"Si necesitas asistencia o tienes alguna duda, este chat siempre está abierto para ti."
                 )
+
+                # Pedido de reseña (genera estrellas en Google y confianza para nuevos clientes)
+                enlaces = enlaces_resena(id_cliente)
+                if enlaces:
+                    mensaje += (
+                        "\n\n⭐ *¿Nos regalas tu opinión?* Nos ayuda muchísimo y te toma 1 minuto:\n"
+                        + "\n".join(enlaces)
+                    )
                 
                 if enviar_mensaje_whatsapp(telefono, mensaje, session=sesion_detectada):
                     with engine.begin() as conn_upd:
