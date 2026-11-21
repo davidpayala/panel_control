@@ -12,3 +12,4 @@ datos-gows/
 *.sql
 *.log
 docker-compose.yaml
+respaldos_web/
