@@ -245,7 +245,12 @@ def main():
     elif seleccion_interna == "CAMPANAS": campanas.render_campanas()
     elif seleccion_interna == "DIAGNOSTICO": diagnostico.render_diagnostico()
     elif seleccion_interna == "ESTADISTICAS": estadisticas.render_estadisticas()
-    elif seleccion_interna == "REPORTE": reporte_semanal.render_reporte_semanal()
+    elif seleccion_interna == "REPORTE":
+        _tab_negocio, _tab_seo = st.tabs(["📊 Negocio", "🌐 SEO web"])
+        with _tab_negocio: reporte_semanal.render_reporte_semanal()
+        with _tab_seo:
+            from views import reporte_seo
+            reporte_seo.render_reporte_seo()
     elif seleccion_interna == "OPCIONES": opciones.render_opciones()
 
 if __name__ == "__main__":
