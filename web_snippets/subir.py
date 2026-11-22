@@ -9,6 +9,7 @@ SNIPPETS = {
     'KM SEO: marcas y schema': 'web_snippets/km_seo_marcas.php',
     'KM: purgar caché': 'web_snippets/km_purgar_cache.php',
     'banner optimi': 'web_snippets/km_banner_preload.php',
+    'KM: galería de producto': 'web_snippets/km_galeria_producto.php',
     'KM: Site Kit con contraseña de aplicación': 'web_snippets/km_sitekit_app_password.php',
 }
 B = 'https://kmlentes.pe/wp-json/code-snippets/v1/snippets'
