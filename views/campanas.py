@@ -103,6 +103,103 @@ def render_reporte_envios_por_grupo():
 
 
 # ==============================================================================
+# 📈 REPORTE: AVANCE DE CADA GRUPO (cuántos ya recibieron mensaje dentro de su espera)
+# ==============================================================================
+SQL_AVANCE_GRUPOS = """
+    WITH base AS (
+        -- mismos filtros de cliente que usa el bot (recurrente/bot_marketing.py → SQL_PROSPECTOS)
+        SELECT bg.grupo, bg.espera_dias, c.id_cliente,
+               COALESCE(NULLIF(TRIM(t.telefono), ''), t.lid) AS destino
+        FROM bot_grupos bg
+        JOIN clientes c ON c.id_cliente = bg.id_cliente
+        JOIN telefonoscliente t ON t.id_cliente = c.id_cliente AND t.activo = TRUE AND t.es_principal = TRUE
+        WHERE c.activo = TRUE AND c.estado = 'Sin empezar'
+          AND COALESCE(c.excluir_publicidad, FALSE) = FALSE
+          AND COALESCE(c.nivel_zombie, 0) = 0
+          AND length(COALESCE(NULLIF(TRIM(t.telefono), ''), t.lid)) > 6
+    ),
+    det AS (
+        SELECT b.grupo, b.espera_dias, b.id_cliente,
+               ub.ult_bot,
+               EXISTS (SELECT 1 FROM mensajes m WHERE m.telefono = b.destino
+                        AND m.fecha > NOW() - INTERVAL '14 days') AS conversa_14d,
+               EXISTS (SELECT 1 FROM ventas v WHERE v.id_cliente = b.id_cliente
+                        AND COALESCE(v.anulado, FALSE) = FALSE
+                        AND v.fecha_venta > NOW() - INTERVAL '60 days') AS venta_60d
+        FROM base b
+        LEFT JOIN LATERAL (SELECT MAX(m.fecha) AS ult_bot FROM mensajes m
+                           WHERE m.telefono = b.destino AND m.tipo = 'SALIENTE_BOT') ub ON TRUE
+    )
+    SELECT grupo, MAX(espera_dias) AS espera,
+           COUNT(DISTINCT id_cliente) AS total,
+           COUNT(DISTINCT id_cliente) FILTER (WHERE ult_bot > NOW() - espera_dias * INTERVAL '1 day') AS contactados,
+           COUNT(DISTINCT id_cliente) FILTER (WHERE (ult_bot IS NULL OR ult_bot <= NOW() - espera_dias * INTERVAL '1 day')
+                                                AND NOT conversa_14d AND NOT venta_60d) AS disponibles,
+           COUNT(DISTINCT id_cliente) FILTER (WHERE (ult_bot IS NULL OR ult_bot <= NOW() - espera_dias * INTERVAL '1 day')
+                                                AND (conversa_14d OR venta_60d)) AS en_pausa,
+           COUNT(DISTINCT id_cliente) FILTER (WHERE ult_bot > NOW() - espera_dias * INTERVAL '1 day'
+                                                AND ult_bot + espera_dias * INTERVAL '1 day' <= NOW() + INTERVAL '7 days') AS libres_7d,
+           MIN(ult_bot + espera_dias * INTERVAL '1 day') FILTER (WHERE ult_bot > NOW() - espera_dias * INTERVAL '1 day') AS proxima
+    FROM det GROUP BY grupo ORDER BY grupo
+"""
+
+
+def leer_avance_grupos(conn):
+    try:
+        return pd.read_sql(text(SQL_AVANCE_GRUPOS), conn)
+    except Exception as e:
+        st.warning(f"No se pudo calcular el avance por grupo: {e}")
+        return pd.DataFrame()
+
+
+def render_avance_grupos(df):
+    st.markdown("**📈 Avance de cada grupo** · clientes que el bot puede contactar ('Sin empezar', con publicidad)")
+    if df.empty:
+        st.info("Aún no hay grupos calculados (los arma el reporte semanal cada domingo).")
+        return
+
+    tot = int(df["total"].sum())
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Clientes en grupos", tot)
+    k2.metric("Ya contactados", int(df["contactados"].sum()),
+              help="Recibieron mensaje del bot y todavía no se cumple la espera de su grupo.")
+    k3.metric("Disponibles ahora", int(df["disponibles"].sum()),
+              help="El bot les puede escribir hoy (si el grupo tiene cupo).")
+    k4.metric("Avance total", f"{(df['contactados'].sum() / tot * 100) if tot else 0:.1f}%")
+
+    hoy = datetime.date.today()
+    filas = []
+    for r in df.itertuples(index=False):
+        g, total = int(r.grupo), int(r.total)
+        if int(r.disponibles) > 0:
+            prox = "Ahora"
+        elif pd.notna(r.proxima):
+            f = pd.Timestamp(r.proxima).date()
+            prox = f"{f:%d/%m/%Y} ({(f - hoy).days} días)" if f > hoy else "Hoy"
+        else:
+            prox = "—"
+        filas.append({
+            "Grupo": f"G{g} · {NOMBRE_GRUPO.get(g, '')}",
+            "Espera": f"{int(r.espera)} días",
+            "Clientes": total,
+            "Ya contactados": int(r.contactados),
+            "Disponibles ahora": int(r.disponibles),
+            "En pausa": int(r.en_pausa),
+            "Se liberan en 7 días": int(r.libres_7d),
+            "Avance": (int(r.contactados) / total) if total else 0.0,
+            "Próximo disponible": prox,
+        })
+    st.dataframe(pd.DataFrame(filas), hide_index=True, width="stretch", column_config={
+        "Avance": st.column_config.ProgressColumn("Avance", min_value=0, max_value=1, format="percent"),
+        "Ya contactados": st.column_config.NumberColumn(help="Recibieron mensaje del bot dentro de la espera de su grupo."),
+        "En pausa": st.column_config.NumberColumn(help="Ya cumplieron la espera, pero conversaron en los últimos 14 días o compraron en los últimos 60: el bot no les escribe todavía."),
+        "Próximo disponible": st.column_config.TextColumn(help="Si no queda nadie disponible, cuándo se libera el primero."),
+    })
+    st.caption("Un grupo al 100% no es un error: ya se le escribió a todos y el bot espera a que se cumpla su plazo. "
+               "Los grupos se recalculan cada domingo (reporte semanal).")
+
+
+# ==============================================================================
 # 📊 PESTAÑA 1: GENERAL
 # ==============================================================================
 def render_tab_general(config):
@@ -127,27 +224,7 @@ def render_tab_general(config):
             GROUP BY 1
         """)).fetchall()}
 
-        row_avance = conn.execute(text("""
-            WITH enviados_recientes AS (
-                SELECT DISTINCT telefono FROM mensajes 
-                WHERE tipo = 'SALIENTE_BOT' AND fecha >= (CURRENT_DATE - INTERVAL '60 days')
-            )
-            SELECT 
-                SUM(CASE WHEN er.telefono IS NOT NULL THEN 1 ELSE 0 END), 
-                SUM(CASE WHEN er.telefono IS NULL THEN 1 ELSE 0 END)
-            FROM Clientes c 
-            JOIN telefonoscliente t ON c.id_cliente = t.id_cliente 
-            LEFT JOIN enviados_recientes er ON t.telefono = er.telefono
-            WHERE c.activo = TRUE 
-              AND COALESCE(c.excluir_publicidad, FALSE) = FALSE 
-              AND c.estado = 'Sin empezar' 
-              AND t.activo = TRUE AND t.es_principal = TRUE AND length(t.telefono) > 6;
-        """)).fetchone()
-
-    a_enviados = int(row_avance[0]) if row_avance and row_avance[0] else 0
-    b_pendientes = int(row_avance[1]) if row_avance and row_avance[1] else 0
-    total_habilitados = a_enviados + b_pendientes
-    c_porcentaje = (a_enviados / total_habilitados * 100.0) if total_habilitados > 0 else 0.0
+        avance_grupos = leer_avance_grupos(conn)
 
     # ==================================================================
     # 📊 1.1 REPORTE DE OPERACIONES DIARIAS
@@ -157,15 +234,7 @@ def render_tab_general(config):
         render_reporte_envios_por_grupo()
 
         st.write("")
-        st.markdown("**📈 Cobertura de la Base de Datos** · clientes en estado 'Sin empezar'")
-        c_rep1, c_rep2, c_rep3 = st.columns(3)
-        c_rep1.metric("Impactados (Últ. 60 días)", f"{a_enviados} clientes")
-        c_rep2.metric("En Cola (Pendientes)", f"{b_pendientes} clientes")
-        c_rep3.metric("Cobertura Total", f"{c_porcentaje:.1f}%")
-        if total_habilitados > 0: 
-            st.progress(c_porcentaje / 100.0)
-        else: 
-            st.info("No hay clientes en estado 'Sin empezar' disponibles.")
+        render_avance_grupos(avance_grupos)
 
     # ==================================================================
     # 📱 1.2 ESTADOS DE WHATSAPP Y FACEBOOK
