@@ -517,7 +517,12 @@ def ejecutar_francotirador():
                             continue
                         telefono_final = norm['db']
                     
-                    if verificar_numero_waha(telefono_final) is True:
+                    existe_wa = verificar_numero_waha(telefono_final)
+                    if existe_wa is None:
+                        # WAHA no respondió: no se sabe si existe, NO se bloquea al cliente
+                        descartes["error_api"] += 1
+                        continue
+                    if existe_wa is True:
                         saludo = random.choice(["Hola", "¡Hola!", "¡Qué tal", "Saludos", "Buen día"])
                         nom_ia = cliente.nombre_ia.strip() if cliente.nombre_ia else ""
                         cabecera = f"{saludo} {nom_ia} 👋" if nom_ia else "¡Hola! 👋"
