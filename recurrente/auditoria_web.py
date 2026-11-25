@@ -38,7 +38,7 @@ UA_MOVIL = ("Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML,
 LIBS_EXTRA = os.path.expanduser("~/.local/lib/km-pw")  # libasound para Chromium sin root
 GA4 = "G-4M61329WLZ"
 PIXEL_META = "1744386953124404"
-SNIPPETS_KM = ["KM SEO: marcas y schema", "KM: purgar caché"]
+SNIPPETS_KM = ["KM SEO: marcas y schema", "KM: purgar caché", "KM: diseño y confianza"]
 
 # Límites a partir de los cuales se avisa (celular 4G, CPU x4)
 LIMITE_LCP_MS = 2500

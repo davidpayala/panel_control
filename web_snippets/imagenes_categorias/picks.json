@@ -1,0 +1,206 @@
+{
+ "cards": {
+  "km-cat-naturales": {
+   "labs": [
+    "NL188#1",
+    "NL034A#0",
+    "NL039A#0",
+    "NL022A#0"
+   ],
+   "title": "LENTES NATURALES",
+   "sub": "Azul · Gris · Marrón · Verde · Miel",
+   "W": 736,
+   "H": 900
+  },
+  "km-cat-fantasia": {
+   "labs": [
+    "FL206F#2",
+    "FL027D#0",
+    "FL015C#0",
+    "FL027F#0"
+   ],
+   "title": "LENTES DE FANTASÍA",
+   "sub": "Cosplay · Halloween · Anime",
+   "W": 736,
+   "H": 900
+  },
+  "km-cat-accesorios": {
+   "labs": [
+    "EL055#0",
+    "EL048#0",
+    "EL045#3",
+    "EL052#0"
+   ],
+   "title": "ACCESORIOS",
+   "sub": "Estuches · Lavadores · Kits",
+   "W": 736,
+   "H": 900
+  },
+  "km-col-azul": {
+   "labs": [
+    "NL188#1",
+    "NL028A#0",
+    "NL066B#0",
+    "NL185#0"
+   ],
+   "title": "AZUL – CELESTE",
+   "sub": "Lentes naturales"
+  },
+  "km-col-gris": {
+   "labs": [
+    "NL034A#0",
+    "NL011D#0",
+    "NL006C#0",
+    "NL035D#3"
+   ],
+   "title": "GRIS – BLANCO",
+   "sub": "Lentes naturales"
+  },
+  "km-col-marron": {
+   "labs": [
+    "NL011A#0",
+    "NL039A#0",
+    "NL036A#1",
+    "NL191B#0"
+   ],
+   "title": "MARRÓN – CHOCOLATE",
+   "sub": "Lentes naturales"
+  },
+  "km-col-miel": {
+   "labs": [
+    "NL035B#0",
+    "NL191C#0",
+    "NL033A#0",
+    "NL004B#0"
+   ],
+   "title": "MIEL – DORADO",
+   "sub": "Lentes naturales"
+  },
+  "km-col-verde": {
+   "labs": [
+    "NL022A#0",
+    "NL035E#1",
+    "NL011B#0",
+    "NL184#0"
+   ],
+   "title": "VERDE",
+   "sub": "Lentes naturales"
+  },
+  "km-col-rosado": {
+   "labs": [
+    "MC034",
+    "KL028",
+    "KL100",
+    "KL081"
+   ],
+   "title": "ROSADO – MORADO",
+   "sub": "Lentes naturales"
+  },
+  "km-sub-todos": {
+   "labs": [
+    "NL188#1",
+    "NL011A#0",
+    "NL022A#0",
+    "NL035B#0"
+   ],
+   "title": "LENTES NATURALES",
+   "sub": "Ver todos los modelos"
+  },
+  "km-sub-circle": {
+   "labs": [
+    "NL170",
+    "NL186#0",
+    "KL098",
+    "NL073"
+   ],
+   "title": "CIRCLE LENS",
+   "sub": "Efecto mirada más grande"
+  },
+  "km-sub-miopia": {
+   "labs": [
+    "NL192A#0",
+    "NL001C#0",
+    "NL181#0",
+    "NL006B#0"
+   ],
+   "title": "LENTES PARA MIOPÍA",
+   "sub": "Con medida, de color natural"
+  },
+  "km-marca-freshlady": {
+   "labs": [
+    "NL188#1",
+    "NL034A#0",
+    "NL011A#0",
+    "NL036B#0"
+   ],
+   "title": "FRESHLADY",
+   "sub": "Lentes naturales de marca",
+   "badge": "Registro sanitario"
+  },
+  "km-marca-meetone": {
+   "labs": [
+    "NL066B#0",
+    "NL039A#0",
+    "NL028A#0",
+    "NL066D#0"
+   ],
+   "title": "MEETONE",
+   "sub": "Lentes naturales de marca",
+   "badge": "Registro sanitario"
+  },
+  "km-marca-otras": {
+   "labs": [
+    "NL058",
+    "KL006",
+    "NL030",
+    "KL028"
+   ],
+   "title": "OTRAS MARCAS",
+   "sub": "Fancylook · Magister y más"
+  },
+  "km-cat-accesorios-cuadrado": {
+   "labs": [
+    "EL055#0",
+    "EL048#0",
+    "EL045#3",
+    "EL052#0"
+   ],
+   "title": "ACCESORIOS",
+   "sub": "Estuches · Lavadores · Kits"
+  }
+ },
+ "banners": {
+  "km-banner-naturales": {
+   "labs": [
+    "NL188#1",
+    "NL034A#0",
+    "NL039A#0",
+    "NL022A#0",
+    "NL035B#0",
+    "NL011D#0",
+    "NL066B#0",
+    "NL011A#0"
+   ],
+   "W": 2400,
+   "H": 1200,
+   "cols": 4,
+   "rows": 2
+  },
+  "km-banner-fantasia": {
+   "labs": [
+    "FL206F#2",
+    "FL027D#0",
+    "FL218C#0",
+    "FL012D#0",
+    "FL015C#0",
+    "FL027F#0",
+    "FL213B#0",
+    "FL028C#0"
+   ],
+   "W": 1600,
+   "H": 914,
+   "cols": 4,
+   "rows": 2
+  }
+ }
+}

@@ -22,12 +22,17 @@ except:
 
 def render_ventas():
     # Creamos 4 pestañas para integrar todo en un solo lugar
-    tab_nueva, tab_historial, tab_facturacion, tab_reportes = st.tabs([
+    tab_nueva, tab_web, tab_historial, tab_facturacion, tab_reportes = st.tabs([
         "🛒 Nueva Venta / Salida", 
+        "🌐 Pedidos web",
         "📜 Historial y Anulaciones",
         "🧾 Facturación Individual",
         "📊 Reportes de Facturación"
     ])
+
+    with tab_web:
+        from views.pedidos_web import render_pedidos_web
+        render_pedidos_web()
 
     with tab_nueva:
         render_nueva_venta()

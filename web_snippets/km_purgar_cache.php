@@ -1,7 +1,7 @@
 /* KM: purga la caché de LiteSpeed y del sitemap una sola vez cada vez que cambia $token.
    Mantenido desde el repo panel-control (web_snippets/km_purgar_cache.php). */
 add_action( 'init', function () {
-	$token = '2026-11-21-k';
+	$token = '2026-11-23-envios2';
 	if ( get_option( 'km_purga_token' ) === $token ) {
 		return;
 	}

@@ -280,6 +280,24 @@ def tab_logs_respaldo():
     except Exception as e:
         st.error(f"❌ Error leyendo la base de datos: {e}")
 
+def tab_logs_pedidos_web():
+    st.markdown("### 🌐 Logs de Pedidos Web")
+    st.info("Revisión de pedidos de kmlentes.pe cada 5 minutos (recurrente/pedidos_web.py): registro en el panel, "
+            "WhatsApp al cliente, avisos y confirmaciones.")
+    if st.button("🔄 Refrescar", key="btn_pedidos_web"):
+        st.rerun()
+    try:
+        with engine.connect() as conn:
+            df_logs = pd.read_sql(text("SELECT fecha, mensaje FROM logs_pedidos_web "
+                                       "WHERE fecha >= NOW() - INTERVAL '30 days' ORDER BY id DESC LIMIT 300"), conn)
+        if df_logs.empty:
+            st.warning("Aún no hay registros en los últimos 30 días.")
+        else:
+            df_logs['fecha'] = pd.to_datetime(df_logs['fecha'])
+            st.code("\n".join(f"[{r['fecha']:%Y-%m-%d %H:%M:%S}] {r['mensaje']}" for _, r in df_logs.iterrows()), language="log")
+    except Exception as e:
+        st.error(f"❌ Error leyendo la base de datos: {e}")
+
 def tab_agente_waha():
     st.markdown("### 🔎 Agente WAHA · @usuario (alias)")
     st.info("WhatsApp permite ocultar el número y mostrar un **@usuario**. Se guardará en *telefonoscliente.alias*, "
@@ -360,6 +378,7 @@ def render_diagnostico():
         "📑 Logs Catálogos": tab_logs_catalogos,
         "🧠 Logs Agente Semanal": tab_logs_agente,
         "💾 Logs Respaldo": tab_logs_respaldo,
+        "🌐 Logs Pedidos Web": tab_logs_pedidos_web,
         "🔎 Agente WAHA (@alias)": tab_agente_waha
     }
     

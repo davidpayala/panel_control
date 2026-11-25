@@ -11,6 +11,8 @@ SNIPPETS = {
     'banner optimi': 'web_snippets/km_banner_preload.php',
     'KM: galería de producto': 'web_snippets/km_galeria_producto.php',
     'KM: Site Kit con contraseña de aplicación': 'web_snippets/km_sitekit_app_password.php',
+    'KM: diseño y confianza': 'web_snippets/km_diseno.php',
+    'KM: envíos': 'web_snippets/km_envios.php',
 }
 B = 'https://kmlentes.pe/wp-json/code-snippets/v1/snippets'
 
