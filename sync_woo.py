@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from datetime import datetime
 
@@ -292,6 +293,13 @@ def sync_inventario_completo():
     if url_lentes and key_lentes and sec_lentes:
         wcapi_lentes = API(url=url_lentes, consumer_key=key_lentes, consumer_secret=sec_lentes, version="wc/v3", timeout=60)
         sincronizar_tienda_woo(engine, "Lentes (kmlentes.pe)", wcapi_lentes, stock_lentes)
+        # Precio, rebaja, contorno, color, marca y diámetro de los lentes: el panel manda
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "recurrente"))
+            from sync_lentes_web import sincronizar as sincronizar_datos_lentes
+            sincronizar_datos_lentes(aplicar=True, log=log_woo)
+        except Exception as e:
+            log_woo(f"⚠️ Sincronización de datos de lentes falló: {e}")
 
     # --- DISPARO 2: PELUCAS ---
     url_pelucas, key_pelucas, sec_pelucas = os.getenv("WOO_PELUCAS_URL"), os.getenv("WOO_PELUCAS_KEY"), os.getenv("WOO_PELUCAS_SECRET")

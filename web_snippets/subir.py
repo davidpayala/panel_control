@@ -13,6 +13,7 @@ SNIPPETS = {
     'KM: Site Kit con contraseña de aplicación': 'web_snippets/km_sitekit_app_password.php',
     'KM: diseño y confianza': 'web_snippets/km_diseno.php',
     'KM: envíos': 'web_snippets/km_envios.php',
+    'KM: redirecciones': 'web_snippets/km_redirecciones.php',
 }
 B = 'https://kmlentes.pe/wp-json/code-snippets/v1/snippets'
 
