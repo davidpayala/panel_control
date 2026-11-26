@@ -376,6 +376,9 @@ def vista_productos():
                                 st.error(f"❌ Error en base de datos: {e}")
             except Exception as e:
                 st.error(f"❌ Error al leer archivo CSV: {e}")
+
+        st.divider()
+        vista_sync_proveedor()
     # ==============================================================================
     # --- NUEVA PESTAÑA 3: CONTROL DE UBICACIONES Y AUDITORÍA ---
     # ==============================================================================
@@ -743,3 +746,104 @@ def vista_buscar_por_medidas():
     lineas += ["", "Puedes ver las imágenes de los modelos en", URL_LENTES_MIOPIA]
     with st.expander("💬 Texto para responder al cliente"):
         st.code("\n".join(lineas), language=None)
+
+
+# ==============================================================================
+# --- SINCRONIZACIÓN AUTOMÁTICA CON LA HOJA DEL PROVEEDOR ---
+# (el trabajo lo hace recurrente/stock_proveedor.py; aquí se ve el resultado y se asignan SKUs)
+# ==============================================================================
+def vista_sync_proveedor():
+    import os
+    import subprocess
+    import sys
+
+    st.markdown("### 🔄 Sincronización automática con la hoja del proveedor")
+    st.caption("Todos los días a las 07:40 se lee la hoja del proveedor y se actualiza el stock externo. "
+               "Los modelos del proveedor que todavía no tienen SKU KM aparecen abajo para asignarlos.")
+
+    try:
+        with engine.connect() as conn:
+            ultimo = conn.execute(text("""
+                SELECT fecha, skus_proveedor, actualizados, sin_mapeo, sku_inexistentes
+                FROM proveedor_sync_log WHERE aplicado ORDER BY id DESC LIMIT 1""")).fetchone()
+            df_sin = pd.read_sql(text("""
+                SELECT tipo, clave, codigo, modelo, color, estado, '' AS sku
+                FROM proveedor_no_mapeados ORDER BY tipo, modelo, color"""), conn)
+            df_map = pd.read_sql(text("""
+                SELECT m.tipo, m.clave, m.codigo, m.modelo, m.color, m.sku,
+                       (v.sku IS NOT NULL OR EXISTS (SELECT 1 FROM Variantes v2 WHERE v2.sku LIKE m.sku || '-%%')) AS existe
+                FROM proveedor_mapeo m LEFT JOIN Variantes v ON v.sku = m.sku
+                ORDER BY m.tipo, m.modelo, m.color"""), conn)
+    except Exception:
+        st.info("Aún no se ha ejecutado la sincronización. Pulsa el botón para la primera corrida.")
+        ultimo, df_sin, df_map = None, pd.DataFrame(), pd.DataFrame()
+
+    c1, c2, c3, c4 = st.columns(4)
+    if ultimo:
+        c1.metric("Última corrida", ultimo.fecha.strftime("%d/%m %H:%M"))
+        c2.metric("SKUs leídos", ultimo.skus_proveedor)
+        c3.metric("Cambiaron", ultimo.actualizados)
+        c4.metric("Modelos sin SKU", ultimo.sin_mapeo)
+
+    if st.button("🔄 Actualizar ahora desde la hoja del proveedor", type="primary"):
+        raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with st.spinner("Descargando la hoja del proveedor…"):
+            r = subprocess.run([sys.executable, os.path.join(raiz, "recurrente", "stock_proveedor.py"), "--aplicar"],
+                               capture_output=True, text=True, timeout=300, cwd=raiz)
+        (st.success if r.returncode == 0 else st.error)("Terminado" if r.returncode == 0 else "Falló la sincronización")
+        st.code((r.stdout + r.stderr)[-4000:])
+        if 'df_inventario' in st.session_state:
+            del st.session_state['df_inventario']
+
+    if not df_sin.empty:
+        st.markdown(f"#### ❓ Modelos del proveedor sin SKU KM ({len(df_sin)})")
+        st.caption("Escribe el SKU KM en la última columna y guarda. Para modelos con medida, "
+                   "pon el SKU base (ej. NL032C); el sistema arma NL032C-0125, etc.")
+        ed = st.data_editor(
+            df_sin.drop(columns=["clave"]), hide_index=True, use_container_width=True, key="ed_sin_mapeo",
+            disabled=["tipo", "codigo", "modelo", "color", "estado"],
+            column_config={"sku": st.column_config.TextColumn("SKU KM ✏️")})
+        if st.button("💾 Guardar SKUs asignados"):
+            nuevos = [(df_sin.loc[i], str(ed.loc[i, "sku"]).strip().upper()) for i in ed.index
+                      if str(ed.loc[i, "sku"] or "").strip()]
+            with engine.begin() as conn:
+                for fila, sku in nuevos:
+                    conn.execute(text("""
+                        INSERT INTO proveedor_mapeo (tipo, clave, sku, codigo, modelo, color)
+                        VALUES (:t, :c, :s, :co, :m, :col)
+                        ON CONFLICT (tipo, clave) DO UPDATE SET sku = EXCLUDED.sku, actualizado = CURRENT_TIMESTAMP"""),
+                        {"t": fila.tipo, "c": fila.clave, "s": sku, "co": fila.codigo, "m": fila.modelo, "col": fila.color})
+                    conn.execute(text("DELETE FROM proveedor_no_mapeados WHERE tipo = :t AND clave = :c"),
+                                 {"t": fila.tipo, "c": fila.clave})
+            st.success(f"✅ {len(nuevos)} modelos vinculados. Se aplican en la próxima sincronización (o pulsa Actualizar ahora).")
+            time.sleep(1)
+            st.rerun()
+
+    if not df_map.empty:
+        with st.expander(f"📖 Diccionario proveedor → SKU KM ({len(df_map)} modelos, "
+                         f"{int((~df_map['existe']).sum())} con SKU que no existe en el panel)"):
+            solo_malos = st.checkbox("Ver solo los SKUs que no existen en el panel")
+            vista = df_map[~df_map["existe"]] if solo_malos else df_map
+            ed2 = st.data_editor(
+                vista.drop(columns=["clave"]), hide_index=True, use_container_width=True, key="ed_mapeo",
+                disabled=["tipo", "codigo", "modelo", "color", "existe"],
+                column_config={"sku": st.column_config.TextColumn("SKU KM ✏️ (vacío = desvincular)"),
+                               "existe": st.column_config.CheckboxColumn("Existe en panel")})
+            if st.button("💾 Guardar cambios del diccionario"):
+                n = 0
+                with engine.begin() as conn:
+                    for i in ed2.index:
+                        nuevo = str(ed2.loc[i, "sku"] or "").strip().upper()
+                        if nuevo == vista.loc[i, "sku"]:
+                            continue
+                        n += 1
+                        if nuevo:
+                            conn.execute(text("UPDATE proveedor_mapeo SET sku = :s, actualizado = CURRENT_TIMESTAMP "
+                                              "WHERE tipo = :t AND clave = :c"),
+                                         {"s": nuevo, "t": vista.loc[i, "tipo"], "c": vista.loc[i, "clave"]})
+                        else:
+                            conn.execute(text("DELETE FROM proveedor_mapeo WHERE tipo = :t AND clave = :c"),
+                                         {"t": vista.loc[i, "tipo"], "c": vista.loc[i, "clave"]})
+                st.success(f"✅ {n} cambios guardados.")
+                time.sleep(1)
+                st.rerun()
