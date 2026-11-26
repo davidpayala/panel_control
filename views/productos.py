@@ -72,6 +72,7 @@ def vista_productos():
                         END AS macro_categoria, 
                         p.categoria, p.marca, p.modelo, p.nombre,
                         p.color_principal, p.diametro, v.medida, v.stock_interno,
+                        CASE WHEN p.publicado IS TRUE THEN '✅ Sí' WHEN p.publicado IS FALSE THEN '❌ No' ELSE '—' END AS publicado,
                         
                         COALESCE(ru.stock_asignado, 0) AS stock_asignado,
                         ru.ubicacion_nueva,
@@ -160,7 +161,7 @@ def vista_productos():
             # FILTROS SECUNDARIOS (Ocultos en desplegable)
             with st.expander("🛠️ Filtros Adicionales / Búsqueda Avanzada"):
                 # 🆕 Cambiamos a 5 columnas para dar espacio a la Medida
-                cf_col, cf_dia, cf_med, cf_stk_int, cf_stk_ext = st.columns(5)
+                cf_col, cf_dia, cf_med, cf_stk_int, cf_stk_ext, cf_pub = st.columns(6)
                 
                 # Filtro por Color
                 colores_disp = ["Todos"] + sorted(df_calc['color_principal'].dropna().astype(str).unique().tolist())
@@ -206,6 +207,12 @@ def vista_productos():
                 if filtro_stk_ext == "Con Stock (>0)": df_calc = df_calc[df_calc['stock_externo'] > 0]
                 elif filtro_stk_ext == "Sin Stock (0)": df_calc = df_calc[df_calc['stock_externo'] <= 0]
 
+                # Filtro: Publicado en la web (no es lo mismo que oculto por no tener stock)
+                filtro_pub = cf_pub.selectbox("🌐 Publicado en web:", ["Todos", "✅ Sí", "❌ No"],
+                                              help="❌ No = aún no publicado en kmlentes.pe (borrador, p. ej. por falta de foto). "
+                                                   "Un lente oculto por no tener stock sigue contando como publicado. Se actualiza con cada sync_woo.")
+                if filtro_pub != "Todos": df_calc = df_calc[df_calc['publicado'] == filtro_pub]
+
             # Aplicar búsqueda libre por texto
             if filtro_txt:
                 f = filtro_txt.lower()
@@ -221,7 +228,7 @@ def vista_productos():
         # --- PREPARACIÓN DEL DATAFRAME FINAL PARA EL EDITOR ---
         df_final = df_calc[[
             'url_imagen', 'sku', 'id_producto', 'linea_corta', 'categoria', 'nombre_completo', 
-            'detalles_info', 'stock_interno', 'stock_externo', 'stock_transito',
+            'detalles_info', 'publicado', 'stock_interno', 'stock_externo', 'stock_transito',
             'ubicacion_antigua', 'ubicacion_nueva', 'importacion', 'url_compra',
             'costo_promedio_anual', 'ultimo_precio_compra' # <--- COLUMNAS AÑADIDAS
         ]]
@@ -248,6 +255,7 @@ def vista_productos():
                 "categoria": st.column_config.SelectboxColumn("Subcat.", options=opciones_subcategorias, width="medium", required=True),
                 "nombre_completo": st.column_config.TextColumn("Producto", disabled=True, width="large"),
                 "detalles_info": st.column_config.TextColumn("Detalles", disabled=True, width="medium"),
+                "publicado": st.column_config.TextColumn("Web 🌐", disabled=True, width="small", help="Publicado en kmlentes.pe (no confundir con oculto por falta de stock)"),
                 "stock_interno": st.column_config.NumberColumn("S. Int.", disabled=True, format="%d"),
                 "stock_externo": st.column_config.NumberColumn("S. Ext.", disabled=True, format="%d"),
                 "stock_transito": st.column_config.NumberColumn("En Camino 🚚", min_value=0, step=1, format="%d", width="small"),

@@ -10,6 +10,7 @@ Web:    regular_price / sale_price (de la variación si el lente tiene medidas) 
 Uso:
     .venv/bin/python recurrente/comparar_lentes_web.py [--excel=documentos/comparacion_lentes.xlsx]
 """
+import html
 import os
 import re
 import sys
@@ -30,7 +31,28 @@ FAMILIA = {"verde": "Verde", "turquesa": "Azul – Celeste", "azul": "Azul – C
            "dorado": "Miel – Amarillo – Dorado", "amarillo": "Miel – Amarillo – Dorado", "negro": "Negro",
            "rojo": "Rojo – Naranja", "naranja": "Rojo – Naranja", "rosado": "Rosado - Morado",
            "morado": "Rosado - Morado", "multicolor": "Multicolor"}
-CAMPOS = ["precio", "rebajado", "contorno", "color", "marca", "diametro", "categoria"]
+CAMPOS = ["precio", "rebajado", "contorno", "color", "marca", "diametro", "categoria", "nombre"]
+MARCAS_SIN_NOMBRE = {"", "otros", "eliminar", "genérico", "generico"}
+
+
+def sku_base(sku):
+    """NL191A-0150 → NL191A (los lentes con medida muestran el código sin la medida)."""
+    return re.sub(r"-\d{4}$", "", (sku or "").strip())
+
+
+def nombre_lente(p, sku):
+    """Nombre del producto en la web armado desde el panel:
+         Naturales: Lentes de Contacto {Marca} {Modelo} {Color} ({SKU})
+         Fantasía:  Lentes de Contacto Fantasía {Modelo} {Color} ({SKU})"""
+    partes = ["Lentes de Contacto"]
+    if (p.get("categoria") or "").strip() == "Estilo Fantasía":
+        partes.append("Fantasía")
+    else:
+        marcas = [m.strip() for m in (p.get("marca") or "").split(",")
+                  if m.strip() and m.strip().lower() not in MARCAS_SIN_NOMBRE]
+        partes += marcas[:1]
+    partes += [p.get("modelo") or "", p.get("nombre") or "", f"({sku_base(sku)})"]
+    return " ".join(" ".join(partes).split())
 META_RS = "km_registro_sanitario"   # lo escribe sync_lentes_web: "no" o la marca ("FreshLady", "Meetone", ...)
 
 
@@ -65,7 +87,8 @@ def web_lentes(w):
         cats = " ".join(c["slug"] for c in p["categories"])
         if "accesorio" in cats or "lente" not in cats:
             continue
-        base = {"id": p["id"], "tipo": p["type"], "nombre": p["name"], "status": p["status"],
+        base = {"id": p["id"], "tipo": p["type"], "nombre": " ".join(html.unescape(p["name"]).split()),
+                "status": p["status"], "visibilidad": p.get("catalog_visibility"),
                 "marca": ", ".join(b["name"] for b in p.get("brands", [])),
                 "color": atributo(p, "Color"), "contorno": atributo(p, "Contorno"),
                 "diametro": atributo(p, "Diametro"), "categoria": categoria_web(p),
@@ -112,6 +135,7 @@ def comparar():
             "marca": ((p["marca"] or "").strip(), x["marca"]),
             "diametro": (num(p["diametro"]), num(x["diametro"])),
             "categoria": ((p["categoria"] or "").strip(), x["categoria"]),
+            "nombre": (nombre_lente(p, s), x["nombre"]),
         }
         for campo, (a, b) in pares.items():
             if campo == "marca" and marcas_set(a) == marcas_set(b):
