@@ -231,6 +231,9 @@ img[src*="/km-cat-"],img[src*="/km-col-"],img[src*="/km-sub-"],img[src*="/km-mar
 .wp-block-post-content table tbody tr:nth-child(even){background:#fafcfd}
 .wp-block-post-content figure.wp-block-table{margin:12px 0 20px}
 
+/* Banner de temporada en la portada (encima del hero) */
+.km-banner-temporada{margin:16px auto 0!important}.km-banner-temporada img{width:100%;height:auto;border-radius:var(--km-r);display:block}
+
 /* Página Nosotros */
 .km-eyebrow-oscuro{color:var(--km-p);font-weight:700;font-size:13px!important;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
 .home main#wp--skip-link--target{padding-top:0!important;margin-top:0!important}
