@@ -111,9 +111,10 @@ def render_nueva_venta():
                     
                     # Extraer de la primera ubicación disponible
                     df_ubis = pd.read_sql(text("""
-                        SELECT su.id_ubicacion, u.nombre, su.cantidad
+                        SELECT su.id_ubicacion, u.nombre || COALESCE(' · ' || um.marca, '') AS nombre, su.cantidad
                         FROM Stock_Ubicaciones su
                         JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion
+                        LEFT JOIN Ubicacion_Marca um ON um.sku = su.sku AND um.id_ubicacion = su.id_ubicacion
                         WHERE su.sku = :sku AND su.cantidad > 0
                         LIMIT 1
                     """), conn, params={"sku": btn_conf['sku']})
@@ -195,10 +196,12 @@ def render_nueva_venta():
                     
                     with engine.connect() as conn:
                         df_ubis = pd.read_sql(text("""
-                            SELECT su.id_ubicacion, u.nombre, su.cantidad
+                            SELECT su.id_ubicacion, u.nombre || COALESCE(' · ' || um.marca, '') AS nombre, su.cantidad
                             FROM Stock_Ubicaciones su
                             JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion
+                            LEFT JOIN Ubicacion_Marca um ON um.sku = su.sku AND um.id_ubicacion = su.id_ubicacion
                             WHERE su.sku = :sku AND su.cantidad > 0
+                            ORDER BY um.marca NULLS LAST, u.nombre
                         """), conn, params={"sku": prod['sku']})
                     
                     ubi_selec_id = None
@@ -208,7 +211,7 @@ def render_nueva_venta():
                     if df_ubis.empty and prod['stock_interno'] > 0:
                         st.warning("⚠️ Este producto no ha sido distribuido en ubicaciones. Se descontará del general.")
                     elif not df_ubis.empty:
-                        st.markdown("📍 **Selecciona el estante de retiro:**")
+                        st.markdown("📍 **Selecciona el estante (y marca) de retiro:**")
                         mapa_ubis = {f"🗄️ {row['nombre']} (Disp: {row['cantidad']} un.)": (row['id_ubicacion'], row['nombre'], row['cantidad']) for _, row in df_ubis.iterrows()}
                         sel_ubi = st.selectbox("Extraer de:", list(mapa_ubis.keys()), label_visibility="collapsed")
                         ubi_selec_id, ubi_selec_nombre, max_disp = mapa_ubis[sel_ubi]

@@ -7,6 +7,7 @@ from sqlalchemy import text
 from database import engine
 import threading
 from utils import sync_woo_background
+import ubicaciones_marca as um
 
 def render_compras():
     st.subheader("🚢 Gestión de Importaciones y Reposición")
@@ -297,6 +298,11 @@ def render_compras():
     # C) RECEPCIONAR MERCADERÍA
     # -------------------------------------------------------------------------
     with tab_recepcionar:
+        try:
+            with engine.begin() as conn:
+                um.asegurar_columna(conn)
+        except Exception:
+            pass
         with engine.connect() as conn:
             query = text("""
                 SELECT
@@ -305,10 +311,12 @@ def render_compras():
                     v.stock_transito as pendiente,
                     v.stock_interno as stock_actual,
                     v.ubicacion as ubicacion_antigua,
-                    (SELECT STRING_AGG(u.nombre || ' (' || su.cantidad || ' un.)', ' | ') 
+                    (SELECT STRING_AGG(u.nombre || COALESCE(' · ' || um.marca, '') || ' (' || su.cantidad || ' un.)', ' | ') 
                      FROM Stock_Ubicaciones su 
                      JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion 
+                     LEFT JOIN Ubicacion_Marca um ON um.sku = su.sku AND um.id_ubicacion = su.id_ubicacion
                      WHERE su.sku = v.sku AND su.cantidad > 0) as ubicacion_nueva,
+                    p.marca as marcas_producto,
                     (SELECT nota FROM Movimientos m WHERE m.sku = v.sku AND m.tipo_movimiento = 'PEDIDO_IMPORT' ORDER BY m.fecha DESC LIMIT 1) as ultima_nota,
                     (SELECT date(fecha) FROM Movimientos m WHERE m.sku = v.sku AND m.tipo_movimiento = 'PEDIDO_IMPORT' ORDER BY m.fecha DESC LIMIT 1) as ultima_fecha
                 FROM Variantes v
@@ -334,6 +342,12 @@ def render_compras():
             if nota_seleccionada != "---":
                 ubi_grupo = col_ubi.selectbox("📦 Almacenar todo en:", opciones_estantes, help="Opcional. Si lo dejas 'Sin asignar', sumará al stock general para distribuirlo luego.")
                 items_grupo = df_transito[df_transito["ultima_nota"] == nota_seleccionada]
+                marcas_grupo = sorted({m for x in items_grupo["marcas_producto"] for m in um.separar_marcas(x)})
+                hay_multimarca = any(len(um.separar_marcas(x)) > 1 for x in items_grupo["marcas_producto"])
+                marca_grupo = None
+                if ubi_grupo != "Sin asignar" and hay_multimarca:
+                    marca_grupo = col_sel.selectbox("🏷️ Marca de este pedido (hay lentes de varias marcas):", marcas_grupo,
+                                                    help="Una marca por ubicación. Se usa en los lentes que tienen varias marcas; los de una sola marca usan la suya.")
                 
                 # Espacio para alinear el botón
                 col_btn.write("")
@@ -351,14 +365,10 @@ def render_compras():
                                 
                                 # 2. Asignar al nuevo estante físico (si el usuario eligió uno)
                                 if ubi_grupo != "Sin asignar" and row['pendiente'] > 0:
-                                    conn.execute(text("""
-                                        INSERT INTO Stock_Ubicaciones (sku, id_ubicacion, cantidad, fecha_actualizacion) 
-                                        VALUES (:sku, (SELECT id_ubicacion FROM Ubicaciones_Estandar WHERE nombre = :n), :cant, CURRENT_TIMESTAMP)
-                                        ON CONFLICT (sku, id_ubicacion) 
-                                        DO UPDATE SET 
-                                            cantidad = Stock_Ubicaciones.cantidad + :cant,
-                                            fecha_actualizacion = CURRENT_TIMESTAMP
-                                    """), {"sku": row['sku'], "n": ubi_grupo, "cant": row['pendiente']})
+                                    id_g = conn.execute(text("SELECT id_ubicacion FROM Ubicaciones_Estandar WHERE nombre = :n"), {"n": ubi_grupo}).scalar()
+                                    ms = um.separar_marcas(row['marcas_producto'])
+                                    um.sumar_en_ubicacion(conn, row['sku'], id_g, int(row['pendiente']),
+                                                          marca_grupo if len(ms) > 1 else None)
                                 
                                 # 3. Historial de Movimientos
                                 conn.execute(text("""
@@ -382,10 +392,11 @@ def render_compras():
             df_transito["✅ Llegó?"] = False
             df_transito["Cant. Recibida"] = df_transito["pendiente"]
             df_transito["estante_destino"] = "Sin asignar"
+            df_transito["marca_destino"] = [ms[0] if len(ms) == 1 else "" for ms in df_transito["marcas_producto"].map(um.separar_marcas)]
             df_transito["ubicacion_nueva"] = df_transito["ubicacion_nueva"].fillna("-")
             
             df_editor = df_transito[[
-                "✅ Llegó?", "sku", "ultima_fecha", "ultima_nota", "nombre", "Cant. Recibida", "pendiente", "stock_actual", "ubicacion_antigua", "ubicacion_nueva", "estante_destino"
+                "✅ Llegó?", "sku", "ultima_fecha", "ultima_nota", "nombre", "Cant. Recibida", "pendiente", "stock_actual", "ubicacion_antigua", "ubicacion_nueva", "estante_destino", "marca_destino"
             ]]
 
             cambios = st.data_editor(
@@ -401,7 +412,9 @@ def render_compras():
                     "stock_actual": st.column_config.NumberColumn("Stock Hoy", disabled=True, width="small"),
                     "ubicacion_antigua": st.column_config.TextColumn("Ubi. Ant. 📍", width="small"),
                     "ubicacion_nueva": st.column_config.TextColumn("Ubi. Nueva 🗄️", disabled=True, width="medium"),
-                    "estante_destino": st.column_config.SelectboxColumn("Almacenar en 📥", options=opciones_estantes, width="medium")
+                    "estante_destino": st.column_config.SelectboxColumn("Almacenar en 📥", options=opciones_estantes, width="medium"),
+                    "marca_destino": st.column_config.SelectboxColumn("Marca 🏷️", options=sorted({m for x in df_transito["marcas_producto"] for m in um.separar_marcas(x)}),
+                                                                      width="small", help="Una marca por ubicación. Elige la marca si el lente tiene varias.")
                 },
                 hide_index=True,
                 use_container_width=True,
@@ -409,8 +422,14 @@ def render_compras():
             )
 
             filas_ok = cambios[cambios["✅ Llegó?"] == True]
+            marcas_por_sku = dict(zip(df_transito["sku"], df_transito["marcas_producto"].map(um.separar_marcas)))
+            sin_marca = [r['sku'] for _, r in filas_ok.iterrows()
+                         if r['estante_destino'] != "Sin asignar" and len(marcas_por_sku.get(r['sku'], [])) > 1
+                         and r['marca_destino'] not in marcas_por_sku.get(r['sku'], [])]
+            if sin_marca:
+                st.warning("🏷️ Elige la marca (columna Marca) de: " + ", ".join(sin_marca) + " — tienen varias marcas posibles.")
             if not filas_ok.empty:
-                if st.button(f"📥 Procesar {len(filas_ok)} items marcados", type="primary"):
+                if st.button(f"📥 Procesar {len(filas_ok)} items marcados", type="primary", disabled=bool(sin_marca)):
                     with engine.connect() as conn:
                         trans = conn.begin()
                         try:
@@ -430,14 +449,8 @@ def render_compras():
                                 
                                 # 2. Insertar en el nuevo estante si se eligió
                                 if row['estante_destino'] != "Sin asignar" and row['Cant. Recibida'] > 0:
-                                    conn.execute(text("""
-                                        INSERT INTO Stock_Ubicaciones (sku, id_ubicacion, cantidad, fecha_actualizacion) 
-                                        VALUES (:sku, (SELECT id_ubicacion FROM Ubicaciones_Estandar WHERE nombre = :n), :cant, CURRENT_TIMESTAMP)
-                                        ON CONFLICT (sku, id_ubicacion) 
-                                        DO UPDATE SET 
-                                            cantidad = Stock_Ubicaciones.cantidad + :cant,
-                                            fecha_actualizacion = CURRENT_TIMESTAMP
-                                    """), {"sku": row['sku'], "n": row['estante_destino'], "cant": int(row['Cant. Recibida'])})
+                                    id_d = conn.execute(text("SELECT id_ubicacion FROM Ubicaciones_Estandar WHERE nombre = :n"), {"n": row['estante_destino']}).scalar()
+                                    um.sumar_en_ubicacion(conn, row['sku'], id_d, int(row['Cant. Recibida']), row['marca_destino'] or None)
                                 
                                 # 3. Historial
                                 conn.execute(text("INSERT INTO Movimientos (sku, tipo_movimiento, cantidad, stock_anterior, stock_nuevo, nota) VALUES (:s,'RECEPCION_IMPORT',:c,:ant,:nue,:n)"),

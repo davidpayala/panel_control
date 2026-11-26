@@ -6,10 +6,27 @@
    La cabecera y el pie (partes de plantilla del tema) se editaron por REST; respaldo en respaldos_web/.
    Mantenido desde el repo panel-control (web_snippets/km_diseno.php). */
 
-// Solo estas marcas tienen registro sanitario (confirmado por el usuario el 22-nov-2026). No mostrarlo en otras.
+// Solo FreshLady y Meetone tienen registro sanitario (confirmado por el usuario el 22-nov-2026).
+// El panel escribe la meta km_registro_sanitario: "no" o la marca ("FreshLady", "Meetone", "FreshLady y Meetone")
+// según la marca del stock que hay (un lente puede venir de varias marcas). Sin meta: se decide por la marca.
+if ( ! function_exists( 'km_registro_sanitario_marca' ) ) {
+	function km_registro_sanitario_marca( $product_id ) {
+		if ( ! $product_id ) {
+			return '';
+		}
+		$meta = get_post_meta( $product_id, 'km_registro_sanitario', true );
+		if ( '' !== $meta ) {
+			return 'no' === $meta ? '' : $meta;
+		}
+		if ( ! has_term( array( 'freshlady', 'meetone' ), 'product_brand', $product_id ) ) {
+			return '';
+		}
+		return has_term( 'meetone', 'product_brand', $product_id ) ? 'Meetone' : 'FreshLady';
+	}
+}
 if ( ! function_exists( 'km_tiene_registro_sanitario' ) ) {
 	function km_tiene_registro_sanitario( $product_id ) {
-		return $product_id && has_term( array( 'freshlady', 'meetone' ), 'product_brand', $product_id );
+		return '' !== km_registro_sanitario_marca( $product_id );
 	}
 }
 
@@ -39,6 +56,7 @@ add_action( 'wp_head', function () {
 		'chat'   => $ico( '<path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 1 1 21 11.5z"/>' ),
 		'eye'    => $ico( '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>' ),
 		'box'    => $ico( '<path d="M21 16V8l-9-5-9 5v8l9 5 9-5z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/>' ),
+		'cash'   => $ico( '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>' ),
 		'star'   => $ico( '<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"/>' ),
 	);
 
@@ -62,8 +80,8 @@ img{max-width:100%}
 .km-topbar p{margin:0;display:flex;align-items:center;gap:7px;color:#fff}
 .km-topbar p:before{content:"";width:16px;height:16px;background:#7fd3e6;flex:none;-webkit-mask:var(--ico) center/contain no-repeat;mask:var(--ico) center/contain no-repeat}
 .km-topbar a{color:#fff;text-decoration:none}
-.km-tb-envio{--ico:' . $i['truck'] . '}.km-tb-garantia{--ico:' . $i['shield'] . '}.km-tb-pago{--ico:' . $i['lock'] . '}.km-tb-wsp{--ico:' . $i['chat'] . '}
-@media(max-width:781px){.km-topbar{font-size:12px;gap:4px 16px}.km-topbar .km-tb-garantia,.km-topbar .km-tb-pago{display:none}}
+.km-tb-envio{--ico:' . $i['truck'] . '}.km-tb-garantia{--ico:' . $i['shield'] . '}.km-tb-pago{--ico:' . $i['cash'] . '}.km-tb-wsp{--ico:' . $i['chat'] . '}
+@media(max-width:781px){.km-topbar{font-size:12px;gap:4px 16px}.km-topbar .km-tb-garantia,.km-topbar .km-tb-wsp{display:none}}
 
 /* Cabecera */
 .km-header{background:#fff;border-bottom:1px solid var(--km-line);margin:0!important;padding:0!important}
@@ -153,7 +171,8 @@ li.wc-block-product .wp-block-woocommerce-product-button{margin-top:auto!importa
 .km-confianza li{display:flex;gap:10px;align-items:flex-start;padding:12px 0;font-size:14px;line-height:1.4;color:var(--km-muted)}
 .km-confianza li strong{display:block;color:var(--km-dark);font-size:14px}
 .km-confianza li:before{content:"";flex:none;width:22px;height:22px;margin-top:2px;background:var(--km-p);-webkit-mask:var(--ico) center/contain no-repeat;mask:var(--ico) center/contain no-repeat}
-.km-c-envio{--ico:' . $i['truck'] . '}.km-c-garantia{--ico:' . $i['shield'] . '}.km-c-pago{--ico:' . $i['lock'] . '}.km-c-wsp{--ico:' . $i['chat'] . '}
+.km-aviso-contra{background:var(--km-soft);border:1px solid var(--km-line);border-left:4px solid #2bb3a3;border-radius:10px;padding:10px 14px;margin:0 0 14px;font-size:14px;line-height:1.45}.km-aviso-contra:before{content:"";display:inline-block;vertical-align:-3px;width:18px;height:18px;margin-right:6px;background:var(--km-p);-webkit-mask:' . $i['cash'] . ' center/contain no-repeat;mask:' . $i['cash'] . ' center/contain no-repeat}
+.km-c-envio{--ico:' . $i['truck'] . '}.km-c-garantia{--ico:' . $i['shield'] . '}.km-c-pago{--ico:' . $i['lock'] . '}.km-c-contra{--ico:' . $i['cash'] . '}.km-c-wsp{--ico:' . $i['chat'] . '}
 .km-uso{border-top:1px solid var(--km-line);padding:10px 0 8px;font-size:14px}
 .km-uso summary{cursor:pointer;font-weight:600;color:var(--km-dark);display:flex;align-items:center;gap:10px;list-style:none}
 .km-uso summary::-webkit-details-marker{display:none}
@@ -236,15 +255,15 @@ add_filter( 'render_block_woocommerce/add-to-cart-form', function ( $html ) {
 	$pid  = get_queried_object_id();
 	$out  = '<div class="km-confianza">';
 	if ( km_tiene_registro_sanitario( $pid ) ) {
-		$marca = has_term( 'meetone', 'product_brand', $pid ) ? 'Meetone' : 'FreshLady';
-		$out  .= '<div class="km-rs"><strong>Con Registro Sanitario</strong>Los lentes ' . $marca . ' cuentan con registro sanitario en el Perú.</div>';
+		$marca = km_registro_sanitario_marca( $pid );
+		$out  .= '<div class="km-rs"><strong>Con Registro Sanitario</strong>Los lentes ' . esc_html( $marca ) . ' cuentan con registro sanitario en el Perú.</div>';
 	}
 	$out .= '<ul>';
 	$out .= $es_lente
 		? '<li class="km-c-envio"><span><strong>Envío gratis a todo el Perú</strong>En lentes de contacto. Despachamos el siguiente día hábil.</span></li>'
 		: '<li class="km-c-envio"><span><strong>Envíos a todo el Perú</strong>Gratis si tu pedido incluye lentes de contacto. Despachamos el siguiente día hábil.</span></li>';
 	$out .= '<li class="km-c-garantia"><span><strong>Garantía de fábrica</strong>Tienes 24 h desde que lo recibes para reportar cualquier problema.</span></li>';
-	$out .= '<li class="km-c-pago"><span><strong>Pago seguro</strong>Yape, Plin, transferencia, tarjeta o Mercado Pago.</span></li>';
+	$out .= '<li class="km-c-contra"><span><strong>En Lima pagas al recibir</strong>Contraentrega sin adelanto dentro de nuestra <a href="/envios/">cobertura</a>. También Yape, Plin, tarjeta o Mercado Pago.</span></li>';
 	$out .= '<li class="km-c-wsp"><span><strong>Asesoría personalizada</strong><a href="' . esc_url( $wsp ) . '" target="_blank" rel="noopener">Escríbenos por WhatsApp</a> antes y después de tu compra.</span></li>';
 	$out .= '</ul>';
 	if ( $es_lente ) {
@@ -259,6 +278,18 @@ add_filter( 'render_block_woocommerce/add-to-cart-form', function ( $html ) {
 	$out .= '</div>';
 	return $html . $out;
 } );
+
+// Carrito: aviso de pago contra entrega en Lima justo encima del botón "Finalizar compra".
+add_filter( 'render_block_woocommerce/proceed-to-checkout-block', function ( $html ) {
+	return '<p class="km-aviso-contra"><strong>¿Estás en Lima?</strong> Elige «Delivery a domicilio» y paga al recibir, sin adelanto (efectivo o Yape). <a href="/envios/">Ver cobertura</a></p>' . $html;
+} );
+
+// Portada: descripción para Google con envío gratis y contraentrega en Lima.
+add_filter( 'rank_math/frontend/description', function ( $desc ) {
+	return is_front_page()
+		? 'Lentes de contacto naturales y de fantasía: FreshLady y Meetone con registro sanitario. Envío gratis a todo el Perú y pago contra entrega en Lima.'
+		: $desc;
+}, 20 );
 
 // Sello "Registro sanitario" sobre la foto de los productos FreshLady y Meetone en listados.
 add_filter( 'render_block_woocommerce/product-image', function ( $html, $block, $instance = null ) {

@@ -5,6 +5,7 @@ import re
 from sqlalchemy import text
 from database import engine
 import utils
+import ubicaciones_marca as um
 
 # =========================================================================
 # AUTO-CREACIÓN DE TABLA MAESTRA PREVENTIVA
@@ -48,9 +49,10 @@ def vista_productos():
                         SELECT 
                             su.sku,
                             COALESCE(SUM(su.cantidad), 0) AS stock_asignado,
-                            STRING_AGG(u.nombre || ' (' || su.cantidad || ' un.)', ' | ') FILTER (WHERE su.cantidad > 0) AS ubicacion_nueva
+                            STRING_AGG(u.nombre || COALESCE(' · ' || um.marca, '') || ' (' || su.cantidad || ' un.)', ' | ') FILTER (WHERE su.cantidad > 0) AS ubicacion_nueva
                         FROM Stock_Ubicaciones su
                         JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion
+                        LEFT JOIN Ubicacion_Marca um ON um.sku = su.sku AND um.id_ubicacion = su.id_ubicacion
                         GROUP BY su.sku
                     ),
                     ResumenCostos AS (
@@ -388,6 +390,11 @@ def vista_productos():
                 conn.execute(text("ALTER TABLE Stock_Ubicaciones ADD COLUMN IF NOT EXISTS fecha_actualizacion TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP"))
         except Exception:
             pass
+        try:
+            with engine.begin() as conn:
+                um.asegurar_columna(conn)
+        except Exception as e:
+            st.warning(f"No se pudo preparar la marca por ubicación: {e}")
 
         st.subheader("📍 Control de Stock, Estantes y Auditoría")
         
@@ -431,14 +438,17 @@ def vista_productos():
                     
                     with engine.connect() as conn:
                         df_reparto = pd.read_sql(text("""
-                            SELECT su.id_ubicacion, u.nombre as "Estante", su.cantidad as "Unidades", 
+                            SELECT su.id_ubicacion, u.nombre as "Estante", COALESCE(um.marca, '') as "Marca", su.cantidad as "Unidades", 
                                    TO_CHAR(su.fecha_actualizacion, 'DD/MM/YYYY HH24:MI') as "Última Revisión"
                             FROM Stock_Ubicaciones su
                             JOIN Ubicaciones_Estandar u ON su.id_ubicacion = u.id_ubicacion
+                            LEFT JOIN Ubicacion_Marca um ON um.sku = su.sku AND um.id_ubicacion = su.id_ubicacion
                             WHERE su.sku = :sku AND su.cantidad > 0
                             ORDER BY u.nombre
                         """), conn, params={"sku": sku_sel})
                     
+                    with engine.connect() as conn:
+                        marcas_sku = um.marcas_de_sku(conn, sku_sel)
                     ya_asignado = int(df_reparto['Unidades'].sum()) if not df_reparto.empty else 0
                     disponible_para_asignar = stock_total_sku - ya_asignado
                     
@@ -460,8 +470,13 @@ def vista_productos():
                     else:
                         st.markdown("##### ➕ Asignar a nuevo estante o sumar stock:")
                         with st.form("form_asignar_ubi"):
-                            c_ub, c_cant = st.columns(2)
+                            c_ub, c_marca, c_cant = st.columns(3)
                             ubi_asignar = c_ub.selectbox("Asignar al estante:", df_ubis['nombre'].tolist())
+                            if len(marcas_sku) > 1:
+                                marca_asignar = c_marca.selectbox("Marca:", marcas_sku, help="Una marca por ubicación: si tienes de dos marcas, ponlas en estantes distintos.")
+                            else:
+                                marca_asignar = marcas_sku[0] if marcas_sku else None
+                                c_marca.text_input("Marca:", value=marca_asignar or "Sin marca", disabled=True)
                             
                             max_add_safe = max(1, int(disponible_para_asignar))
                             cant_asignar = c_cant.number_input(
@@ -479,22 +494,30 @@ def vista_productos():
                                     try:
                                         with engine.begin() as conn:
                                             id_ubi = conn.execute(text("SELECT id_ubicacion FROM Ubicaciones_Estandar WHERE nombre = :n"), {"n": ubi_asignar}).scalar()
-                                            conn.execute(text("""
-                                                INSERT INTO Stock_Ubicaciones (sku, id_ubicacion, cantidad, fecha_actualizacion) 
-                                                VALUES (:sku, :idu, :cant, CURRENT_TIMESTAMP)
-                                                ON CONFLICT (sku, id_ubicacion) 
-                                                DO UPDATE SET 
-                                                    cantidad = Stock_Ubicaciones.cantidad + :cant,
-                                                    fecha_actualizacion = CURRENT_TIMESTAMP
-                                            """), {"sku": sku_sel, "idu": id_ubi, "cant": cant_asignar})
-                                        st.success(f"Se sumaron {cant_asignar} unidades al estante {ubi_asignar}.")
+                                            um.sumar_en_ubicacion(conn, sku_sel, id_ubi, cant_asignar, marca_asignar)
+                                        st.success(f"Se sumaron {cant_asignar} unidades al estante {um.etiqueta(ubi_asignar, marca_asignar)}.")
                                         st.rerun()
+                                    except ValueError as e:
+                                        st.error(f"❌ {e}")
                                     except Exception as e:
                                         st.error(f"Error: {e}")
                     
                     st.markdown("##### 📦 Ubicaciones registradas para este SKU:")
                     if not df_reparto.empty:
-                        st.dataframe(df_reparto[['Estante', 'Unidades', 'Última Revisión']], hide_index=True, use_container_width=True)
+                        st.dataframe(df_reparto[['Estante', 'Marca', 'Unidades', 'Última Revisión']], hide_index=True, use_container_width=True)
+                        if len(marcas_sku) > 1:
+                            with st.expander("🏷️ Cambiar la marca de un estante"):
+                                cm_a, cm_b, cm_c = st.columns([2, 2, 1])
+                                est_marca = cm_a.selectbox("Estante:", df_reparto['Estante'].tolist(), key="marca_est")
+                                actual = df_reparto[df_reparto['Estante'] == est_marca]['Marca'].values[0]
+                                nueva_marca = cm_b.selectbox("Marca:", marcas_sku, index=marcas_sku.index(actual) if actual in marcas_sku else 0, key="marca_nueva")
+                                cm_c.write("")
+                                if cm_c.button("💾 Guardar", key="marca_guardar"):
+                                    id_m = int(df_reparto[df_reparto['Estante'] == est_marca]['id_ubicacion'].values[0])
+                                    with engine.begin() as conn:
+                                        um.poner_marca(conn, sku_sel, id_m, nueva_marca)
+                                    st.success(f"{est_marca} ahora es {nueva_marca}.")
+                                    st.rerun()
                         
                         # =========================================================
                         # HERRAMIENTA DE CORRECCIÓN (BLINDADA CONTRA CRASHES)
@@ -574,12 +597,14 @@ def vista_productos():
                         SELECT 
                             su.sku as "SKU",
                             COALESCE(p.modelo || ' ' || p.nombre || ' (' || v.medida || ')', v.nombre_variante, 'Sin descripción') as "Producto",
+                            COALESCE(um.marca, '') as "Marca",
                             su.cantidad as "Unidades",
                             v.stock_interno as "Stock Global",
                             TO_CHAR(su.fecha_actualizacion, 'DD/MM/YYYY HH24:MI:SS') as "Último Conteo"
                         FROM Stock_Ubicaciones su
                         JOIN Variantes v ON su.sku = v.sku
                         JOIN Productos p ON v.id_producto = p.id_producto
+                        LEFT JOIN Ubicacion_Marca um ON um.sku = su.sku AND um.id_ubicacion = su.id_ubicacion
                         WHERE su.id_ubicacion = :idu AND su.cantidad > 0
                         ORDER BY su.fecha_actualizacion DESC, su.sku ASC
                     """), conn, params={"idu": id_estante_actual})
@@ -587,7 +612,7 @@ def vista_productos():
                 if df_contenido.empty:
                     st.warning(f"El estante **{ubi_inspeccionar}** está completamente vacío en este momento.")
                 else:
-                    st.dataframe(df_contenido[['SKU', 'Producto', 'Unidades', 'Stock Global', 'Último Conteo']], use_container_width=True, hide_index=True)
+                    st.dataframe(df_contenido[['SKU', 'Producto', 'Marca', 'Unidades', 'Stock Global', 'Último Conteo']], use_container_width=True, hide_index=True)
                     
                     # =========================================================
                     # CORRECCIÓN DIRECTA BLINDADA
@@ -634,7 +659,7 @@ def vista_productos():
 
                     st.download_button(
                         label=f"📥 Descargar Lista de Estante {ubi_inspeccionar} (CSV)",
-                        data=df_contenido[['SKU', 'Producto', 'Unidades', 'Último Conteo']].to_csv(index=False).encode('utf-8'),
+                        data=df_contenido[['SKU', 'Producto', 'Marca', 'Unidades', 'Último Conteo']].to_csv(index=False).encode('utf-8'),
                         file_name=f"Inventario_Estante_{ubi_inspeccionar}.csv",
                         mime="text/csv",
                         use_container_width=True

@@ -1,5 +1,6 @@
 """
-🔎 Compara los LENTES del panel con kmlentes.pe: precio, precio rebajado, contorno, color, marca y diámetro.
+🔎 Compara los LENTES del panel con kmlentes.pe: precio, precio rebajado, contorno, color, marca, diámetro
+y categoría (Naturales / Fantasía).
 
 Panel:  Variantes.precio / precio_rebajado · Productos.marca / color_principal / diametro /
         detalles_tecnicos.contorno   (solo macro_categoria = 'Lentes')
@@ -29,7 +30,13 @@ FAMILIA = {"verde": "Verde", "turquesa": "Azul – Celeste", "azul": "Azul – C
            "dorado": "Miel – Amarillo – Dorado", "amarillo": "Miel – Amarillo – Dorado", "negro": "Negro",
            "rojo": "Rojo – Naranja", "naranja": "Rojo – Naranja", "rosado": "Rosado - Morado",
            "morado": "Rosado - Morado", "multicolor": "Multicolor"}
-CAMPOS = ["precio", "rebajado", "contorno", "color", "marca", "diametro"]
+CAMPOS = ["precio", "rebajado", "contorno", "color", "marca", "diametro", "categoria"]
+META_RS = "km_registro_sanitario"   # lo escribe sync_lentes_web: "no" o la marca ("FreshLady", "Meetone", ...)
+
+
+def categoria_web(p):
+    slugs = " ".join(c["slug"] for c in p.get("categories", []))
+    return "Estilo Fantasía" if "fantasia" in slugs else "Estilo Natural" if "natural" in slugs else ""
 
 
 def marcas_set(v):
@@ -61,7 +68,8 @@ def web_lentes(w):
         base = {"id": p["id"], "tipo": p["type"], "nombre": p["name"], "status": p["status"],
                 "marca": ", ".join(b["name"] for b in p.get("brands", [])),
                 "color": atributo(p, "Color"), "contorno": atributo(p, "Contorno"),
-                "diametro": atributo(p, "Diametro")}
+                "diametro": atributo(p, "Diametro"), "categoria": categoria_web(p),
+                "rs": next((str(m.get("value")) for m in p.get("meta_data", []) if m.get("key") == META_RS), None)}
         if p["type"] == "variable":
             pag = 1
             while True:
@@ -82,7 +90,7 @@ def panel_lentes():
     with engine.connect() as c:
         filas = c.execute(text("""
             SELECT v.sku, v.precio, v.precio_rebajado, p.marca, p.color_principal, p.diametro, p.detalles_tecnicos,
-                   p.id_producto, p.modelo, p.nombre
+                   p.id_producto, p.modelo, p.nombre, p.categoria
             FROM Variantes v JOIN Productos p USING (id_producto) WHERE p.macro_categoria = 'Lentes'""")).mappings()
         return {f["sku"].strip(): dict(f) for f in filas}
 
@@ -103,6 +111,7 @@ def comparar():
             "color": (fam_p or (p["color_principal"] or ""), x["color"]),
             "marca": ((p["marca"] or "").strip(), x["marca"]),
             "diametro": (num(p["diametro"]), num(x["diametro"])),
+            "categoria": ((p["categoria"] or "").strip(), x["categoria"]),
         }
         for campo, (a, b) in pares.items():
             if campo == "marca" and marcas_set(a) == marcas_set(b):

@@ -1,11 +1,15 @@
 """
-🔄 Sincroniza LENTES panel → kmlentes.pe: precio, precio rebajado, contorno, color, marca y diámetro.
+🔄 Sincroniza LENTES panel → kmlentes.pe: precio, precio rebajado, contorno, color, marca, diámetro,
+categoría (Naturales / Fantasía) y el sello de registro sanitario.
 
 El panel manda: si cambias uno de esos datos en el panel, en la próxima corrida se copia a la web.
 Lo llama sync_woo.py después de sincronizar el stock (5 veces al día); también se puede correr solo.
 
   · precio / precio rebajado → en el producto simple o en la variación de cada medida
   · color (familia), contorno, diámetro y marca → en el producto (para los lentes con medida, en el padre)
+  · categoría → categoría + etiqueta + nombre ("Lentes de Contacto Fantasía …") + descripciones y SEO
+  · registro sanitario → meta km_registro_sanitario: solo si TODO el stock (estantes con su marca,
+    stock sin repartir y stock del proveedor) es FreshLady y/o Meetone (ver ubicaciones_marca.py)
   · si el dato está vacío en el panel no se borra en la web
   · freno: si hay más de MAX_CAMBIOS cambios en una corrida no envía nada y avisa (panel + WhatsApp)
 
@@ -23,7 +27,10 @@ if _raiz not in sys.path:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import seo_woo
-from comparar_lentes_web import comparar, FAMILIA
+from comparar_lentes_web import comparar, FAMILIA, META_RS
+from pasar_a_fantasia import nuevo_producto
+import ubicaciones_marca as um
+from database import engine
 
 MAX_CAMBIOS = 150
 # Lentes cuya marca está en conflicto panel/web y espera decisión del usuario: no se sincroniza la marca
@@ -57,9 +64,35 @@ def valor_web(campo, p):
             return f"{n:.2f} mm" if n > 0 else None
         except (TypeError, ValueError):
             return None
+    if campo == "categoria":
+        v = (p.get("categoria") or "").strip()
+        return v if v in ("Estilo Natural", "Estilo Fantasía") else None
     if campo == "marca":
         v = [m.strip() for m in (p["marca"] or "").split(",") if m.strip()]
         return v if v and not any(m.lower() in ("otros", "eliminar") for m in v) else None
+
+
+NOMBRE_MARCA = {"freshlady": "FreshLady", "meetone": "Meetone"}
+
+
+def registro_deseado(web, panel, comunes):
+    """{product_id: valor de META_RS} que debe tener cada producto de la web."""
+    with engine.begin() as c:
+        um.asegurar_columna(c)
+        stock = um.marcas_con_stock(c)
+    por_padre = defaultdict(lambda: {"stock": set(), "producto": set()})
+    for s in comunes:
+        d = por_padre[web[s]["id"]]
+        d["stock"] |= stock.get(s, set())
+        d["producto"] |= {m.strip().lower().replace(" ", "") for m in um.separar_marcas(panel[s]["marca"])}
+    out = {}
+    for pid, d in por_padre.items():
+        if um.tiene_registro(d["stock"], d["producto"]):
+            base = d["stock"] or d["producto"]
+            out[pid] = " y ".join(NOMBRE_MARCA[m] for m in sorted(base, key=["freshlady", "meetone"].index))
+        else:
+            out[pid] = "no"
+    return out
 
 
 def sincronizar(aplicar=False, log=print):
@@ -87,12 +120,24 @@ def sincronizar(aplicar=False, log=print):
                 precios_simples.append({"id": x["id"], clave: nuevo})
         elif campo == "marca":
             por_padre[x["id"]]["marca"] = nuevo          # lista de nombres; los ids se resuelven al enviar
+        elif campo == "categoria":
+            if x["categoria"]:                           # solo lentes que ya están en Naturales o Fantasía
+                por_padre[x["id"]]["categoria"] = nuevo
         else:
             por_padre[x["id"]][campo] = nuevo
 
-    total = len(precios_simples) + sum(len(v) for v in precios_var.values()) + len(por_padre)
+    # registro sanitario: solo cambia la meta → va por lotes
+    rs_actual = {}
+    for s in comunes:
+        rs_actual[web[s]["id"]] = web[s].get("rs")
+    rs_lote = [{"id": pid, "meta_data": [{"key": META_RS, "value": v}]}
+               for pid, v in registro_deseado(web, panel, comunes).items() if rs_actual.get(pid) != v]
+
+    total = len(precios_simples) + sum(len(v) for v in precios_var.values()) + len(por_padre) + len(rs_lote)
+    n_cat = sum(1 for c in por_padre.values() if "categoria" in c)
     log(f"🔄 Lentes panel→web: {len(precios_simples)} precios simples, "
-        f"{sum(len(v) for v in precios_var.values())} precios de medidas, {len(por_padre)} productos con atributos/marca")
+        f"{sum(len(v) for v in precios_var.values())} precios de medidas, {len(por_padre)} productos con atributos/marca/categoría "
+        f"({n_cat} cambian de categoría), {len(rs_lote)} sellos de registro sanitario")
     for o in omitidos[:10]:
         log("   ⚠️ " + o)
     if total > MAX_CAMBIOS:
@@ -116,6 +161,11 @@ def sincronizar(aplicar=False, log=print):
     for pid, lote in precios_var.items():
         r = w.post(f"products/{pid}/variations/batch", {"update": lote})
         hechos += len(r.json().get("update", [])) if r.status_code in (200, 201) else 0
+    for i in range(0, len(rs_lote), 50):
+        r = w.post("products/batch", {"update": rs_lote[i:i + 50]})
+        hechos += len(r.json().get("update", [])) if r.status_code in (200, 201) else 0
+        if r.status_code not in (200, 201):
+            log(f"   ❌ registro sanitario: {r.text[:200]}")
     for pid, cambios in por_padre.items():
         prod = w.get(f"products/{pid}").json()
         attrs = [{k: a[k] for k in ("id", "name", "position", "visible", "variation", "options")}
@@ -130,6 +180,10 @@ def sincronizar(aplicar=False, log=print):
                 attrs.append({"id": aid, "name": nombre, "position": len(attrs), "visible": True,
                               "variation": False, "options": [cambios[campo]]})
         datos = {"attributes": attrs}
+        if "categoria" in cambios:
+            prod["attributes"] = attrs
+            datos = nuevo_producto(prod, color_morado=False, fantasia=cambios["categoria"] == "Estilo Fantasía")
+            log(f"   🗂️ {prod.get('sku') or pid}: → {cambios['categoria']} ({datos['name']})")
         if "marca" in cambios:
             ids = []
             for nombre in cambios["marca"]:

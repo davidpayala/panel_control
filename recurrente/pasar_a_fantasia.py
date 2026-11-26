@@ -30,16 +30,20 @@ CAT_NAT, CAT_FAN, TAG_NAT, TAG_FAN = 148, 307, 96, 129
 COLOR_MORADO = "Rosado - Morado"
 
 
-def nuevo_producto(p, color_morado):
+def nuevo_producto(p, color_morado, fantasia=True):
+    """Payload para pasar el producto a Fantasía (o de vuelta a Naturales con fantasia=False)."""
     base = re.sub(r"^Lentes de Contacto\s+(Fantas[ií]a\s+)?", "", p["name"]).strip()
     prod = dict(p)
-    prod["name"] = f"Lentes de Contacto Fantasía {base}"
-    prod["categories"] = [{"id": CAT_FAN, "slug": "lentes-de-contacto-de-fantasia",
-                           "name": "Lentes de Contacto de Fantasía"}] + \
-        [c for c in p["categories"] if c["id"] not in (CAT_NAT, CAT_FAN)]
-    prod["tags"] = [t for t in p["tags"] if t["id"] != TAG_NAT]
-    if not any(t["id"] == TAG_FAN for t in prod["tags"]):
-        prod["tags"].append({"id": TAG_FAN})
+    if fantasia:
+        prod["name"] = f"Lentes de Contacto Fantasía {base}"
+        cat, tag_sale, tag_entra = {"id": CAT_FAN, "slug": "lentes-de-contacto-fantasia"}, TAG_NAT, TAG_FAN
+    else:
+        prod["name"] = f"Lentes de Contacto {base}"
+        cat, tag_sale, tag_entra = {"id": CAT_NAT, "slug": "lentes-de-contacto-naturales"}, TAG_FAN, TAG_NAT
+    prod["categories"] = [cat] + [c for c in p["categories"] if c["id"] not in (CAT_NAT, CAT_FAN)]
+    prod["tags"] = [t for t in p["tags"] if t["id"] != tag_sale]
+    if not any(t["id"] == tag_entra for t in prod["tags"]):
+        prod["tags"].append({"id": tag_entra})
     attrs = []
     for a in p["attributes"]:
         a = {k: a[k] for k in ("id", "name", "position", "visible", "variation", "options")}
@@ -48,7 +52,7 @@ def nuevo_producto(p, color_morado):
         attrs.append(a)
     prod["attributes"] = attrs
     d = md.datos_lente(prod)
-    d["fantasia"] = True
+    d["fantasia"] = fantasia
     seo = seo_woo.construir_seo(prod)
     payload = {
         "name": prod["name"], "categories": [{"id": c["id"]} for c in prod["categories"]],
