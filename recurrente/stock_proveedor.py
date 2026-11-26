@@ -20,7 +20,9 @@ Los modelos del proveedor que no tienen SKU quedan en proveedor_no_mapeados, par
 el panel (Inventario → Importar Stock Externo).
 
 Es el único proveedor: los SKUs que su hoja no lista (o sin SKU en el diccionario) quedan con stock_externo = 0.
-Si la descarga falla o trae muchos menos modelos de lo normal, no actualiza nada.
+Si la descarga falla o la hoja cambió de forma (faltan pestañas, columnas movidas, muchos menos productos),
+no actualiza nada y avisa en el panel (alertas de la barra lateral) y por WhatsApp. También avisa cuando
+el proveedor agrega modelos que todavía no tienen código KM.
 
 Uso:
     .venv/bin/python recurrente/stock_proveedor.py             # simulación: muestra qué cambiaría
@@ -56,6 +58,44 @@ ESTADOS = {"DISPONIBLE": 10, "AGOTADO": 0, "DISCONTINUADO": 0, "VER EN MEETONE":
 MAX_STOCK = 10
 FIJOS = {"7751030000173": 10, "7751030000494": 10}  # solución de líquido
 MINIMO_SKUS = 200  # con menos que esto la hoja vino rota: no se toca nada
+CAIDA_MAXIMA = 0.30          # si salen 30 % menos SKUs que en la última corrida buena, algo cambió en la hoja
+MAX_ESTADOS_RAROS = 15       # muchos estados que no se entienden = columnas movidas
+ALERTA_TEL = "51986203398"   # WhatsApp que recibe los avisos (desde la sesión "principal")
+ALERTA_SESION = "principal"
+
+
+class HojaRota(Exception):
+    """La hoja del proveedor cambió de forma o vino incompleta: no se actualiza nada."""
+
+
+def alertar(clave, mensaje, aplicar, repetir_cada_horas=20):
+    """Aviso en el panel (bandeja de alertas de la barra lateral) + WhatsApp.
+    El mismo aviso (misma clave) no se repite antes de `repetir_cada_horas`."""
+    print(f"🚨 {mensaje}")
+    if not aplicar:
+        print("   (simulación: no se envía el aviso)")
+        return
+    texto = f"📦 *Stock del proveedor de lentes*\n{mensaje}"
+    try:
+        with engine.begin() as conn:
+            ya = conn.execute(text("""
+                SELECT 1 FROM webhook_logs WHERE session_name = 'proveedor' AND payload LIKE :c
+                  AND fecha > NOW() - make_interval(hours => :h) LIMIT 1"""),
+                {"c": f'%"clave": "{clave}"%', "h": repetir_cada_horas}).fetchone()
+            if ya:
+                print("   (ya se avisó hace poco; no se repite)")
+                return
+            conn.execute(text("INSERT INTO webhook_logs (session_name, event_type, payload) "
+                              "VALUES ('proveedor', 'ALERTA_CRITICA', :p)"),
+                         {"p": json.dumps({"mensaje": texto.replace("*", ""), "clave": clave}, ensure_ascii=False)})
+    except Exception as e:
+        print(f"   no se pudo guardar el aviso en el panel: {e}")
+    try:
+        from utils import enviar_mensaje_whatsapp
+        ok = enviar_mensaje_whatsapp(ALERTA_TEL, texto, session=ALERTA_SESION)
+        print("   WhatsApp enviado" if ok else "   ⚠️ WhatsApp no se pudo enviar")
+    except Exception as e:
+        print(f"   ⚠️ WhatsApp no se pudo enviar: {e}")
 
 
 def norm(v):
@@ -211,6 +251,21 @@ def traducir(items, mapa):
 
 def main():
     aplicar = "--aplicar" in sys.argv
+    try:
+        ejecutar(aplicar)
+    except Exception as e:
+        motivo = str(e) if isinstance(e, HojaRota) else f"{type(e).__name__}: {e}"
+        alertar("roto", "⛔ El actualizador de inventario NO pudo leer la hoja del proveedor, así que hoy no se "
+                        f"actualizó el stock externo.\nMotivo: {motivo[:300]}\n"
+                        "Revisa si el proveedor cambió pestañas o columnas.", aplicar)
+        if aplicar:
+            with engine.begin() as conn:
+                conn.execute(text("INSERT INTO proveedor_sync_log (aplicado, skus_proveedor, detalle) "
+                                  "VALUES (FALSE, 0, :d)"), {"d": motivo[:1000]})
+        sys.exit(1)
+
+
+def ejecutar(aplicar):
     archivo = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--archivo=")), None)
     print(f"🕐 {datetime.now():%Y-%m-%d %H:%M} · {'APLICANDO' if aplicar else 'SIMULACIÓN'}")
 
@@ -222,13 +277,24 @@ def main():
     stock, sin_mapeo, raros = traducir(items, mapa)
     print(f"📄 Filas leídas del proveedor: {len(items)} · SKUs KM resultantes: {len(stock)}")
 
+    # ---- ¿la hoja sigue teniendo la forma que conocemos? ----
     if len(stock) < MINIMO_SKUS:
-        msg = f"Solo salieron {len(stock)} SKUs (mínimo {MINIMO_SKUS}); la hoja vino incompleta. No se actualizó nada."
-        print("⛔ " + msg)
-        with engine.begin() as conn:
-            conn.execute(text("INSERT INTO proveedor_sync_log (aplicado, skus_proveedor, detalle) VALUES (FALSE, :n, :d)"),
-                         {"n": len(stock), "d": msg})
-        sys.exit(1)
+        raise HojaRota(f"solo salieron {len(stock)} productos reconocidos (mínimo {MINIMO_SKUS}); la hoja vino incompleta")
+    claves_hoja = {(it["tipo"], it["clave"]) for it in items}
+    conocidas = [k for k in mapa if k[0] != "medida"]
+    perdidas = [k for k in conocidas if k not in claves_hoja]
+    if conocidas and len(perdidas) / len(conocidas) > CAIDA_MAXIMA:
+        raise HojaRota(f"{len(perdidas)} de {len(conocidas)} modelos conocidos ya no aparecen donde estaban "
+                       f"(ej.: {', '.join(k[1] for k in perdidas[:3])}); parece que movieron columnas")
+    with engine.connect() as conn:
+        previo = conn.execute(text("SELECT skus_proveedor FROM proveedor_sync_log WHERE aplicado "
+                                   "ORDER BY id DESC LIMIT 1")).scalar()
+    if previo and len(stock) < previo * (1 - CAIDA_MAXIMA):
+        raise HojaRota(f"salieron {len(stock)} productos y en la última corrida {previo}; faltan demasiados")
+    if len(raros) > MAX_ESTADOS_RAROS:
+        alertar("estados", f"⚠️ La hoja del proveedor trae {len(raros)} estados que no se entienden "
+                           f"(ej.: {'; '.join(raros[:3])}). El stock se actualizó, pero revisa si cambió el formato.",
+                aplicar)
 
     with engine.begin() as conn:
         actuales = {s: e for s, e in conn.execute(text("SELECT sku, stock_externo FROM Variantes"))}
@@ -250,6 +316,17 @@ def main():
         print(f"❓ Modelos del proveedor sin SKU KM: {len(sin_mapeo)}")
         for r in raros:
             print(f"   estado no reconocido (se ignoró): {r}")
+
+        previos = {(t, c) for t, c in conn.execute(text("SELECT tipo, clave FROM proveedor_no_mapeados"))}
+        nuevos = [it for k, it in sin_mapeo.items() if k not in previos]
+        if nuevos:
+            lineas = "\n".join(f"• {it['tipo'].capitalize()}: {it['modelo']} {it['color']} ({it['estado']})".strip()
+                               for it in nuevos[:15])
+            alertar("nuevo:" + ",".join(sorted(f"{it['tipo']}|{it['clave']}" for it in nuevos))[:200],
+                    f"🆕 El proveedor agregó {len(nuevos)} modelo(s) que no tienen código KM:\n{lineas}"
+                    + (f"\n… y {len(nuevos) - 15} más" if len(nuevos) > 15 else "")
+                    + "\nAsígnales código en el panel: Inventario → Importar Stock Externo.", aplicar,
+                    repetir_cada_horas=24 * 30)
 
         if aplicar:
             for s, u in cambios:

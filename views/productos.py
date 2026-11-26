@@ -766,6 +766,8 @@ def vista_sync_proveedor():
             ultimo = conn.execute(text("""
                 SELECT fecha, skus_proveedor, actualizados, sin_mapeo, sku_inexistentes
                 FROM proveedor_sync_log WHERE aplicado ORDER BY id DESC LIMIT 1""")).fetchone()
+            fallo = conn.execute(text("""
+                SELECT fecha, detalle, aplicado FROM proveedor_sync_log ORDER BY id DESC LIMIT 1""")).fetchone()
             df_sin = pd.read_sql(text("""
                 SELECT tipo, clave, codigo, modelo, color, estado, '' AS sku
                 FROM proveedor_no_mapeados ORDER BY tipo, modelo, color"""), conn)
@@ -776,7 +778,13 @@ def vista_sync_proveedor():
                 ORDER BY m.tipo, m.modelo, m.color"""), conn)
     except Exception:
         st.info("Aún no se ha ejecutado la sincronización. Pulsa el botón para la primera corrida.")
-        ultimo, df_sin, df_map = None, pd.DataFrame(), pd.DataFrame()
+        ultimo, fallo, df_sin, df_map = None, None, pd.DataFrame(), pd.DataFrame()
+
+    if ultimo is not None and fallo is not None and not fallo.aplicado:
+        st.error(f"⛔ La última actualización ({fallo.fecha:%d/%m %H:%M}) NO se pudo hacer: {fallo.detalle}. "
+                 "El stock externo quedó como estaba. Revisa si el proveedor cambió pestañas o columnas de su hoja.")
+    if not df_sin.empty:
+        st.warning(f"🆕 Hay {len(df_sin)} modelos del proveedor sin código KM (lista abajo).")
 
     c1, c2, c3, c4 = st.columns(4)
     if ultimo:
