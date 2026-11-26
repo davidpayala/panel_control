@@ -14,6 +14,7 @@ SNIPPETS = {
     'KM: diseño y confianza': 'web_snippets/km_diseno.php',
     'KM: envíos': 'web_snippets/km_envios.php',
     'KM: redirecciones': 'web_snippets/km_redirecciones.php',
+    'KM: promociones': 'web_snippets/km_promos.php',
 }
 B = 'https://kmlentes.pe/wp-json/code-snippets/v1/snippets'
 

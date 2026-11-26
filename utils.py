@@ -916,7 +916,7 @@ def buscar_producto_aleatorio_en_stock(conn, macro_categoria, subcategorias_perm
 
     return None
 
-def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, primer_contacto_dia=True):
+def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, primer_contacto_dia=True, canal=None):
     """
     Genera copys persuasivos con IA local (Ollama).
     Ahora incluye lectura de Prompts Dinámicos, Festividades y control de saludo.
@@ -960,6 +960,15 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, prim
     # 3. Contextos Adicionales (Festividades dinámicas, CRM y Enfoque Psicológico DB)
     # 🛠️ CORRECCIÓN: Ahora lee los eventos calculados por SQL en marketing.py
     contexto_festividad = producto.get('contexto_ia_extra', '')
+
+    # 🎁 Promoción vigente (Campañas → Promociones) y registro sanitario según la marca
+    try:
+        from promos import contexto_ia
+        promo_ctx, promo_reserva = contexto_ia(producto, canal or ('estados' if es_estado else 'mensajes'))
+    except Exception as e:
+        print(f"   ⚠️ [Aviso promo] {e}")
+        promo_ctx, promo_reserva = "", ""
+    promo_extra = f"\n\n{promo_reserva}" if promo_reserva else ""
     
     notas_crm = ""
     if cliente_info and cliente_info.get('etiquetas'):
@@ -1013,6 +1022,7 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, prim
         {enfoque}
         PROMOCIÓN CRUZADA A INCLUIR: {cross_selling}
         {contexto_festividad}
+        {promo_ctx}
         
         REGLA DE SEGURIDAD INQUEBRANTABLE:
         NO escribas texto conversacional (como "Aquí tienes el texto").
@@ -1021,8 +1031,8 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, prim
         2. "post_facebook": Un texto más elaborado y persuasivo (con hashtags y el enlace {enlace_compra}) listo para publicarse en el muro de Facebook/Instagram.
         """
         texto_reserva = {
-            "estado_whatsapp": f"✨ ¡Reingresó stock de {titulo_prod}! Adquiérelo directo en https://{tienda_actual} 📲\n\n{cross_selling}",
-            "post_facebook": f"¡Luce increíble con {titulo_prod}! 😍\nEncuéntralo aquí: {enlace_compra}"
+            "estado_whatsapp": f"✨ ¡Reingresó stock de {titulo_prod}! Adquiérelo directo en https://{tienda_actual} 📲{promo_extra}\n\n{cross_selling}",
+            "post_facebook": f"¡Luce increíble con {titulo_prod}! 😍{promo_extra}\nEncuéntralo aquí: {enlace_compra}"
         }
     else:
         base_instruct = prompt_personalizado_dm or f"Eres un experto en cierres de ventas por WhatsApp para la marca {tienda_actual}."
@@ -1034,6 +1044,7 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, prim
         ENLACE DE COMPRA: {enlace_compra}
         {notas_crm}
         {contexto_festividad}
+        {promo_ctx}
         ESTRATEGIA DE PERSUASIÓN: {enfoque}
         
         REGLAS DE REDACCIÓN INQUEBRANTABLES:
@@ -1044,7 +1055,7 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, prim
         Ejemplo EXACTO de la salida esperada:
         {{"mensaje": ["¡Atrae todas las miradas con el tono más vibrante de la temporada!", "El acabado de {titulo_prod} te dará un nivel de realismo increíble...", "Consíguelo hoy {txt_precio} pidiéndolo directamente aquí: {enlace_compra}", "{cross_selling}"]}}
         """
-        texto_reserva = f"¡Mira el hermoso modelo que acaba de reingresar a nuestro almacén!\n\n⭐ **{titulo_prod}** {txt_precio}.\n\nPuedes revisar fotos reales y pedirlo directo aquí:\n👉 {enlace_compra}\n\n{cross_selling}"
+        texto_reserva = f"¡Mira el hermoso modelo que acaba de reingresar a nuestro almacén!\n\n⭐ **{titulo_prod}** {txt_precio}.\n\nPuedes revisar fotos reales y pedirlo directo aquí:\n👉 {enlace_compra}{promo_extra}\n\n{cross_selling}"
     # 6. Petición a Ollama
     try:
         # 🔴 CAMBIO 1: Aumentamos la paciencia de Python a 120 segundos
@@ -1060,15 +1071,19 @@ def generar_texto_producto_ia(producto, es_estado=False, cliente_info=None, prim
                 print(f"   ⚠️ [Aviso IA] Ollama no devolvió un JSON válido. Texto recibido: {texto_crudo}")
                 return texto_reserva
 
+            try:
+                from promos import asegurar_en_texto
+            except Exception:
+                asegurar_en_texto = lambda t, *a, **k: t
             if es_estado:
                 return {
-                    "estado_whatsapp": datos_json.get("estado_whatsapp", texto_reserva["estado_whatsapp"]),
-                    "post_facebook": datos_json.get("post_facebook", texto_reserva["post_facebook"])
+                    "estado_whatsapp": asegurar_en_texto(datos_json.get("estado_whatsapp", texto_reserva["estado_whatsapp"]), producto, canal or 'estados', corta=True),
+                    "post_facebook": asegurar_en_texto(datos_json.get("post_facebook", texto_reserva["post_facebook"]), producto, 'facebook')
                 }
             else:
                 parrafos = datos_json.get("mensaje", [])
                 texto_final = "\n\n".join(parrafos) if isinstance(parrafos, list) else str(parrafos)
-                return texto_final.strip() if len(texto_final) > 12 else texto_reserva
+                return asegurar_en_texto(texto_final.strip(), producto, canal or 'mensajes') if len(texto_final) > 12 else texto_reserva
         else:
             print(f"   ⚠️ [Aviso IA] Ollama respondió HTTP {response.status_code}. Revisa si el modelo '{modelo_ia}' existe.")
             

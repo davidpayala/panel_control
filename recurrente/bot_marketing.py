@@ -650,7 +650,7 @@ def ejecutar_francotirador():
                     
                 if prod_fb:
                     log_mkt(f" 🧠 Redactando copy (IA) para postear {prod_fb.get('nombre', '')} en la categoría: {pagina_elegida['nombre']}...")
-                    respuestas_ia = generar_texto_producto_ia(prod_fb, es_estado=True)
+                    respuestas_ia = generar_texto_producto_ia(prod_fb, es_estado=True, canal='facebook')
                     texto_fb = respuestas_ia.get('post_facebook', '')
                     
                     imagen_jpg_b64 = obtener_imagen_jpg_b64(prod_fb.get('url_imagen', ''))

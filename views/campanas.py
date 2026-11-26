@@ -499,6 +499,79 @@ def render_tab_estados(config):
             st.toast("✅ ¡Personalidad actualizada!")
             st.rerun()
 # ==============================================================================
+# 🎁 PESTAÑA 6: PROMOCIONES (packs de lentes, p. ej. Navidad)
+# ==============================================================================
+def render_tab_promociones():
+    import promos
+    st.subheader("🎁 Promoción de packs de lentes")
+    d = promos.leer_promo()
+    est = "🟢 Vigente hoy" if promos.vigente(d) else "⚪ No vigente hoy (apagada o fuera de fechas)"
+    st.caption(f"{est}. Aplica a lentes naturales y de fantasía cuyo precio no pase del precio base. "
+               "En la web el descuento se aplica solo en el carrito; los mensajes, estados y posts la mencionan si el producto entra.")
+
+    with st.form("form_promo"):
+        c1, c2, c3 = st.columns([2, 1, 1])
+        nombre = c1.text_input("Nombre de la promo", d.get("nombre", ""))
+        desde = c2.date_input("Desde", datetime.date.fromisoformat(d["desde"]) if d.get("desde") else None)
+        hasta = c3.date_input("Hasta (inclusive)", datetime.date.fromisoformat(d["hasta"]) if d.get("hasta") else None)
+        activo = st.toggle("Promo activa", value=bool(d.get("activo")))
+
+        st.markdown("**Precios**")
+        packs = promos.packs_ordenados(d)
+        p2 = next((p["precio"] for p in packs if p["n"] == 2), 0.0)
+        p3 = next((p["precio"] for p in packs if p["n"] == 3), 0.0)
+        c1, c2, c3 = st.columns(3)
+        base = c1.number_input("1 par (precio base, S/)", min_value=1.0, value=float(d.get("precio_base", 55)), step=1.0)
+        n2 = c2.number_input("2 pares (S/, 0 = sin pack)", min_value=0.0, value=float(p2), step=1.0)
+        n3 = c3.number_input("3 pares (S/, 0 = sin pack)", min_value=0.0, value=float(p3), step=1.0)
+
+        st.markdown("**Textos**")
+        regalo = st.text_input("Regalo", d.get("regalo", ""))
+        envio = st.text_input("Envío y pago (solo para mensajes)", d.get("envio", ""))
+        barra = st.text_input("Barra superior de la web (vacío = no cambiarla)", d.get("barra", ""))
+        frase_ia = st.text_area("Frase de la promo para mensajes, estados y posts (vacío = automática)",
+                                d.get("frase_ia", ""), height=90,
+                                help="La IA la usa con estos precios exactos. Si la dejas vacía se arma sola con los datos de arriba.")
+
+        st.markdown("**Dónde usarla**")
+        c1, c2, c3 = st.columns(3)
+        u_msg = c1.checkbox("💬 Mensajes", value=d.get("usar_mensajes", True))
+        u_est = c2.checkbox("📱 Estados", value=d.get("usar_estados", True))
+        u_fb = c3.checkbox("📘 Facebook / Instagram", value=d.get("usar_facebook", True))
+
+        st.markdown("**Registro sanitario por marca** (solo marcas con número confirmado en el empaque)")
+        rs_df = pd.DataFrame([{"marca": k, "texto": v} for k, v in (d.get("registro_sanitario") or {}).items()] or [{"marca": "", "texto": ""}])
+        rs_ed = st.data_editor(rs_df, num_rows="dynamic", hide_index=True, use_container_width=True, key="promo_rs",
+                               column_config={"marca": "Marca (como en el panel)", "texto": "Texto (ej. R.S. DM23897E …)"})
+
+        guardar = st.form_submit_button("💾 Guardar y publicar en la web", type="primary")
+
+    if guardar:
+        if desde and hasta and hasta < desde:
+            st.error("La fecha 'Hasta' es anterior a 'Desde'.")
+            return
+        nuevos = [{"n": 2, "precio": n2}, {"n": 3, "precio": n3}]
+        d.update({
+            "activo": activo, "nombre": nombre.strip() or "Promo",
+            "desde": desde.isoformat() if desde else "", "hasta": hasta.isoformat() if hasta else "",
+            "precio_base": base, "packs": [p for p in nuevos if p["precio"] > 0],
+            "regalo": regalo.strip(), "envio": envio.strip(), "barra": barra.strip(), "frase_ia": frase_ia.strip(),
+            "usar_mensajes": u_msg, "usar_estados": u_est, "usar_facebook": u_fb,
+            "registro_sanitario": {str(r["marca"]).strip(): str(r["texto"]).strip() for _, r in rs_ed.iterrows()
+                                   if str(r["marca"] or "").strip() and str(r["texto"] or "").strip()},
+        })
+        promos.guardar_promo(d)
+        ok, det = promos.publicar_en_web(d)
+        if ok:
+            st.success("✅ Guardado en el panel y publicado en kmlentes.pe.")
+        else:
+            st.warning(f"Guardado en el panel, pero la web no respondió bien: {det}")
+
+    st.divider()
+    st.markdown("**Vista previa de la frase que usará la IA**")
+    st.info(promos.frase(promos.leer_promo()))
+
+# ==============================================================================
 # 📘 PESTAÑA 4: FACEBOOK
 # ==============================================================================
 def render_tab_facebook(config):
@@ -697,12 +770,13 @@ def render_campanas():
         config = conn.execute(text("SELECT * FROM Configuracion_Campanas LIMIT 1")).fetchone()
 
     # 2. RENDERIZADO MODULAR DE PESTAÑAS
-    tab_general, tab_mensajes, tab_estados, tab_fb, tab_zombies = st.tabs([
+    tab_general, tab_mensajes, tab_estados, tab_fb, tab_zombies, tab_promos = st.tabs([
         "📊 1. General", 
         "💬 2. Mensajes", 
         "📱 3. Estados",
         "📘 4. Facebook",
-        "🧟 5. Zombies"
+        "🧟 5. Zombies",
+        "🎁 6. Promociones"
     ])
 
     with tab_general:
@@ -719,3 +793,6 @@ def render_campanas():
         
     with tab_zombies:
         render_tab_zombies(config)
+
+    with tab_promos:
+        render_tab_promociones()

@@ -256,7 +256,16 @@ add_filter( 'render_block_woocommerce/add-to-cart-form', function ( $html ) {
 	$out  = '<div class="km-confianza">';
 	if ( km_tiene_registro_sanitario( $pid ) ) {
 		$marca = km_registro_sanitario_marca( $pid );
-		$out  .= '<div class="km-rs"><strong>Con Registro Sanitario</strong>Los lentes ' . esc_html( $marca ) . ' cuentan con registro sanitario en el Perú.</div>';
+		// Números de registro tal como figuran en el empaque (solo los que el usuario confirmó con foto).
+		$numeros = array( 'FreshLady' => 'R.S. DM23897E · Importado por Droguería Zigma S.A.C.' );
+		$detalle = array();
+		foreach ( $numeros as $m => $txt ) {
+			if ( false !== stripos( $marca, $m ) ) {
+				$detalle[] = ( count( $numeros ) > 1 || $marca !== $m ? $m . ': ' : '' ) . $txt;
+			}
+		}
+		$out .= '<div class="km-rs"><strong>Con Registro Sanitario</strong>Los lentes ' . esc_html( $marca ) . ' cuentan con registro sanitario en el Perú.'
+			. ( $detalle ? '<br><small>' . esc_html( implode( ' | ', $detalle ) ) . '</small>' : '' ) . '</div>';
 	}
 	$out .= '<ul>';
 	$out .= $es_lente
