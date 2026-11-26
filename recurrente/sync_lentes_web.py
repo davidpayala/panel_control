@@ -58,8 +58,8 @@ def valor_web(campo, p):
         except (TypeError, ValueError):
             return None
     if campo == "marca":
-        v = (p["marca"] or "").strip()
-        return v if v and v.lower() not in ("otros", "eliminar") else None
+        v = [m.strip() for m in (p["marca"] or "").split(",") if m.strip()]
+        return v if v and not any(m.lower() in ("otros", "eliminar") for m in v) else None
 
 
 def sincronizar(aplicar=False, log=print):
@@ -86,10 +86,7 @@ def sincronizar(aplicar=False, log=print):
             else:
                 precios_simples.append({"id": x["id"], clave: nuevo})
         elif campo == "marca":
-            if nuevo.lower() in marcas:
-                por_padre[x["id"]]["marca"] = marcas[nuevo.lower()]
-            else:
-                omitidos.append(f"{s}: la marca '{nuevo}' no existe en la web")
+            por_padre[x["id"]]["marca"] = nuevo          # lista de nombres; los ids se resuelven al enviar
         else:
             por_padre[x["id"]][campo] = nuevo
 
@@ -134,7 +131,19 @@ def sincronizar(aplicar=False, log=print):
                               "variation": False, "options": [cambios[campo]]})
         datos = {"attributes": attrs}
         if "marca" in cambios:
-            datos["brands"] = [{"id": cambios["marca"]}]
+            ids = []
+            for nombre in cambios["marca"]:
+                clave = nombre.lower().replace(" ", "")
+                bid = next((i for n, i in marcas.items() if n.replace(" ", "") == clave), None)
+                if bid is None:                      # marca nueva: se crea en la web
+                    r_m = w.post("products/brands", {"name": nombre})
+                    bid = r_m.json().get("id")
+                    if bid:
+                        marcas[nombre.lower()] = bid
+                        log(f"   ➕ marca creada en la web: {nombre}")
+                if bid:
+                    ids.append({"id": bid})
+            datos["brands"] = ids
         r = w.put(f"products/{pid}", datos)
         hechos += 1 if r.status_code in (200, 201) else 0
         if r.status_code not in (200, 201):

@@ -32,6 +32,11 @@ FAMILIA = {"verde": "Verde", "turquesa": "Azul – Celeste", "azul": "Azul – C
 CAMPOS = ["precio", "rebajado", "contorno", "color", "marca", "diametro"]
 
 
+def marcas_set(v):
+    """'UYAAI, Meetone' → {'uyaai', 'meetone'} (un lente de fantasía puede venir de varias marcas)."""
+    return {m.strip().lower().replace(" ", "") for m in str(v or "").split(",") if m.strip()}
+
+
 def num(v):
     try:
         return round(float(str(v).replace(",", ".").split()[0]), 2)
@@ -100,7 +105,7 @@ def comparar():
             "diametro": (num(p["diametro"]), num(x["diametro"])),
         }
         for campo, (a, b) in pares.items():
-            if campo == "marca" and a.lower().replace(" ", "") == b.lower().replace(" ", ""):
+            if campo == "marca" and marcas_set(a) == marcas_set(b):
                 continue
             if a != b and not (a in ("", None) and b in ("", None)):
                 difs.append({"sku": s, "campo": campo, "panel": a, "web": b, "web_nombre": x["nombre"],
