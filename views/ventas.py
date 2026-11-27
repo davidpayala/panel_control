@@ -720,7 +720,134 @@ def render_gestion_ventas():
                     trans.rollback()
                     st.error(f"Error al anular: {e}")
 
+SUNAT_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "recurrente", "boletas_sunat.py")
+SUNAT_LOG = os.path.expanduser("~/logs_sunat/boletas.log")
+SUNAT_LOCK = os.path.expanduser("~/.boletas_sunat.lock")
+
+
+def _sunat_en_marcha():
+    import fcntl
+    try:
+        with open(SUNAT_LOCK, "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(f, fcntl.LOCK_UN)
+        return False
+    except BlockingIOError:
+        return True
+    except Exception:
+        return False
+
+
+def render_boletas_auto():
+    """Boletas automáticas en SUNAT (recurrente/boletas_sunat.py): límites, botón y registro."""
+    import subprocess
+    import sys
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    with st.expander("🤖 Boletas automáticas en SUNAT (todos los días 05:00)", expanded=False):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS sunat_config (
+                    clave VARCHAR(40) PRIMARY KEY, valor TEXT, actualizado TIMESTAMP DEFAULT NOW())"""))
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS sunat_boletas_log (
+                    id SERIAL PRIMARY KEY, fecha TIMESTAMP DEFAULT (NOW() - INTERVAL '5 hours'),
+                    corrida VARCHAR(40), origen VARCHAR(20), id_venta INTEGER, monto NUMERIC(10,2),
+                    estado VARCHAR(20), boleta VARCHAR(30), documento VARCHAR(40), detalle TEXT)"""))
+                cfg = dict(conn.execute(text("SELECT clave, valor FROM sunat_config")).fetchall())
+                hoy = datetime.now(ZoneInfo("America/Lima")).date()
+                n_hoy = conn.execute(text("""SELECT COUNT(*) FROM ventas WHERE fecha_facturacion = :h
+                    AND numero_boleta LIKE 'EB%%' AND anulado = FALSE"""), {"h": hoy}).scalar()
+                mes = conn.execute(text("""SELECT COALESCE(SUM(total_venta), 0) FROM ventas
+                    WHERE numero_boleta LIKE 'EB%%' AND anulado = FALSE
+                      AND fecha_facturacion >= date_trunc('month', CAST(:h AS date))
+                      AND fecha_facturacion <= :h"""), {"h": hoy}).scalar()
+        except Exception as e:
+            st.error(f"No se pudo leer la configuración: {e}")
+            return
+
+        activo = str(cfg.get("activo", "1")) == "1"
+        monto_max = float(cfg.get("monto_max", 400))
+        max_dia = int(cfg.get("max_dia", 10))
+        max_mes = float(cfg.get("max_mes", 5000))
+        espera_seg = int(float(cfg.get("espera_seg", 30)))
+
+        c1, c2 = st.columns(2)
+        c1.metric("Boletas emitidas hoy", f"{n_hoy} / {max_dia}")
+        c2.metric("Emitido este mes", f"S/ {float(mes):,.2f}", f"tope S/ {max_mes:,.0f}", delta_color="off")
+
+        st.caption("Reglas: ventas de días anteriores, de la más antigua a la más nueva; se saltan las de pago "
+                   "pendiente, las mayores al máximo por venta y las que repiten el monto de la boleta anterior del "
+                   "mismo día. Si el portal de SUNAT falla, se detiene y sigue al día siguiente.")
+
+        with st.form("form_sunat_cfg"):
+            n_activo = st.checkbox("Emisión automática activada (05:00)", value=activo)
+            f1, f2, f3 = st.columns(3)
+            n_monto = f1.number_input("Máximo por venta (S/)", min_value=1.0, value=monto_max, step=10.0)
+            n_dia = f2.number_input("Máximo de boletas por día", min_value=0, value=max_dia, step=1)
+            n_mes = f3.number_input("Máximo emitido al mes (S/)", min_value=0.0, value=max_mes, step=100.0)
+            n_espera = st.number_input("Segundos de espera entre boletas (SUNAT exige al menos 20)",
+                                       min_value=20, value=max(espera_seg, 20), step=5)
+            if st.form_submit_button("💾 Guardar límites"):
+                with engine.begin() as conn:
+                    for k, v in {"activo": "1" if n_activo else "0", "monto_max": str(n_monto),
+                                 "max_dia": str(int(n_dia)), "max_mes": str(n_mes),
+                                 "espera_seg": str(int(n_espera))}.items():
+                        conn.execute(text("""INSERT INTO sunat_config (clave, valor, actualizado) VALUES (:k, :v, NOW())
+                            ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, actualizado = NOW()"""),
+                                     {"k": k, "v": v})
+                st.success("Límites guardados.")
+                st.rerun()
+
+        en_marcha = _sunat_en_marcha()
+        if en_marcha:
+            st.info("⏳ Hay una emisión de boletas en marcha. Actualiza la página en unos minutos para ver el resultado.")
+        if st.button("🚀 Emitir boletas ahora", type="primary", disabled=en_marcha,
+                     help="Emite en SUNAT las boletas que tocan hoy según los límites (lo mismo que hace el proceso de las 05:00)."):
+            os.makedirs(os.path.dirname(SUNAT_LOG), exist_ok=True)
+            with open(SUNAT_LOG, "a") as log:
+                subprocess.Popen([sys.executable, "-u", SUNAT_SCRIPT, "--aplicar", "--origen=panel"],
+                                 cwd=os.path.dirname(os.path.dirname(SUNAT_SCRIPT)),
+                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            st.success("Emisión iniciada. Cada boleta tarda alrededor de un minuto; actualiza para ver el avance.")
+            time.sleep(2)
+            st.rerun()
+
+        with engine.connect() as conn:
+            revisar = pd.read_sql(text("""
+                SELECT l.id, l.fecha, l.id_venta, l.monto, l.boleta, l.detalle FROM sunat_boletas_log l
+                WHERE l.estado = 'POR_REVISAR' AND NOT EXISTS (
+                    SELECT 1 FROM sunat_boletas_log r WHERE r.estado = 'REVISADA'
+                      AND r.id_venta = l.id_venta AND r.id > l.id)
+                ORDER BY l.id"""), conn)
+            registro = pd.read_sql(text("""
+                SELECT fecha AS "Fecha", origen AS "Origen", id_venta AS "Venta", monto AS "Monto",
+                       estado AS "Estado", boleta AS "Boleta", documento AS "Cliente en boleta", detalle AS "Detalle"
+                FROM sunat_boletas_log ORDER BY id DESC LIMIT 60"""), conn)
+
+        if not revisar.empty:
+            st.error("⚠️ Ventas por revisar: falló algo justo al emitir y no se sabe si la boleta salió. "
+                     "Búscalas en SUNAT → Consultar Boleta de Venta. Si salió, pon el número abajo en Facturación "
+                     "Individual; después márcala como revisada para que el proceso automático la vuelva a considerar.")
+            for _, r in revisar.iterrows():
+                cc1, cc2 = st.columns([4, 1])
+                cc1.write(f"Venta **{r['id_venta']}** · S/ {r['monto']} · {r['fecha']:%d/%m %H:%M} — {r['detalle']}")
+                if cc2.button("✔️ Revisada", key=f"sunat_rev_{r['id']}"):
+                    with engine.begin() as conn:
+                        conn.execute(text("""INSERT INTO sunat_boletas_log (origen, id_venta, monto, estado, detalle)
+                            VALUES ('panel', :v, :m, 'REVISADA', 'marcada como revisada en el panel')"""),
+                                     {"v": int(r["id_venta"]), "m": r["monto"]})
+                    st.rerun()
+
+        st.markdown("**Registro reciente**")
+        if registro.empty:
+            st.caption("Todavía no hay corridas.")
+        else:
+            st.dataframe(registro, hide_index=True, width='stretch')
+
+
 def render_facturacion():
+    render_boletas_auto()
     st.subheader("🧾 Facturación Individual")
     st.info("Sistema protegido: No permite boletas duplicadas y formatea los nombres automáticamente.")
 
