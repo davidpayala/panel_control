@@ -15,6 +15,7 @@ SNIPPETS = {
     'KM: envíos': 'web_snippets/km_envios.php',
     'KM: redirecciones': 'web_snippets/km_redirecciones.php',
     'KM: promociones': 'web_snippets/km_promos.php',
+    'KM: temas de temporada': 'web_snippets/km_temas.php',
 }
 B = 'https://kmlentes.pe/wp-json/code-snippets/v1/snippets'
 

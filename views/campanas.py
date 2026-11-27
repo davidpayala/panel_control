@@ -3,6 +3,7 @@ import pandas as pd
 from sqlalchemy import text
 from database import engine
 import datetime
+import json
 from marketing_grupos import asegurar_esquema, leer_limites, NOMBRE_GRUPO, SESIONES, ZOMBIE_VENTANAS, ZOMBIE_DIA_SALIDA
 
 # ==============================================================================
@@ -504,7 +505,16 @@ def render_tab_estados(config):
 def render_tab_promociones():
     import promos
     st.subheader("🎁 Promoción de packs de lentes")
-    d = promos.leer_promo()
+    borrador = st.session_state.get("promo_borrador")
+    d = dict(promos.DEFECTO, **borrador) if borrador else promos.leer_promo()
+    ver = st.session_state.get("promo_ver", 0)
+    if borrador:
+        st.warning("📂 Cargaste una promo guardada en el formulario. Revísala y pulsa **Guardar y publicar** "
+                   "para aplicarla (todavía no cambió nada en la web).")
+        if st.button("Descartar y volver a la promo actual"):
+            st.session_state.pop("promo_borrador", None)
+            st.session_state["promo_ver"] = ver + 1
+            st.rerun()
     est = "🟢 Vigente hoy" if promos.vigente(d) else "⚪ No vigente hoy (apagada o fuera de fechas)"
     st.caption(f"{est}. Aplica a lentes naturales y de fantasía cuyo precio no pase del precio base. "
                "En la web el descuento se aplica solo en el carrito; los mensajes, estados y posts la mencionan si el producto entra.")
@@ -539,9 +549,25 @@ def render_tab_promociones():
         u_est = c2.checkbox("📱 Estados", value=d.get("usar_estados", True))
         u_fb = c3.checkbox("📘 Facebook / Instagram", value=d.get("usar_facebook", True))
 
+        st.markdown("**🎨 Estilo de la web mientras la promo esté vigente**")
+        st.caption("Se aplica a todo kmlentes.pe solo entre las fechas de arriba (y con la promo activa). "
+                   "Al terminar, la web vuelve sola a su estilo normal y la portada recupera su imagen de siempre.")
+        temas = list(promos.TEMAS)
+        c1, c2 = st.columns([2, 1])
+        tema = c1.selectbox("Tema", temas, index=temas.index(d.get("tema", "")) if d.get("tema", "") in temas else 0,
+                            format_func=promos.TEMAS.get)
+        nieve = c2.checkbox("❄️ Nieve cayendo", value=bool(d.get("tema_nieve", True)))
+        banner = st.text_input("Banner de la portada (URL de la imagen; vacío = dejar la imagen normal)", d.get("banner", ""),
+                               help="Sube la imagen a la biblioteca de medios de WordPress y pega aquí su URL.")
+        c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+        banner_alt = c1.text_input("Texto alternativo del banner (SEO)", d.get("banner_alt", ""))
+        banner_enlace = c2.text_input("Enlace al hacer clic", d.get("banner_enlace", "/promociones/"))
+        banner_w = c3.number_input("Ancho px", min_value=0, value=int(d.get("banner_w") or 0), step=1)
+        banner_h = c4.number_input("Alto px", min_value=0, value=int(d.get("banner_h") or 0), step=1)
+
         st.markdown("**Registro sanitario por marca** (solo marcas con número confirmado en el empaque)")
         rs_df = pd.DataFrame([{"marca": k, "texto": v} for k, v in (d.get("registro_sanitario") or {}).items()] or [{"marca": "", "texto": ""}])
-        rs_ed = st.data_editor(rs_df, num_rows="dynamic", hide_index=True, use_container_width=True, key="promo_rs",
+        rs_ed = st.data_editor(rs_df, num_rows="dynamic", hide_index=True, use_container_width=True, key=f"promo_rs_{ver}",
                                column_config={"marca": "Marca (como en el panel)", "texto": "Texto (ej. R.S. DM23897E …)"})
 
         guardar = st.form_submit_button("💾 Guardar y publicar en la web", type="primary")
@@ -557,19 +583,66 @@ def render_tab_promociones():
             "precio_base": base, "packs": [p for p in nuevos if p["precio"] > 0],
             "regalo": regalo.strip(), "envio": envio.strip(), "barra": barra.strip(), "frase_ia": frase_ia.strip(),
             "usar_mensajes": u_msg, "usar_estados": u_est, "usar_facebook": u_fb,
+            "tema": tema, "tema_nieve": nieve, "banner": banner.strip(), "banner_alt": banner_alt.strip(),
+            "banner_enlace": banner_enlace.strip(), "banner_w": int(banner_w), "banner_h": int(banner_h),
             "registro_sanitario": {str(r["marca"]).strip(): str(r["texto"]).strip() for _, r in rs_ed.iterrows()
                                    if str(r["marca"] or "").strip() and str(r["texto"] or "").strip()},
         })
         promos.guardar_promo(d)
+        promos.registrar_historial(d, "Cargada de una promo guardada" if borrador else "")
+        st.session_state.pop("promo_borrador", None)
         ok, det = promos.publicar_en_web(d)
         if ok:
-            st.success("✅ Guardado en el panel y publicado en kmlentes.pe.")
+            st.success("✅ Guardado en el panel (y en el historial) y publicado en kmlentes.pe.")
         else:
-            st.warning(f"Guardado en el panel, pero la web no respondió bien: {det}")
+            st.warning(f"Guardado en el panel y en el historial, pero la web no respondió bien: {det}")
 
     st.divider()
     st.markdown("**Vista previa de la frase que usará la IA**")
     st.info(promos.frase(promos.leer_promo()))
+
+    render_historial_promos(promos)
+
+
+def render_historial_promos(promos):
+    """Promos guardadas: cada 'Guardar y publicar' deja una copia completa para reutilizarla."""
+    st.divider()
+    st.markdown("**📚 Promos guardadas**")
+    st.caption("Cada vez que guardas queda una copia con todos los datos (precios, textos, estilo, banner…). "
+               "Cárgala en el formulario para repetirla, por ejemplo la Navidad del próximo año.")
+    hist = promos.listar_historial()
+    if not hist:
+        st.info("Todavía no hay promos guardadas.")
+        return
+    tabla = pd.DataFrame([{
+        "Guardada": h["guardado_en"].strftime("%d/%m/%Y %H:%M") if h["guardado_en"] else "",
+        "Promo": h["nombre"], "Desde": h["desde"], "Hasta": h["hasta"],
+        "Precios": " · ".join([f"1 par {promos.soles(h['datos'].get('precio_base', 0))}"]
+                              + [f"{p['n']} pares {promos.soles(p['precio'])}" for p in promos.packs_ordenados(h["datos"])]),
+        "Tema": promos.TEMAS.get(h["datos"].get("tema", ""), h["datos"].get("tema", "")),
+        "Nota": h.get("nota") or "",
+    } for h in hist])
+    st.dataframe(tabla, hide_index=True, use_container_width=True)
+
+    opciones = {h["id"]: f"{h['nombre']} ({h['desde']} → {h['hasta']}) · guardada "
+                         f"{h['guardado_en'].strftime('%d/%m/%Y %H:%M') if h['guardado_en'] else ''}" for h in hist}
+    sel = st.selectbox("Promo", list(opciones), format_func=opciones.get, key="promo_hist_sel")
+    h = next(x for x in hist if x["id"] == sel)
+    c1, c2, c3, c4 = st.columns(4)
+    if c1.button("📅 Cargar para el próximo año", type="primary", help="Mismos datos con las fechas corridas un año"):
+        st.session_state["promo_borrador"] = promos.mover_anios(h["datos"], 1)
+        st.session_state["promo_ver"] = st.session_state.get("promo_ver", 0) + 1
+        st.rerun()
+    if c2.button("📂 Cargar con las mismas fechas"):
+        st.session_state["promo_borrador"] = h["datos"]
+        st.session_state["promo_ver"] = st.session_state.get("promo_ver", 0) + 1
+        st.rerun()
+    c3.download_button("⬇️ Descargar (JSON)", json.dumps(h["datos"], ensure_ascii=False, indent=2),
+                       file_name=f"promo_{(h['nombre'] or 'promo').replace(' ', '_')}_{h['desde']}.json",
+                       mime="application/json")
+    if c4.button("🗑️ Borrar del historial"):
+        promos.borrar_historial(sel)
+        st.rerun()
 
 # ==============================================================================
 # 📘 PESTAÑA 4: FACEBOOK

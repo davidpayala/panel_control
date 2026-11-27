@@ -17,6 +17,10 @@ from database import engine
 
 CLAVE = "promo_lentes"
 CATEGORIAS_LENTE = ("estilo natural", "estilo fantasía", "estilo fantasia")
+# Temas visuales disponibles en la web (deben existir en km_tema_estilos() de web_snippets/km_temas.php).
+TEMAS = {"": "Ninguno (estilo normal)", "navidad": "🎄 Navidad"}
+CAMPOS_WEB = ("activo", "nombre", "desde", "hasta", "precio_base", "packs", "regalo", "barra",
+              "tema", "tema_nieve", "banner", "banner_alt", "banner_enlace", "banner_w", "banner_h")
 
 DEFECTO = {
     "activo": True,
@@ -32,6 +36,14 @@ DEFECTO = {
     "usar_estados": True,
     "usar_facebook": True,
     "frase_ia": "",
+    # Estilo de la web mientras la promo está vigente (snippet 'KM: temas de temporada'). "" = estilo normal.
+    "tema": "navidad",
+    "tema_nieve": True,
+    "banner": "https://kmlentes.pe/wp-content/uploads/2026/11/banner-navidad-2026-promo-lentes.webp",
+    "banner_alt": "¡Feliz Navidad! Lentes de contacto naturales y de fantasía: 2 pares a S/99 y 3 pares a S/139",
+    "banner_enlace": "/promociones/",
+    "banner_w": 1640,
+    "banner_h": 624,
     # Registro sanitario: solo marcas con número confirmado (foto del empaque).
     "registro_sanitario": {"FreshLady": "R.S. DM23897E (importado por Droguería Zigma S.A.C.)",
                            "Meetone": "registro sanitario"},
@@ -63,6 +75,71 @@ def guardar_promo(datos):
         c.execute(text("""INSERT INTO ajustes (clave, valor) VALUES (:k, :v)
                           ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor"""),
                   {"k": CLAVE, "v": json.dumps(datos, ensure_ascii=False)})
+
+
+# ------------------------------------------------------------------------------
+# Historial: cada vez que se guarda la promo queda una copia completa en promos_historial,
+# para poder volver a usarla (por ejemplo, la Navidad del año siguiente).
+# ------------------------------------------------------------------------------
+def _asegurar_historial(conn):
+    conn.execute(text("""CREATE TABLE IF NOT EXISTS promos_historial (
+        id SERIAL PRIMARY KEY, nombre TEXT, desde TEXT, hasta TEXT,
+        guardado_en TIMESTAMP DEFAULT NOW(), nota TEXT, datos TEXT)"""))
+
+
+def registrar_historial(datos, nota=""):
+    with engine.begin() as c:
+        _asegurar_historial(c)
+        c.execute(text("""INSERT INTO promos_historial (nombre, desde, hasta, nota, datos)
+                          VALUES (:n, :de, :ha, :no, :d)"""),
+                  {"n": datos.get("nombre", ""), "de": datos.get("desde", ""), "ha": datos.get("hasta", ""),
+                   "no": nota, "d": json.dumps(datos, ensure_ascii=False)})
+
+
+def listar_historial():
+    """Lista de dicts {id, nombre, desde, hasta, guardado_en, nota, datos}, la más reciente primero.
+    Si la tabla está vacía, guarda primero la promo actual (así la Navidad 2026 queda registrada)."""
+    with engine.begin() as c:
+        _asegurar_historial(c)
+        n = c.execute(text("SELECT COUNT(*) FROM promos_historial")).scalar()
+    if not n:
+        registrar_historial(leer_promo(), "Registro inicial")
+    with engine.connect() as c:
+        filas = c.execute(text("""SELECT id, nombre, desde, hasta, guardado_en, nota, datos
+                                  FROM promos_historial ORDER BY guardado_en DESC, id DESC""")).mappings().all()
+    out = []
+    for f in filas:
+        r = dict(f)
+        try:
+            r["datos"] = json.loads(r["datos"] or "{}")
+        except Exception:
+            r["datos"] = {}
+        out.append(r)
+    return out
+
+
+def borrar_historial(id_):
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM promos_historial WHERE id = :i"), {"i": int(id_)})
+
+
+def mover_anios(datos, anios=1):
+    """Copia de la promo con las fechas corridas N años (29-feb pasa a 28-feb)."""
+    from datetime import date
+    d = json.loads(json.dumps(datos))
+    for k in ("desde", "hasta"):
+        if d.get(k):
+            f = date.fromisoformat(d[k])
+            try:
+                f = f.replace(year=f.year + anios)
+            except ValueError:
+                f = f.replace(year=f.year + anios, day=28)
+            d[k] = f.isoformat()
+    for k in ("nombre", "barra", "banner_alt", "frase_ia"):
+        if d.get(k) and datos.get("desde"):
+            a0 = datos["desde"][:4]
+            d[k] = d[k].replace(a0, str(int(a0) + anios))
+    return d
 
 
 def soles(v):
@@ -152,7 +229,7 @@ def contexto_ia(producto, canal):
 def publicar_en_web(d=None):
     """Envía la configuración a kmlentes.pe (opción km_promo). Devuelve (ok, detalle)."""
     d = d or leer_promo()
-    datos = {k: d.get(k) for k in ("activo", "nombre", "desde", "hasta", "precio_base", "packs", "regalo", "barra")}
+    datos = {k: d.get(k) for k in CAMPOS_WEB}
     try:
         r = requests.post(f"{os.getenv('WOO_URL', 'https://kmlentes.pe').rstrip('/')}/wp-json/km/v1/promo", json=datos,
                           auth=(os.getenv("WP_USER"), os.getenv("WP_APP_PASSWORD")), timeout=60)

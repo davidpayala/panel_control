@@ -15,6 +15,14 @@ if ( ! function_exists( 'km_promo_cfg' ) ) {
 			'packs'       => array( array( 'n' => 2, 'precio' => 99 ), array( 'n' => 3, 'precio' => 139 ) ),
 			'regalo'      => 'Estuche de regalo con cada par',
 			'barra'       => '',
+			// Estilo de temporada (snippet 'KM: temas de temporada'): '' = estilo normal.
+			'tema'          => '',
+			'tema_nieve'    => true,
+			'banner'        => '',
+			'banner_alt'    => '',
+			'banner_enlace' => '',
+			'banner_w'      => 0,
+			'banner_h'      => 0,
 		);
 		$c = get_option( 'km_promo' );
 		return is_array( $c ) ? array_merge( $def, $c ) : $def;
@@ -272,6 +280,13 @@ add_action( 'rest_api_init', function () {
 				'packs'       => $packs,
 				'regalo'      => sanitize_text_field( (string) $r->get_param( 'regalo' ) ),
 				'barra'       => sanitize_text_field( (string) $r->get_param( 'barra' ) ),
+				'tema'          => sanitize_key( (string) $r->get_param( 'tema' ) ),
+				'tema_nieve'    => (bool) $r->get_param( 'tema_nieve' ),
+				'banner'        => esc_url_raw( (string) $r->get_param( 'banner' ) ),
+				'banner_alt'    => sanitize_text_field( (string) $r->get_param( 'banner_alt' ) ),
+				'banner_enlace' => esc_url_raw( (string) $r->get_param( 'banner_enlace' ) ),
+				'banner_w'      => max( 0, (int) $r->get_param( 'banner_w' ) ),
+				'banner_h'      => max( 0, (int) $r->get_param( 'banner_h' ) ),
 			);
 			update_option( 'km_promo', $c, true );
 			update_option( 'km_promo_estado', km_promo_vigente() ? 'si' : 'no', false );
