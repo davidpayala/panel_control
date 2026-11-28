@@ -592,6 +592,17 @@ def ejecutar_francotirador():
                     {"sesion": "principal", "col_prob": "prob_est_principal"},
                     {"sesion": "default", "col_prob": "prob_est_default"}
                 ]
+                # 🎬 Si la cuenta Lentes publica videos automáticos, se pueden apagar sus estados con foto
+                # (Campañas → Estados → Videos automáticos). Principal (pelucas) sigue igual.
+                try:
+                    from videos.estados import config as cfg_videos
+                    with engine.connect() as conn_v:
+                        cfg_v = cfg_videos(conn_v)
+                    if cfg_v.get('estados_activo') and not cfg_v.get('fotos_lentes', False):
+                        cuentas_estados = [c for c in cuentas_estados if c["sesion"] != "default"]
+                        log_mkt(" 🎬 Lentes publica videos automáticos: se omiten sus estados con foto.")
+                except Exception as e:
+                    log_mkt(f" ⚠️ No se pudo leer la config de videos: {e}")
                 for cuenta in cuentas_estados:
                     log_mkt(f" 🔍 [TRACE] Evaluando sesión '{cuenta['sesion']}'...")
                     with engine.connect() as conn:
@@ -621,6 +632,21 @@ def ejecutar_francotirador():
 
             with engine.begin() as conn_up:
                 conn_up.execute(text("UPDATE Configuracion_Campanas SET ultimo_envio_estados = NOW() WHERE id = :id"), {"id": config.id})
+
+        # ==================================================================
+        # 🎬 TAREA 2B: VIDEOS AUTOMÁTICOS EN ESTADOS (1 en la mañana, 2 en la tarde)
+        # Horario sorteado por recurrente/videos_diarios.py; aquí solo se publican los que ya tocan.
+        # ==================================================================
+        if tarea_objetivo and tarea_objetivo not in ['2', 'est', 'estados', '2b', 'videos']:
+            log_mkt("⏭️ TAREA 2B OMITIDA: Filtrada por parámetro de prueba (--solo).")
+        elif not waha_ok:
+            log_mkt("⏸️ TAREA 2B OMITIDA: Bloqueo de seguridad activado (WAHA inestable o desconectado).")
+        else:
+            try:
+                from videos.estados import publicar_pendientes
+                publicar_pendientes(engine, log=log_mkt)
+            except Exception as e:
+                log_mkt(f"🔥 TAREA 2B: error publicando videos en estados: {e}")
 
         # ==================================================================
         # 📘 TAREA 3: FACEBOOK / INSTAGRAM (Vía Make.com Unificado)

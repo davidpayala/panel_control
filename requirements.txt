@@ -16,4 +16,8 @@ fastapi
 uvicorn
 pydantic
 Flask
-streamlit-autorefreshopencv-python-headless
+streamlit-autorefresh
+opencv-python-headless
+numpy
+imageio-ffmpeg
+pillow

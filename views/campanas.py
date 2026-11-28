@@ -255,6 +255,9 @@ def render_tab_general(config):
             f1.metric("Pelucas", fb_counts.get("pelucas", 0))
             f2.metric("Lentes", fb_counts.get("lentes", 0))
             f3.metric("Total", sum(fb_counts.values()))
+        st.write("")
+        from views.campanas_videos import render_resumen_general
+        render_resumen_general()
 
     st.write("")
 
@@ -458,7 +461,15 @@ def render_tab_mensajes(config):
 # 📱 PESTAÑA 3: ESTADOS
 # ==============================================================================
 def render_tab_estados(config):
-    st.subheader("📱 Configuración de Estados")
+    from views.campanas_videos import render_tab_videos
+    try:
+        render_tab_videos()
+    except Exception as e:
+        st.error(f"🎬 No se pudo cargar la sección de videos automáticos: {e}")
+    st.divider()
+    st.subheader("📱 Estados con foto (bot)")
+    st.caption("Principal publica sus estados normales (pelucas y lentes según las probabilidades). "
+               "La cuenta Lentes solo publica fotos si está marcado en Videos automáticos.")
     
     with st.form("form_config_estados"):
         val_actual_est = int(config.intervalo_estados) if config and str(config.intervalo_estados).isdigit() else 100
