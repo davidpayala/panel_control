@@ -7,6 +7,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from database import engine
 import json
+import re
 import base64
 from woocommerce import API
 import threading
@@ -270,6 +271,163 @@ def actualizar_en_google(google_id, nombre, apellido, telefonos):
         print(f"❌ Error real en actualizar_en_google: {e}")
         return False
     
+# ------------------------------------------------------------------------------
+# 🏷️ MARCAS DE PERFIL: ♦️ persona conflictiva · 🌟 persona compradora
+# Se guardan como columnas (es_conflictivo, es_comprador) y además se escriben al inicio
+# del nombre del panel y de Google Contacts, para verlas también en el WhatsApp del celular.
+# ------------------------------------------------------------------------------
+MARCA_CONFLICTIVO = "♦️"
+MARCA_COMPRADOR = "🌟"
+_RE_MARCAS = re.compile("[\u2666\U0001F31F\u2B50]\uFE0F?")
+
+
+def quitar_marcas_perfil(texto):
+    """Quita ♦️/🌟/⭐ de un nombre y limpia los espacios sobrantes."""
+    if not texto:
+        return texto or ""
+    return re.sub(r"\s{2,}", " ", _RE_MARCAS.sub("", str(texto))).strip()
+
+
+def nombre_con_marcas(texto, conflictivo, comprador):
+    """Devuelve el nombre con las marcas que correspondan al inicio (♦️🌟 Nombre)."""
+    base = quitar_marcas_perfil(texto)
+    marcas = (MARCA_CONFLICTIVO if conflictivo else "") + (MARCA_COMPRADOR if comprador else "")
+    return f"{marcas} {base}".strip() if marcas else base
+
+
+def aplicar_marcas_google(google_id, conflictivo, comprador):
+    """Reescribe el nombre del contacto en Google con las marcas del perfil.
+    Devuelve (nombre, apellido) como quedaron en Google, o None si falló."""
+    if not google_id:
+        return None
+    try:
+        service = get_google_service()
+        if not service:
+            return None
+        resource_name = google_id if str(google_id).startswith('people/') else f"people/{google_id}"
+        contacto = service.people().get(resourceName=resource_name, personFields='names').execute()
+        nombres = contacto.get('names') or [{}]
+        actual = nombres[0]
+        nombre = nombre_con_marcas(actual.get('givenName', ''), conflictivo, comprador)
+        apellido = quitar_marcas_perfil(actual.get('familyName', ''))
+        nuevo = {k: actual[k] for k in ('middleName', 'honorificPrefix', 'honorificSuffix') if actual.get(k)}
+        nuevo.update({"givenName": nombre, "familyName": apellido})
+        service.people().updateContact(
+            resourceName=resource_name,
+            updatePersonFields="names",
+            body={"etag": contacto.get('etag'), "names": [nuevo]}
+        ).execute()
+        return nombre, apellido
+    except Exception as e:
+        print(f"❌ Error en aplicar_marcas_google: {e}")
+        return None
+
+
+_columnas_perfil_listas = False
+
+
+def asegurar_columnas_perfil():
+    """Crea las columnas del perfil del cliente si aún no existen (una vez por proceso)."""
+    global _columnas_perfil_listas
+    if _columnas_perfil_listas:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS es_conflictivo BOOLEAN DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS es_comprador BOOLEAN DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS detalle_personalidad TEXT"))
+            # Perfil escrito por Claude (IA) a partir de los chats: campo aparte para no mezclarlo con lo que escribe el equipo
+            conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS perfil_ia TEXT"))
+            conn.execute(text("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS perfil_ia_fecha TIMESTAMP"))
+        _columnas_perfil_listas = True
+    except Exception as e:
+        print(f"No se pudieron crear las columnas de perfil: {e}")
+
+
+def aplicar_marcas_cliente(id_cliente, conflictivo, comprador):
+    """Guarda las marcas del cliente; si cambiaron, las escribe en el nombre del panel y de Google.
+    Devuelve un aviso (texto) si Google no se pudo actualizar, o None."""
+    with engine.begin() as conn:
+        actual = conn.execute(text(
+            "SELECT nombre_corto, google_id, COALESCE(es_conflictivo, FALSE) AS c, COALESCE(es_comprador, FALSE) AS b "
+            "FROM clientes WHERE id_cliente = :id"), {"id": id_cliente}).fetchone()
+        if not actual or (actual.c == conflictivo and actual.b == comprador):
+            return None
+        conn.execute(text("UPDATE clientes SET es_conflictivo = :c, es_comprador = :b WHERE id_cliente = :id"),
+                     {"c": conflictivo, "b": comprador, "id": id_cliente})
+    aviso = None
+    nuevos = {"nc": nombre_con_marcas(actual.nombre_corto, conflictivo, comprador), "id": id_cliente}
+    set_extra = ""
+    gid = str(actual.google_id or "").strip()
+    if gid and gid.lower() not in ("nan", "none"):
+        res = aplicar_marcas_google(gid, conflictivo, comprador)
+        if res:
+            nuevos.update({"n": res[0], "a": res[1]})
+            set_extra = ", nombre = :n, apellido = :a"
+        else:
+            aviso = "⚠️ Se guardó en el panel, pero no se pudo actualizar el nombre en Google Contacts."
+    else:
+        aviso = "ℹ️ Este cliente no está vinculado a Google Contacts: la marca solo se verá en el panel."
+    with engine.begin() as conn:
+        conn.execute(text(f"UPDATE clientes SET nombre_corto = :nc{set_extra} WHERE id_cliente = :id"), nuevos)
+    return aviso
+
+
+# 🌟 Persona compradora AUTOMÁTICA: 3 compras o más, o 10 productos o más con precio en los últimos 9 meses.
+# No cuentan ventas anuladas, regalos (precio 0) ni recargos/comisiones de tarjeta.
+COMPRADOR_MIN_COMPRAS = 3
+COMPRADOR_MIN_PRODUCTOS = 10
+COMPRADOR_MESES = 9
+REGLA_COMPRADOR = (f"Automática: {COMPRADOR_MIN_COMPRAS} compras o más, o {COMPRADOR_MIN_PRODUCTOS} "
+                   f"productos o más con precio en los últimos {COMPRADOR_MESES} meses (sin regalos ni anuladas).")
+
+_SQL_COMPRADORES = f"""
+    SELECT v.id_cliente, COUNT(DISTINCT v.id_venta) AS compras, COALESCE(SUM(d.cantidad), 0) AS productos
+    FROM ventas v
+    JOIN detalleventa d ON d.id_venta = v.id_venta
+    WHERE v.anulado IS NOT TRUE
+      AND v.fecha_venta >= NOW() - INTERVAL '{COMPRADOR_MESES} months'
+      AND d.precio_unitario > 0
+      AND COALESCE(d.descripcion, '') !~* '(comisi|recargo)'
+      AND v.id_cliente IS NOT NULL
+      {{filtro}}
+    GROUP BY v.id_cliente
+    HAVING COUNT(DISTINCT v.id_venta) >= {COMPRADOR_MIN_COMPRAS} OR SUM(d.cantidad) >= {COMPRADOR_MIN_PRODUCTOS}
+"""
+
+
+def recalcular_compradores(ids_cliente=None, aplicar=True):
+    """Pone o quita 🌟 según la regla. Sin ids revisa a todos los clientes.
+    Devuelve [(id_cliente, nombre, nuevo_valor)] con los que cambian."""
+    asegurar_columnas_perfil()
+    filtro, params = "", {}
+    if ids_cliente:
+        filtro, params = "AND v.id_cliente = ANY(:ids)", {"ids": [int(i) for i in ids_cliente]}
+    with engine.connect() as conn:
+        cumplen = {r.id_cliente for r in conn.execute(text(_SQL_COMPRADORES.format(filtro=filtro)), params)}
+        sql_actual = "SELECT id_cliente, nombre_corto, COALESCE(es_conflictivo, FALSE) AS c, COALESCE(es_comprador, FALSE) AS b FROM clientes"
+        if ids_cliente:
+            actuales = conn.execute(text(sql_actual + " WHERE id_cliente = ANY(:ids)"), params).fetchall()
+        else:
+            actuales = conn.execute(text(sql_actual + " WHERE es_comprador = TRUE OR id_cliente = ANY(:ids)"),
+                                    {"ids": list(cumplen)}).fetchall()
+    cambios = [(r.id_cliente, r.nombre_corto, r.id_cliente in cumplen, r.c) for r in actuales
+               if (r.id_cliente in cumplen) != r.b]
+    if aplicar:
+        for id_c, _, nuevo, conf in cambios:
+            try:
+                aplicar_marcas_cliente(id_c, conf, nuevo)
+            except Exception as e:
+                print(f"❌ Error marcando comprador {id_c}: {e}")
+    return [(i, n, v) for i, n, v, _ in cambios]
+
+
+def recalcular_comprador_en_segundo_plano(id_cliente):
+    """Para llamar justo después de registrar o anular una venta."""
+    if id_cliente:
+        threading.Thread(target=recalcular_compradores, args=([int(id_cliente)],), daemon=True).start()
+
+
 # ==============================================================================
 # 💬 3. FUNCIONES WAHA (API) - CHATS, CAMPAÑAS Y VERIFICACIÓN
 # ==============================================================================
@@ -516,6 +674,7 @@ def generar_nombre_ia(nombre_corto, nombre_real):
     try:
         # 🚀 SUB-FUNCIÓN VALIDADORA: Filtra nombres genéricos
         def extraer_nombre_valido(texto):
+            texto = quitar_marcas_perfil(texto) if isinstance(texto, str) else texto
             if texto and isinstance(texto, str) and texto.strip():
                 texto_limpio = texto.strip()
                 # 1. Bloqueo de frases exactas genéricas

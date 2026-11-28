@@ -1,0 +1,2690 @@
+[
+{
+"tipo": "meetone",
+"clave": "ad - blue",
+"sku": "NL071",
+"codigo": "",
+"modelo": "AD",
+"color": "blue"
+},
+{
+"tipo": "freshlady",
+"clave": "w-18--0.00 - ad gray",
+"sku": "NL002A",
+"codigo": "W-18--0.00",
+"modelo": "Ad",
+"color": "AD GRAY"
+},
+{
+"tipo": "halloween",
+"clave": "grey violet block",
+"sku": "FL018H",
+"codigo": "",
+"modelo": "Grey Violet block",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "ad - ad gray m",
+"sku": "NL163",
+"codigo": "",
+"modelo": "AD",
+"color": "AD GRAY m"
+},
+{
+"tipo": "halloween",
+"clave": "vampire block",
+"sku": "FL018A",
+"codigo": "",
+"modelo": "Vampire Block",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora aqua green",
+"sku": "NL018B",
+"codigo": "",
+"modelo": "AURORA",
+"color": "AURORA AQUA GREEN"
+},
+{
+"tipo": "halloween",
+"clave": "black block",
+"sku": "FL018F",
+"codigo": "",
+"modelo": "Black Block",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora blue",
+"sku": "NL018C",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora Blue"
+},
+{
+"tipo": "halloween",
+"clave": "white block",
+"sku": "FL018C",
+"codigo": "",
+"modelo": "White Block",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora brown",
+"sku": "NL018D",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora brown"
+},
+{
+"tipo": "halloween",
+"clave": "black white spiral",
+"sku": "FL209",
+"codigo": "",
+"modelo": "Black White Spiral",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora chesnut",
+"sku": "NL018E",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora chesnut"
+},
+{
+"tipo": "freshlady",
+"clave": "fa26-1--0.00 - nutcracker",
+"sku": "NL170",
+"codigo": "FA26-1--0.00",
+"modelo": "Ballet",
+"color": "nutcracker"
+},
+{
+"tipo": "halloween",
+"clave": "cat eye blue",
+"sku": "FL008D",
+"codigo": "",
+"modelo": "Cat Eye Blue",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora emerald",
+"sku": "NL018G",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora emerald"
+},
+{
+"tipo": "freshlady",
+"clave": "fa26-3 - swan lake",
+"sku": "NL171",
+"codigo": "FA26-3",
+"modelo": "ballet",
+"color": "swan lake"
+},
+{
+"tipo": "halloween",
+"clave": "cat eye reddish brown",
+"sku": "FL009A",
+"codigo": "",
+"modelo": "Cat Eye Reddish Brown",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora green",
+"sku": "NL018F",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora Green"
+},
+{
+"tipo": "freshlady",
+"clave": "fa26-5 - giselle",
+"sku": "NL172",
+"codigo": "FA26-5",
+"modelo": "ballet",
+"color": "Giselle"
+},
+{
+"tipo": "halloween",
+"clave": "snake eye green",
+"sku": "FL212",
+"codigo": "",
+"modelo": "Snake Eye Green",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora icy blue",
+"sku": "NL018K",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora Icy blue"
+},
+{
+"tipo": "freshlady",
+"clave": "ns6--0.00 - pony gray",
+"sku": "NL-MC162",
+"codigo": "NS6--0.00",
+"modelo": "Beeswax",
+"color": "PONY GRAY"
+},
+{
+"tipo": "halloween",
+"clave": "cat eye red",
+"sku": "FL008A",
+"codigo": "",
+"modelo": "Cat Eye Red",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora maize",
+"sku": "NL018H",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora maize"
+},
+{
+"tipo": "freshlady",
+"clave": "ns8--0.00 - sky gray",
+"sku": "NL-MC163",
+"codigo": "NS8--0.00",
+"modelo": "Beeswax",
+"color": "Sky gray"
+},
+{
+"tipo": "halloween",
+"clave": "white cat eye",
+"sku": "FL008C",
+"codigo": "",
+"modelo": "White Cat Eye",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora medium blue",
+"sku": "NL018J",
+"codigo": "",
+"modelo": "Aurora",
+"color": "AURORA medium blue"
+},
+{
+"tipo": "freshlady",
+"clave": "h1--0.00 - big eyes black",
+"sku": "KL097",
+"codigo": "H1--0.00",
+"modelo": "Big eyes",
+"color": "BIG EYES BLACK"
+},
+{
+"tipo": "halloween",
+"clave": "red vampire",
+"sku": "FL055B",
+"codigo": "",
+"modelo": "RED VAMPIRE",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora sky gray",
+"sku": "NL018I",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora Sky Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "h2--0.00 - big eyes coffee",
+"sku": "KL098",
+"codigo": "H2--0.00",
+"modelo": "Big eyes",
+"color": "BIG EYES COFFEE"
+},
+{
+"tipo": "halloween",
+"clave": "green manson",
+"sku": "FL055A",
+"codigo": "",
+"modelo": "Green Manson",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "aurora - aurora yellow",
+"sku": "NL018A",
+"codigo": "",
+"modelo": "Aurora",
+"color": "Aurora Yellow"
+},
+{
+"tipo": "halloween",
+"clave": "white manson",
+"sku": "FL055D",
+"codigo": "",
+"modelo": "White Manson",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "bassia - bassia brown",
+"sku": "NL-MC014",
+"codigo": "",
+"modelo": "Bassia",
+"color": "Bassia Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "fa06-5--0.00 - butterfly fairy gray",
+"sku": "NL034A",
+"codigo": "FA06-5--0.00",
+"modelo": "Butterfly Fairy",
+"color": "BUTTERFLY FAIRY GRAY"
+},
+{
+"tipo": "halloween",
+"clave": "trauma white slit",
+"sku": "FL206C",
+"codigo": "",
+"modelo": "Trauma White Slit",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "cloud - cloud black",
+"sku": "NL-MC020",
+"codigo": "",
+"modelo": "Cloud",
+"color": "cloud Black"
+},
+{
+"tipo": "freshlady",
+"clave": "w-8--0.00 - fonesta",
+"sku": "NL072",
+"codigo": "W-8--0.00",
+"modelo": "Caramelize",
+"color": "Fonesta"
+},
+{
+"tipo": "halloween",
+"clave": "trauma white",
+"sku": "FL206A",
+"codigo": "",
+"modelo": "Trauma White",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "cloud - blue",
+"sku": "NL-MC017",
+"codigo": "",
+"modelo": "Cloud",
+"color": "blue"
+},
+{
+"tipo": "freshlady",
+"clave": "w-10--0.00 - a-tan",
+"sku": "NL-MC161",
+"codigo": "W-10--0.00",
+"modelo": "Caramelize",
+"color": "A-Tan"
+},
+{
+"tipo": "meetone",
+"clave": "cloud - brown",
+"sku": "NL-MC018",
+"codigo": "",
+"modelo": "Cloud",
+"color": "brown"
+},
+{
+"tipo": "freshlady",
+"clave": "w-18--0.00 - ad arena",
+"sku": "NL162",
+"codigo": "W-18--0.00",
+"modelo": "Caramelize",
+"color": "AD ARENA"
+},
+{
+"tipo": "halloween",
+"clave": "anime yellow",
+"sku": "FL022H",
+"codigo": "",
+"modelo": "Anime Yellow",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "cloud - cloud gray",
+"sku": "NL-MC019",
+"codigo": "",
+"modelo": "Cloud",
+"color": "Cloud Gray"
+},
+{
+"tipo": "halloween",
+"clave": "blue manson",
+"sku": "FL055C",
+"codigo": "",
+"modelo": "Blue Manson",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "coyle - coyle blue",
+"sku": "NL-MC022",
+"codigo": "",
+"modelo": "Coyle",
+"color": "Coyle blue"
+},
+{
+"tipo": "freshlady",
+"clave": "k40--0.00 - magic brown",
+"sku": "NL-MC165",
+"codigo": "K40--0.00",
+"modelo": "Cherry",
+"color": "Magic Brown"
+},
+{
+"tipo": "halloween",
+"clave": "white demon",
+"sku": "FL206B",
+"codigo": "",
+"modelo": "White Demon",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "coyle - coyle brown",
+"sku": "NL-MC023",
+"codigo": "",
+"modelo": "Coyle",
+"color": "Coyle brown"
+},
+{
+"tipo": "halloween",
+"clave": "optical ilusion",
+"sku": "FL205",
+"codigo": "",
+"modelo": "Optical Ilusion",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "coyle - coyle dark gray",
+"sku": "NL-MC024",
+"codigo": "",
+"modelo": "Coyle",
+"color": "Coyle dark gray"
+},
+{
+"tipo": "freshlady",
+"clave": "fa07-3--0.00 - spring",
+"sku": "NL-MC164",
+"codigo": "FA07-3--0.00",
+"modelo": "Classical",
+"color": "Spring"
+},
+{
+"tipo": "halloween",
+"clave": "avatar",
+"sku": "FL010",
+"codigo": "",
+"modelo": "Avatar",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "coyle - coyle gray",
+"sku": "NL-MC025",
+"codigo": "",
+"modelo": "Coyle",
+"color": "Coyle gray"
+},
+{
+"tipo": "freshlady",
+"clave": "fa07-1--0.00 - classical coffee",
+"sku": "NL-MC166",
+"codigo": "FA07-1--0.00",
+"modelo": "Classical",
+"color": "CLASSICAL COFFEE"
+},
+{
+"tipo": "halloween",
+"clave": "sith eyes",
+"sku": "FL108",
+"codigo": "",
+"modelo": "Sith Eyes",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "coyle - coyle green",
+"sku": "NL-MC026",
+"codigo": "",
+"modelo": "Coyle",
+"color": "Coyle green"
+},
+{
+"tipo": "freshlady",
+"clave": "fa11-1--0.00 - cloud brown",
+"sku": "NL173",
+"codigo": "FA11-1--0.00",
+"modelo": "Cloud",
+"color": "CLOUD BROWN"
+},
+{
+"tipo": "halloween",
+"clave": "manson green",
+"sku": "FL055A",
+"codigo": "",
+"modelo": "Manson Green",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "daisy - daisy green",
+"sku": "NL-MC027",
+"codigo": "",
+"modelo": "Daisy",
+"color": "Daisy green"
+},
+{
+"tipo": "freshlady",
+"clave": "fa11-2--0.00 - cloud green",
+"sku": "NL174",
+"codigo": "FA11-2--0.00",
+"modelo": "Cloud",
+"color": "CLOUD GREEN"
+},
+{
+"tipo": "halloween",
+"clave": "estrellas",
+"sku": "FL007A",
+"codigo": "",
+"modelo": "Estrellas",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "dawn - dawn blue",
+"sku": "NL-MC028",
+"codigo": "",
+"modelo": "Dawn",
+"color": "Dawn blue"
+},
+{
+"tipo": "freshlady",
+"clave": "fa11-3--0.00 - cloud blue",
+"sku": "NL175",
+"codigo": "FA11-3--0.00",
+"modelo": "Cloud",
+"color": "CLOUD BLUE"
+},
+{
+"tipo": "halloween",
+"clave": "glaciar",
+"sku": "FL007B",
+"codigo": "",
+"modelo": "Glaciar",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "dawn - dawn brown",
+"sku": "NL-MC029",
+"codigo": "",
+"modelo": "Dawn",
+"color": "Dawn brown"
+},
+{
+"tipo": "freshlady",
+"clave": "fa11-h--0.00 - cloud black",
+"sku": "NL176",
+"codigo": "FA11-H--0.00",
+"modelo": "Cloud",
+"color": "CLOUD BLACK"
+},
+{
+"tipo": "halloween",
+"clave": "rose mesh",
+"sku": "FL006C",
+"codigo": "",
+"modelo": "Rose Mesh",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "dawn - dawn gray",
+"sku": "NL-MC030",
+"codigo": "",
+"modelo": "Dawn",
+"color": "Dawn gray"
+},
+{
+"tipo": "freshlady",
+"clave": "fa11-5--0.00 - cloud gray",
+"sku": "NL177",
+"codigo": "FA11-5--0.00",
+"modelo": "Cloud",
+"color": "CLOUD GRAY"
+},
+{
+"tipo": "halloween",
+"clave": "yellow mesh",
+"sku": "FL006A",
+"codigo": "",
+"modelo": "Yellow Mesh",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "dawn - dawn green",
+"sku": "NL-MC031",
+"codigo": "",
+"modelo": "Dawn",
+"color": "Dawn green"
+},
+{
+"tipo": "freshlady",
+"clave": "fa13-5--0.00 - vesper martini",
+"sku": "NL-MC170",
+"codigo": "FA13-5--0.00",
+"modelo": "Cocktail",
+"color": "Vesper martini"
+},
+{
+"tipo": "halloween",
+"clave": "red manson mesh",
+"sku": "FL006E",
+"codigo": "",
+"modelo": "Red Manson Mesh",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "dna - dna blue gray",
+"sku": "NL-MC033",
+"codigo": "",
+"modelo": "DNA",
+"color": "Dna Blue gray"
+},
+{
+"tipo": "halloween",
+"clave": "white manson mesh",
+"sku": "FL006D",
+"codigo": "",
+"modelo": "White Manson mesh",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "dna - dna brown hazel",
+"sku": "NL-MC032",
+"codigo": "",
+"modelo": "Dna",
+"color": "Dna Brown Hazel"
+},
+{
+"tipo": "freshlady",
+"clave": "fa13-2--0.00 - mint julep",
+"sku": "NL179",
+"codigo": "FA13-2--0.00",
+"modelo": "Cocktail",
+"color": "Mint julep"
+},
+{
+"tipo": "halloween",
+"clave": "blue manson mesh",
+"sku": "FL006B",
+"codigo": "",
+"modelo": "Blue manson Mesh",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "dna - dna green gray",
+"sku": "NL-MC035",
+"codigo": "",
+"modelo": "Dna",
+"color": "Dna Green Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "fa13-3 - blue margarita",
+"sku": "NL180",
+"codigo": "FA13-3",
+"modelo": "Cocktail",
+"color": "BLUE MARGARITA"
+},
+{
+"tipo": "halloween",
+"clave": "green werewolf",
+"sku": "FL139",
+"codigo": "",
+"modelo": "Green Werewolf",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "dna - dna pink violet",
+"sku": "NL-MC034",
+"codigo": "",
+"modelo": "Dna",
+"color": "Dna Pink violet"
+},
+{
+"tipo": "freshlady",
+"clave": "fa08-1--0.00 - dawn brown",
+"sku": "NL186",
+"codigo": "FA08-1--0.00",
+"modelo": "Dawn",
+"color": "DAWN BROWN"
+},
+{
+"tipo": "halloween",
+"clave": "marie antoinette blue",
+"sku": "FL011",
+"codigo": "",
+"modelo": "Marie Antoinette Blue",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "doha - doha gray",
+"sku": "NL-MC036",
+"codigo": "",
+"modelo": "Doha",
+"color": "Doha Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "fa08-2--0.00 - dawn green",
+"sku": "NL184",
+"codigo": "FA08-2--0.00",
+"modelo": "Dawn",
+"color": "DAWN green"
+},
+{
+"tipo": "halloween",
+"clave": "spider web white",
+"sku": "FL211A",
+"codigo": "",
+"modelo": "Spider Web White",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "doha - doha brown",
+"sku": "NL-MC037",
+"codigo": "",
+"modelo": "Doha",
+"color": "Doha Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "fa08-3--0.00 - dawn blue",
+"sku": "NL185",
+"codigo": "FA08-3--0.00",
+"modelo": "Dawn",
+"color": "DAWN blue"
+},
+{
+"tipo": "halloween",
+"clave": "ragdoll cat blue",
+"sku": "FL004D",
+"codigo": "",
+"modelo": "Ragdoll Cat Blue",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "edge - edge brown",
+"sku": "NL-MC038",
+"codigo": "",
+"modelo": "Edge",
+"color": "Edge brown"
+},
+{
+"tipo": "freshlady",
+"clave": "fa08-5--0.00 - dawn gray",
+"sku": "NL183",
+"codigo": "FA08-5--0.00",
+"modelo": "Dawn",
+"color": "DAWN gray"
+},
+{
+"tipo": "halloween",
+"clave": "red mesh",
+"sku": "FL005B",
+"codigo": "",
+"modelo": "Red Mesh",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "edge - edge mel",
+"sku": "NL-MC039",
+"codigo": "",
+"modelo": "Edge",
+"color": "Edge Mel"
+},
+{
+"tipo": "freshlady",
+"clave": "me28-0.00 - dna taylor brown hazel",
+"sku": "NL181",
+"codigo": "ME28-0.00",
+"modelo": "DNA Taylor",
+"color": "DNA TAYLOR BROWN HAZEL"
+},
+{
+"tipo": "halloween",
+"clave": "white mesh",
+"sku": "FL005A",
+"codigo": "",
+"modelo": "White Mesh",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "egypt - egypt brown",
+"sku": "NL-MC040",
+"codigo": "",
+"modelo": "Egypt",
+"color": "Egypt Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "me29--0.00 - dna taylor blue gray",
+"sku": "NL188",
+"codigo": "ME29--0.00",
+"modelo": "DNA Taylor",
+"color": "DNA TAYLOR BLUE GRAY"
+},
+{
+"tipo": "halloween",
+"clave": "sharingan",
+"sku": "FL002G",
+"codigo": "",
+"modelo": "Sharingan",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "egypt - egypt gray",
+"sku": "NL-MC041",
+"codigo": "",
+"modelo": "Egypt",
+"color": "Egypt Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "me30--0.00 - dna taylor pink violet",
+"sku": "NL189",
+"codigo": "ME30--0.00",
+"modelo": "DNA Taylor",
+"color": "DNA TAYLOR PINK VIOLET"
+},
+{
+"tipo": "halloween",
+"clave": "black cross",
+"sku": "FL210",
+"codigo": "",
+"modelo": "Black Cross",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "fairy - fairy brown",
+"sku": "NL-MC042",
+"codigo": "",
+"modelo": "Fairy",
+"color": "Fairy brown"
+},
+{
+"tipo": "freshlady",
+"clave": "me31--0.00 - dna taylor green gray",
+"sku": "NL190",
+"codigo": "ME31--0.00",
+"modelo": "DNA Taylor",
+"color": "DNA TAYLOR GREEN GRAY"
+},
+{
+"tipo": "halloween",
+"clave": "willight bella",
+"sku": "FL143",
+"codigo": "",
+"modelo": "WILLIGHT BELLA",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "freshline - gray",
+"sku": "NL-MC044",
+"codigo": "",
+"modelo": "Freshline",
+"color": "gray"
+},
+{
+"tipo": "halloween",
+"clave": "red wizards",
+"sku": "FL208",
+"codigo": "",
+"modelo": "RED WIZARDS",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "freshline - pure hazel",
+"sku": "NL-MC043",
+"codigo": "",
+"modelo": "Freshline",
+"color": "Pure hazel"
+},
+{
+"tipo": "halloween",
+"clave": "minisclera black",
+"sku": "SL012",
+"codigo": "",
+"modelo": "MINISCLERA BLACK",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "gem - gem blue",
+"sku": "NL-MC045",
+"codigo": "",
+"modelo": "Gem",
+"color": "Gem Blue"
+},
+{
+"tipo": "halloween",
+"clave": "red sasuke uchiha",
+"sku": "FL002A",
+"codigo": "",
+"modelo": "red sasuke uchiha",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "gem - gem brown",
+"sku": "NL-MC046",
+"codigo": "",
+"modelo": "Gem",
+"color": "Gem Brown"
+},
+{
+"tipo": "halloween",
+"clave": "powdery violet block",
+"sku": "FL018H",
+"codigo": "",
+"modelo": "powdery violet block",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "glassball - glassball brown",
+"sku": "NL024A",
+"codigo": "",
+"modelo": "Glassball",
+"color": "Glassball brown"
+},
+{
+"tipo": "halloween",
+"clave": "white red cat eye",
+"sku": "FL008G",
+"codigo": "",
+"modelo": "WHITE RED CAT EYE",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrocor - hidrocor avela",
+"sku": "NL-MC048",
+"codigo": "",
+"modelo": "Hidrocor",
+"color": "Hidrocor avela"
+},
+{
+"tipo": "freshlady",
+"clave": "fa24-1 - dolly raquelle",
+"sku": "NL073",
+"codigo": "FA24-1",
+"modelo": "Dolly",
+"color": "Dolly raquelle"
+},
+{
+"tipo": "halloween",
+"clave": "bloodmoon red",
+"sku": "FL027A",
+"codigo": "",
+"modelo": "BloodMoon Red",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrocor - hidrocor brown",
+"sku": "NL-MC052",
+"codigo": "",
+"modelo": "Hidrocor",
+"color": "Hidrocor brown"
+},
+{
+"tipo": "freshlady",
+"clave": "fa24-3 - dolly stacie",
+"sku": "NL165",
+"codigo": "FA24-3",
+"modelo": "Dolly",
+"color": "Dolly Stacie"
+},
+{
+"tipo": "halloween",
+"clave": "double-sight red",
+"sku": "FL028A",
+"codigo": "",
+"modelo": "DOUBLE-SIGHT RED",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrocor - hidrocor graphite",
+"sku": "NL-MC053",
+"codigo": "",
+"modelo": "Hidrocor",
+"color": "Hidrocor graphite"
+},
+{
+"tipo": "freshlady",
+"clave": "fa24-5 - dolly teresa",
+"sku": "NL166",
+"codigo": "FA24-5",
+"modelo": "Dolly",
+"color": "Dolly Teresa"
+},
+{
+"tipo": "halloween",
+"clave": "fiery red",
+"sku": "FL027B",
+"codigo": "",
+"modelo": "Fiery Red",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrocor - hidrocor mel",
+"sku": "NL-MC050",
+"codigo": "",
+"modelo": "Hidrocor",
+"color": "Hidrocor mel"
+},
+{
+"tipo": "freshlady",
+"clave": "k43--0.00 - polaris",
+"sku": "NL004A",
+"codigo": "K43--0.00",
+"modelo": "Dream",
+"color": "Polaris"
+},
+{
+"tipo": "halloween",
+"clave": "red crack",
+"sku": "FL026B",
+"codigo": "",
+"modelo": "RED CRACK",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrocor - hidrocor ocre",
+"sku": "NL-MC049",
+"codigo": "",
+"modelo": "hidrocor",
+"color": "Hidrocor ocre"
+},
+{
+"tipo": "freshlady",
+"clave": "k48--0.00 - moonlight",
+"sku": "NL004B",
+"codigo": "K48--0.00",
+"modelo": "Dream",
+"color": "Moonlight"
+},
+{
+"tipo": "halloween",
+"clave": "red cross",
+"sku": "FL029B",
+"codigo": "",
+"modelo": "RED CROSS",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrocor - hidrocor quartzo",
+"sku": "NL-MC051",
+"codigo": "",
+"modelo": "Hidrocor",
+"color": "Hidrocor quartzo"
+},
+{
+"tipo": "halloween",
+"clave": "witch´s tears red",
+"sku": "FL027C",
+"codigo": "",
+"modelo": "WITCH´S TEARS RED",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone amber",
+"sku": "NL066I",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone Amber"
+},
+{
+"tipo": "halloween",
+"clave": "spider wed red",
+"sku": "FL211C",
+"codigo": "",
+"modelo": "SPIDER WED RED",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone ivory",
+"sku": "NL066J",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone Ivory"
+},
+{
+"tipo": "halloween",
+"clave": "yellow cat eyes",
+"sku": "FL008B",
+"codigo": "",
+"modelo": "Yellow Cat Eyes",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone cristal",
+"sku": "NL066A",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone Cristal"
+},
+{
+"tipo": "halloween",
+"clave": "dragon maid",
+"sku": "FL004A",
+"codigo": "",
+"modelo": "Dragon Maid",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone graphite",
+"sku": "NL066C",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone Graphite"
+},
+{
+"tipo": "halloween",
+"clave": "anime blue",
+"sku": "FL022A",
+"codigo": "",
+"modelo": "ANIME BLUE",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone gray",
+"sku": "NL066E",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone gray"
+},
+{
+"tipo": "halloween",
+"clave": "mcdull",
+"sku": "FL027D",
+"codigo": "",
+"modelo": "MCDULL",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone honey",
+"sku": "NL066G",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone Honey"
+},
+{
+"tipo": "halloween",
+"clave": "devils tripple blue",
+"sku": "FL028B",
+"codigo": "",
+"modelo": "Devils Tripple Blue",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone ocre",
+"sku": "NL066D",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone Ocre"
+},
+{
+"tipo": "halloween",
+"clave": "manson forest",
+"sku": "FL027E",
+"codigo": "",
+"modelo": "Manson Forest",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone oyster",
+"sku": "NL066F",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone Oyster"
+},
+{
+"tipo": "halloween",
+"clave": "anime brown",
+"sku": "FL022F",
+"codigo": "",
+"modelo": "Anime Brown",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone topaz",
+"sku": "NL066B",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone topaz"
+},
+{
+"tipo": "halloween",
+"clave": "anime red brown",
+"sku": "FL022E",
+"codigo": "",
+"modelo": "Anime Red Brown",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "hidrotone - hidrotone mel",
+"sku": "NL066H",
+"codigo": "",
+"modelo": "Hidrotone",
+"color": "Hidrotone Mel"
+},
+{
+"tipo": "halloween",
+"clave": "wolf eyes orange",
+"sku": "FL031A",
+"codigo": "",
+"modelo": "Wolf Eyes Orange",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "himalaya - himalaya blue",
+"sku": "NL-MC068",
+"codigo": "",
+"modelo": "Himalaya",
+"color": "Himalaya Blue"
+},
+{
+"tipo": "halloween",
+"clave": "naruto sasuke eternal sharingan",
+"sku": "FL002D",
+"codigo": "",
+"modelo": "NARUTO SASUKE ETERNAL SHARINGAN",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "himalaya - himalaya brown",
+"sku": "NL-MC066",
+"codigo": "",
+"modelo": "Himalaya",
+"color": "Himalaya Brown"
+},
+{
+"tipo": "halloween",
+"clave": "spider web black",
+"sku": "FL211B",
+"codigo": "",
+"modelo": "SPIDER WEB BLACK",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "himalaya - himalaya gray",
+"sku": "NL-MC069",
+"codigo": "",
+"modelo": "Himalaya",
+"color": "Himalaya Gray"
+},
+{
+"tipo": "halloween",
+"clave": "black plus",
+"sku": "NL037A",
+"codigo": "",
+"modelo": "BLACK PLUS",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "himalaya - himalaya green",
+"sku": "NL-MC067",
+"codigo": "",
+"modelo": "Himalaya",
+"color": "Himalaya Green"
+},
+{
+"tipo": "halloween",
+"clave": "ghost",
+"sku": "FL027I",
+"codigo": "",
+"modelo": "GHOST",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "julia - julia brown",
+"sku": "NL-MC070",
+"codigo": "",
+"modelo": "Julia",
+"color": "JULIA BROWN"
+},
+{
+"tipo": "halloween",
+"clave": "yellow block",
+"sku": "FL018I",
+"codigo": "",
+"modelo": "YELLOW BLOCK",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "k - honolulu",
+"sku": "NL-MC075",
+"codigo": "",
+"modelo": "K",
+"color": "Honolulu"
+},
+{
+"tipo": "halloween",
+"clave": "vika tricolor red",
+"sku": "FL213E",
+"codigo": "",
+"modelo": "VIKA TRICOLOR RED",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "k - jewellery",
+"sku": "NL-MC072",
+"codigo": "",
+"modelo": "K",
+"color": "Jewellery"
+},
+{
+"tipo": "halloween",
+"clave": "vika tricolor purple",
+"sku": "FL213B",
+"codigo": "",
+"modelo": "VIKA TRICOLOR PURPLE",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "k - magic brown",
+"sku": "NL-MC073",
+"codigo": "",
+"modelo": "K",
+"color": "Magic Brown"
+},
+{
+"tipo": "halloween",
+"clave": "naruto uchiha sasuke shalingan red",
+"sku": "FL002I",
+"codigo": "",
+"modelo": "NARUTO UCHIHA SASUKE SHALINGAN RED",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "k - moonlight",
+"sku": "NL-MC076",
+"codigo": "",
+"modelo": "K",
+"color": "Moonlight"
+},
+{
+"tipo": "halloween",
+"clave": "mangekyo",
+"sku": "FL002K",
+"codigo": "",
+"modelo": "MANGEKYO",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "k - ocean",
+"sku": "NL-MC071",
+"codigo": "",
+"modelo": "K",
+"color": "Ocean"
+},
+{
+"tipo": "halloween",
+"clave": "red violet",
+"sku": "FL027F",
+"codigo": "",
+"modelo": "RED VIOLET",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "k - polaris",
+"sku": "NL-MC074",
+"codigo": "",
+"modelo": "K",
+"color": "Polaris"
+},
+{
+"tipo": "halloween",
+"clave": "red floret ll",
+"sku": "FL027G",
+"codigo": "",
+"modelo": "RED FLORET LL",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "maria - maria blue",
+"sku": "NL-MC080",
+"codigo": "",
+"modelo": "Maria",
+"color": "Maria BLUE"
+},
+{
+"tipo": "halloween",
+"clave": "zombie saw white red",
+"sku": "FL027H",
+"codigo": "",
+"modelo": "ZOMBIE SAW WHITE RED",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "maria - maria brown",
+"sku": "NL-MC078",
+"codigo": "",
+"modelo": "Maria",
+"color": "Maria brown"
+},
+{
+"tipo": "halloween",
+"clave": "bloodshot red",
+"sku": "FL206E",
+"codigo": "",
+"modelo": "BLOODSHOT RED",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "maria - maria green",
+"sku": "NL-MC079",
+"codigo": "",
+"modelo": "Maria",
+"color": "Maria Green"
+},
+{
+"tipo": "halloween",
+"clave": "lake blue",
+"sku": "FL055J",
+"codigo": "",
+"modelo": "LAKE BLUE",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "maria - maria violet",
+"sku": "NL-MC081",
+"codigo": "",
+"modelo": "Maria",
+"color": "Maria Violet"
+},
+{
+"tipo": "freshlady",
+"clave": "fa35-1 - amber fantasy",
+"sku": "NL187",
+"codigo": "FA35-1",
+"modelo": "GLORIOUS",
+"color": "Amber Fantasy"
+},
+{
+"tipo": "halloween",
+"clave": "twin hex red",
+"sku": "FL028C",
+"codigo": "",
+"modelo": "TWIN HEX RED",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "matcha - matcha blue",
+"sku": "NL-MC082",
+"codigo": "",
+"modelo": "Matcha",
+"color": "Matcha Blue"
+},
+{
+"tipo": "freshlady",
+"clave": "fa32-2--0.00 - godness veil aphodite",
+"sku": "NL006A",
+"codigo": "FA32-2--0.00",
+"modelo": "godness veil",
+"color": "GODNESS VEIL APHODITE"
+},
+{
+"tipo": "halloween",
+"clave": "purple vampire",
+"sku": "FL032A",
+"codigo": "",
+"modelo": "PURPLE VAMPIRE",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "mia - mia blue",
+"sku": "NL-MC088",
+"codigo": "",
+"modelo": "Mia",
+"color": "Mia blue"
+},
+{
+"tipo": "freshlady",
+"clave": "fa32-3--0.00 - godness veil hera",
+"sku": "NL006B",
+"codigo": "FA32-3--0.00",
+"modelo": "godness veil",
+"color": "GODNESS VEIL HERA"
+},
+{
+"tipo": "halloween",
+"clave": "weird",
+"sku": "FL206F",
+"codigo": "",
+"modelo": "WEIRD",
+"color": ""
+},
+{
+"tipo": "meetone",
+"clave": "mia - mia brown",
+"sku": "NL-MC087",
+"codigo": "",
+"modelo": "Mia",
+"color": "Mia brown"
+},
+{
+"tipo": "freshlady",
+"clave": "fa32-5--0.00 - godness veil artemis",
+"sku": "NL006C",
+"codigo": "FA32-5--0.00",
+"modelo": "godness veil",
+"color": "GODNESS VEIL ARTEMIS"
+},
+{
+"tipo": "meetone",
+"clave": "mo - caramel",
+"sku": "NL-MC090",
+"codigo": "",
+"modelo": "MO",
+"color": "Caramel"
+},
+{
+"tipo": "meetone",
+"clave": "mo - malakite",
+"sku": "NL-MC091",
+"codigo": "",
+"modelo": "MO",
+"color": "Malakite"
+},
+{
+"tipo": "meetone",
+"clave": "mo - tea",
+"sku": "NL-MC092",
+"codigo": "",
+"modelo": "MO",
+"color": "Tea"
+},
+{
+"tipo": "meetone",
+"clave": "mojito - mojito blue",
+"sku": "NL038C",
+"codigo": "",
+"modelo": "Mojito",
+"color": "Mojito blue"
+},
+{
+"tipo": "meetone",
+"clave": "mojito - mojito brown",
+"sku": "NL038D",
+"codigo": "",
+"modelo": "Mojito",
+"color": "Mojito brown"
+},
+{
+"tipo": "freshlady",
+"clave": "hi1--0.00 - topazio",
+"sku": "NL-MC140",
+"codigo": "Hi1--0.00",
+"modelo": "Hidrocor",
+"color": "Topazio"
+},
+{
+"tipo": "meetone",
+"clave": "mojito - mojito gray",
+"sku": "NL038A",
+"codigo": "",
+"modelo": "Mojito",
+"color": "Mojito gray"
+},
+{
+"tipo": "freshlady",
+"clave": "hi2--0.00 - ocre",
+"sku": "NL-MC139",
+"codigo": "Hi2--0.00",
+"modelo": "Hidrocor",
+"color": "Ocre"
+},
+{
+"tipo": "meetone",
+"clave": "mojito - mojito green",
+"sku": "NL038B",
+"codigo": "",
+"modelo": "Mojito",
+"color": "Mojito green"
+},
+{
+"tipo": "freshlady",
+"clave": "hi3--0.00 - cristal",
+"sku": "NL-MC141",
+"codigo": "Hi3--0.00",
+"modelo": "Hidrocor",
+"color": "Cristal"
+},
+{
+"tipo": "meetone",
+"clave": "nadine - nadine blue",
+"sku": "NL-MC097",
+"codigo": "",
+"modelo": "Nadine",
+"color": "Nadine blue"
+},
+{
+"tipo": "meetone",
+"clave": "nadine - nadine brown",
+"sku": "NL-MC098",
+"codigo": "",
+"modelo": "Nadine",
+"color": "Nadine brown"
+},
+{
+"tipo": "freshlady",
+"clave": "hi5--0.00 - quartzo",
+"sku": "NL-MC142",
+"codigo": "Hi5--0.00",
+"modelo": "Hidrocor",
+"color": "Quartzo"
+},
+{
+"tipo": "meetone",
+"clave": "nadine - nadine gray",
+"sku": "NL-MC099",
+"codigo": "",
+"modelo": "Nadine",
+"color": "Nadine gray"
+},
+{
+"tipo": "freshlady",
+"clave": "hi6--0.00 - mel",
+"sku": "NL-MC143",
+"codigo": "Hi6--0.00",
+"modelo": "Hidrocor",
+"color": "MEL"
+},
+{
+"tipo": "meetone",
+"clave": "nadine - nadine green",
+"sku": "NL-MC100",
+"codigo": "",
+"modelo": "Nadine",
+"color": "Nadine green"
+},
+{
+"tipo": "freshlady",
+"clave": "hi7--0.00 - avela",
+"sku": "NL089",
+"codigo": "Hi7--0.00",
+"modelo": "Hidrocor",
+"color": "AVELA"
+},
+{
+"tipo": "meetone",
+"clave": "nature - nature blue",
+"sku": "NL025D",
+"codigo": "",
+"modelo": "Nature",
+"color": "Nature Blue"
+},
+{
+"tipo": "freshlady",
+"clave": "hi11--0.00 - ice",
+"sku": "NL-MC144",
+"codigo": "Hi11--0.00",
+"modelo": "Hidrocor",
+"color": "Ice"
+},
+{
+"tipo": "meetone",
+"clave": "nature - nature brown",
+"sku": "NL025C",
+"codigo": "",
+"modelo": "Nature",
+"color": "Nature Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "hi12--0.00 - grafite",
+"sku": "NL-MC145",
+"codigo": "Hi12--0.00",
+"modelo": "Hidrocor",
+"color": "Grafite"
+},
+{
+"tipo": "meetone",
+"clave": "nature - nature gray",
+"sku": "NL025B",
+"codigo": "",
+"modelo": "Nature",
+"color": "Nature Gray"
+},
+{
+"tipo": "meetone",
+"clave": "nature - nature hazel",
+"sku": "NL025A",
+"codigo": "",
+"modelo": "Nature",
+"color": "Nature Hazel"
+},
+{
+"tipo": "meetone",
+"clave": "opal - opal brown",
+"sku": "NL039A",
+"codigo": "",
+"modelo": "Opal",
+"color": "Opal Brown"
+},
+{
+"tipo": "meetone",
+"clave": "opal - opal gray",
+"sku": "NL039B",
+"codigo": "",
+"modelo": "Opal",
+"color": "Opal Gray"
+},
+{
+"tipo": "meetone",
+"clave": "other - pony gray",
+"sku": "NL-MC107",
+"codigo": "",
+"modelo": "Other",
+"color": "Pony gray"
+},
+{
+"tipo": "meetone",
+"clave": "oxygen - oxygen blue",
+"sku": "NL028A",
+"codigo": "",
+"modelo": "Oxygen",
+"color": "Oxygen Blue"
+},
+{
+"tipo": "meetone",
+"clave": "oxygen - oxygen brown",
+"sku": "NL028B",
+"codigo": "",
+"modelo": "Oxygen",
+"color": "Oxygen brown"
+},
+{
+"tipo": "freshlady",
+"clave": "w-6--0.00 - cinnamon",
+"sku": "NL-MC150",
+"codigo": "W-6--0.00",
+"modelo": "Kiwi",
+"color": "Cinnamon"
+},
+{
+"tipo": "meetone",
+"clave": "oxygen - oxygen gray",
+"sku": "NL028C",
+"codigo": "",
+"modelo": "Oxygen",
+"color": "Oxygen gray"
+},
+{
+"tipo": "meetone",
+"clave": "penny - penny gray",
+"sku": "NL-MC112",
+"codigo": "",
+"modelo": "Penny",
+"color": "Penny gray"
+},
+{
+"tipo": "meetone",
+"clave": "penny - penny violet",
+"sku": "NL-MC113",
+"codigo": "",
+"modelo": "Penny",
+"color": "Penny Violet"
+},
+{
+"tipo": "meetone",
+"clave": "pixie - pixie green",
+"sku": "NL-MC116",
+"codigo": "",
+"modelo": "Pixie",
+"color": "Pixie green"
+},
+{
+"tipo": "meetone",
+"clave": "pro - pro blue",
+"sku": "NL042B",
+"codigo": "",
+"modelo": "Pro",
+"color": "Pro Blue"
+},
+{
+"tipo": "meetone",
+"clave": "pro - pro hazel",
+"sku": "NL042A",
+"codigo": "",
+"modelo": "Pro",
+"color": "Pro hazel"
+},
+{
+"tipo": "meetone",
+"clave": "pro - pro khaki",
+"sku": "NL042C",
+"codigo": "",
+"modelo": "Pro",
+"color": "Pro Khaki"
+},
+{
+"tipo": "meetone",
+"clave": "rich girl - rich girl gray",
+"sku": "NL-MC120",
+"codigo": "",
+"modelo": "RICH GIRL",
+"color": "RICH GIRL GRAY"
+},
+{
+"tipo": "meetone",
+"clave": "rome - rome brown m",
+"sku": "NL040A",
+"codigo": "",
+"modelo": "Rome",
+"color": "Rome Brown m"
+},
+{
+"tipo": "meetone",
+"clave": "rome - rome gray",
+"sku": "NL040B",
+"codigo": "",
+"modelo": "Rome",
+"color": "Rome Gray"
+},
+{
+"tipo": "meetone",
+"clave": "russian - russian blue",
+"sku": "NL026A",
+"codigo": "",
+"modelo": "Russian",
+"color": "Russian Blue"
+},
+{
+"tipo": "meetone",
+"clave": "russian - russian brown",
+"sku": "NL026B",
+"codigo": "",
+"modelo": "Russian",
+"color": "Russian Brown"
+},
+{
+"tipo": "meetone",
+"clave": "russian - russian gray",
+"sku": "NL026C",
+"codigo": "",
+"modelo": "Russian",
+"color": "Russian Gray"
+},
+{
+"tipo": "meetone",
+"clave": "sorayama - sorayama blue",
+"sku": "NL041A",
+"codigo": "",
+"modelo": "Sorayama",
+"color": "Sorayama Blue"
+},
+{
+"tipo": "meetone",
+"clave": "sorayama - sorayama brown",
+"sku": "NL041B",
+"codigo": "",
+"modelo": "Sorayama",
+"color": "Sorayama brown"
+},
+{
+"tipo": "meetone",
+"clave": "sorayama - sorayama gray",
+"sku": "NL041C",
+"codigo": "",
+"modelo": "Sorayama",
+"color": "Sorayama Gray"
+},
+{
+"tipo": "meetone",
+"clave": "sorayama - sorayama green",
+"sku": "NL-MC128",
+"codigo": "",
+"modelo": "Sorayama",
+"color": "Sorayama green"
+},
+{
+"tipo": "meetone",
+"clave": "w - a.tan",
+"sku": "NL-MC133",
+"codigo": "",
+"modelo": "W",
+"color": "A.Tan"
+},
+{
+"tipo": "meetone",
+"clave": "w - cinnamon",
+"sku": "NL-MC131",
+"codigo": "",
+"modelo": "W",
+"color": "Cinnamon"
+},
+{
+"tipo": "meetone",
+"clave": "w - fonesta",
+"sku": "NL-MC132",
+"codigo": "",
+"modelo": "W",
+"color": "Fonesta"
+},
+{
+"tipo": "meetone",
+"clave": "w - lolite",
+"sku": "NL-MC134",
+"codigo": "",
+"modelo": "W",
+"color": "lolite"
+},
+{
+"tipo": "meetone",
+"clave": "wildcat - wildcat blue",
+"sku": "NL-MC137",
+"codigo": "",
+"modelo": "Wildcat",
+"color": "Wildcat Blue"
+},
+{
+"tipo": "freshlady",
+"clave": "me46--0.00 - mia brown",
+"sku": "NL005A",
+"codigo": "ME46--0.00",
+"modelo": "MIA",
+"color": "MIA Brown"
+},
+{
+"tipo": "meetone",
+"clave": "wildcat - wildcat brown",
+"sku": "NL-MC135",
+"codigo": "",
+"modelo": "Wildcat",
+"color": "Wildcat Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "me48 - mia gray",
+"sku": "NL005B",
+"codigo": "ME48",
+"modelo": "MIA",
+"color": "MIA Gray"
+},
+{
+"tipo": "meetone",
+"clave": "wildcat - wildcat green",
+"sku": "NL-MC136",
+"codigo": "",
+"modelo": "Wildcat",
+"color": "Wildcat Green"
+},
+{
+"tipo": "freshlady",
+"clave": "me49 - mia green",
+"sku": "NL005C",
+"codigo": "ME49",
+"modelo": "MIA",
+"color": "MIA Green"
+},
+{
+"tipo": "meetone",
+"clave": "yime - yime chocolate",
+"sku": "NL029A",
+"codigo": "",
+"modelo": "Yime",
+"color": "Yime Chocolate"
+},
+{
+"tipo": "freshlady",
+"clave": "fa43-1 - tulip nebula",
+"sku": "NL010A",
+"codigo": "FA43-1",
+"modelo": "Nebula",
+"color": "TULIP NEBULA"
+},
+{
+"tipo": "freshlady",
+"clave": "fa43-5 - witch nebula",
+"sku": "NL010B",
+"codigo": "FA43-5",
+"modelo": "Nebula",
+"color": "WITCH NEBULA"
+},
+{
+"tipo": "meetone",
+"clave": "oxygen - oxygen green",
+"sku": "NL028D",
+"codigo": "",
+"modelo": "Oxygen",
+"color": "Oxygen Green"
+},
+{
+"tipo": "freshlady",
+"clave": "bl-1--0.00 - polar lights brown",
+"sku": "NL-MC152",
+"codigo": "BL-1--0.00",
+"modelo": "Polar light",
+"color": "Polar lightS Brown"
+},
+{
+"tipo": "meetone",
+"clave": "yime - yime gray",
+"sku": "NL029B",
+"codigo": "",
+"modelo": "yime",
+"color": "Yime gray"
+},
+{
+"tipo": "freshlady",
+"clave": "bl-3--0.00 - polar lights blue gray",
+"sku": "NL-MC153",
+"codigo": "BL-3--0.00",
+"modelo": "Polar light",
+"color": "Polar lightS Blue gray"
+},
+{
+"tipo": "freshlady",
+"clave": "bl-4--0.00 - polar lights gray",
+"sku": "NL-MC154",
+"codigo": "BL-4--0.00",
+"modelo": "Polar light",
+"color": "Polar lightS Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "me03--0.00 - bassia brown",
+"sku": "NL192A",
+"codigo": "ME03--0.00",
+"modelo": "Rainbown",
+"color": "Bassia Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "me04--0.00 - bassia gray",
+"sku": "NL192B",
+"codigo": "ME04--0.00",
+"modelo": "Rainbown",
+"color": "Bassia Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "me13--0.00 - russian blue",
+"sku": "NL032A",
+"codigo": "ME13--0.00",
+"modelo": "Russian",
+"color": "Russian Blue"
+},
+{
+"tipo": "freshlady",
+"clave": "me14--0.00 - russian gray",
+"sku": "NL032B",
+"codigo": "ME14--0.00",
+"modelo": "Russian",
+"color": "Russian Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "me15--0.00 - russian brown",
+"sku": "NL032C",
+"codigo": "ME15--0.00",
+"modelo": "Russian",
+"color": "Russian Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "mo-13--0.00 - malakite",
+"sku": "NL035A",
+"codigo": "MO-13--0.00",
+"modelo": "Smoky",
+"color": "Malakite"
+},
+{
+"tipo": "freshlady",
+"clave": "mo-16--0.00 - latte",
+"sku": "NL035B",
+"codigo": "MO-16--0.00",
+"modelo": "Smoky",
+"color": "Latte"
+},
+{
+"tipo": "freshlady",
+"clave": "mo-17--0.00 - tea",
+"sku": "NL035C",
+"codigo": "MO-17--0.00",
+"modelo": "Smoky",
+"color": "Tea"
+},
+{
+"tipo": "freshlady",
+"clave": "mo15 - smokey",
+"sku": "NL035D",
+"codigo": "Mo15",
+"modelo": "Smoky",
+"color": "Smokey"
+},
+{
+"tipo": "freshlady",
+"clave": "mo19 - petroleum",
+"sku": "NL035E",
+"codigo": "MO19",
+"modelo": "SMOKY",
+"color": "Petroleum"
+},
+{
+"tipo": "freshlady",
+"clave": "mo-18 - cortado",
+"sku": "NL035F",
+"codigo": "MO-18",
+"modelo": "Smoky",
+"color": "Cortado"
+},
+{
+"tipo": "freshlady",
+"clave": "z6--0.00 - sepia",
+"sku": "NL-MC155",
+"codigo": "Z6--0.00",
+"modelo": "Star Orbite",
+"color": "Sepia"
+},
+{
+"tipo": "freshlady",
+"clave": "fa12-1--0.00 - stunna girl nadine",
+"sku": "NL152B",
+"codigo": "FA12-1--0.00",
+"modelo": "Stunna girl",
+"color": "stunna girl nadine"
+},
+{
+"tipo": "freshlady",
+"clave": "fa12-2--0.00 - stunna girl kamille",
+"sku": "NL152D",
+"codigo": "FA12-2--0.00",
+"modelo": "Stunna girl",
+"color": "stunna girl Kamille"
+},
+{
+"tipo": "freshlady",
+"clave": "fa12-3--0.00 - stunna girl chole",
+"sku": "NL152A",
+"codigo": "FA12-3--0.00",
+"modelo": "Stunna girl",
+"color": "stunna girl Chole"
+},
+{
+"tipo": "freshlady",
+"clave": "fa12-5--0.00 - stunna girl romona",
+"sku": "NL152C",
+"codigo": "FA12-5--0.00",
+"modelo": "Stunna girl",
+"color": "STUNNA GIRL Romona"
+},
+{
+"tipo": "freshlady",
+"clave": "fa17-1--0.00 - sun kissed selena",
+"sku": "NL008A",
+"codigo": "FA17-1--0.00",
+"modelo": "Sun kissed",
+"color": "SUN KISSED SelenA"
+},
+{
+"tipo": "freshlady",
+"clave": "fa17-3--0.00 - sun kissed tiffany",
+"sku": "NL008B",
+"codigo": "FA17-3--0.00",
+"modelo": "Sun kissed",
+"color": "SUN KISSED Tiffany"
+},
+{
+"tipo": "freshlady",
+"clave": "fa17-2--0.00 - sun kissed cassie",
+"sku": "NL008C",
+"codigo": "FA17-2--0.00",
+"modelo": "Sun kissed",
+"color": "SUN KISSED Cassie"
+},
+{
+"tipo": "freshlady",
+"clave": "fa17-5--0.00 - sun kissed bella",
+"sku": "NL008D",
+"codigo": "FA17-5--0.00",
+"modelo": "Sun kissed",
+"color": "SUN KISSED Bella"
+},
+{
+"tipo": "freshlady",
+"clave": "fa33-1 - caramel whirl",
+"sku": "NL033A",
+"codigo": "FA33-1",
+"modelo": "Sweet Melody",
+"color": "Caramel Whirl"
+},
+{
+"tipo": "freshlady",
+"clave": "fa33-5 - almond murmur",
+"sku": "NL033B",
+"codigo": "FA33-5",
+"modelo": "Sweet Melody",
+"color": "Almond Murmur"
+},
+{
+"tipo": "freshlady",
+"clave": "xqf07--0.00 - pure hazel",
+"sku": "NL182",
+"codigo": "XQF07--0.00",
+"modelo": "THREE TONE",
+"color": "Pure Hazel"
+},
+{
+"tipo": "freshlady",
+"clave": "me17--0.00 - wildcat brown",
+"sku": "NL027A",
+"codigo": "ME17--0.00",
+"modelo": "Wildcat",
+"color": "Wildcat Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "me18--0.00 - wildcat green",
+"sku": "NL027C",
+"codigo": "ME18--0.00",
+"modelo": "Wildcat",
+"color": "Wildcat Green"
+},
+{
+"tipo": "freshlady",
+"clave": "me19--0.00 - wildcat blue",
+"sku": "NL027B",
+"codigo": "ME19--0.00",
+"modelo": "Wildcat",
+"color": "Wildcat Blue"
+},
+{
+"tipo": "freshlady",
+"clave": "me17-5--0.00 - julia brown",
+"sku": "NL027D",
+"codigo": "ME17-5--0.00",
+"modelo": "Wildcat",
+"color": "Julia Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "me75-1--0.00 - x brown flare",
+"sku": "NL191B",
+"codigo": "ME75-1--0.00",
+"modelo": "X- Brown",
+"color": "X BROWN FLARE"
+},
+{
+"tipo": "freshlady",
+"clave": "me75-2--0.00 - x green flare",
+"sku": "NL191A",
+"codigo": "ME75-2--0.00",
+"modelo": "X- Green",
+"color": "X GREEN FLARE"
+},
+{
+"tipo": "freshlady",
+"clave": "me75-3--0.00 - orange",
+"sku": "NL191C",
+"codigo": "ME75-3--0.00",
+"modelo": "X- Honey flare",
+"color": "ORANGE"
+},
+{
+"tipo": "freshlady",
+"clave": "mi20-1 - siri brown",
+"sku": "NL011A",
+"codigo": "Mi20-1",
+"modelo": "Siri",
+"color": "Siri Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "mi20-2 - siri green",
+"sku": "NL011B",
+"codigo": "Mi20-2",
+"modelo": "Siri",
+"color": "Siri Green"
+},
+{
+"tipo": "freshlady",
+"clave": "mi20-3 - siri blue",
+"sku": "NL011C",
+"codigo": "Mi20-3",
+"modelo": "Siri",
+"color": "Siri Blue"
+},
+{
+"tipo": "freshlady",
+"clave": "mi20-4 - siri gray",
+"sku": "NL011D",
+"codigo": "Mi20-4",
+"modelo": "Siri",
+"color": "Siri Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "fa42-3 - blue dream",
+"sku": "NL004C",
+"codigo": "FA42-3",
+"modelo": "Dream",
+"color": "Blue Dream"
+},
+{
+"tipo": "freshlady",
+"clave": "mi22-4 - cleopatra hazel",
+"sku": "NL001A",
+"codigo": "Mi22-4",
+"modelo": "Cleopatra",
+"color": "CLEOPATRA HAZEL"
+},
+{
+"tipo": "freshlady",
+"clave": "mi22-3 - cleopatra blue",
+"sku": "NL001B",
+"codigo": "Mi22-3",
+"modelo": "Cleopatra",
+"color": "CLEOPATRA BLUE"
+},
+{
+"tipo": "freshlady",
+"clave": "mi22-5 - cleopatra gray",
+"sku": "NL001C",
+"codigo": "Mi22-5",
+"modelo": "Cleopatra",
+"color": "CLEOPATRA GRAY"
+},
+{
+"tipo": "freshlady",
+"clave": "mi22-2 - cleopatra green",
+"sku": "NL001D",
+"codigo": "Mi22-2",
+"modelo": "Cleopatra",
+"color": "CLEOPATRA GREEN"
+},
+{
+"tipo": "freshlady",
+"clave": "fa51-1 - gorgeous brown",
+"sku": "NL009A",
+"codigo": "FA51-1",
+"modelo": "Gorgeous",
+"color": "Gorgeous Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "fa51-2 - gorgeous green",
+"sku": "NL009B",
+"codigo": "Fa51-2",
+"modelo": "Gorgeous",
+"color": "Gorgeous Green"
+},
+{
+"tipo": "freshlady",
+"clave": "fa51-5 - gorgeous gray",
+"sku": "NL009C",
+"codigo": "FA51-5",
+"modelo": "Gorgeous",
+"color": "Gorgeous Gray"
+},
+{
+"tipo": "freshlady",
+"clave": "fa75-2 - twilight forest green",
+"sku": "NL022A",
+"codigo": "FA75-2",
+"modelo": "TWILIGHT",
+"color": "TWILIGHT FOREST GREEN"
+},
+{
+"tipo": "freshlady",
+"clave": "fa75-3 - twilight forest blue",
+"sku": "NL022B",
+"codigo": "FA75-3",
+"modelo": "TWILIGHT",
+"color": "TWILIGHT FOREST BLUE"
+},
+{
+"tipo": "freshlady",
+"clave": "fa75-5 - twilight forest gray",
+"sku": "NL022C",
+"codigo": "FA75-5",
+"modelo": "TWILIGHT",
+"color": "TWILIGHT FOREST GRAY"
+},
+{
+"tipo": "freshlady",
+"clave": "fa62-1 - glimmer brown",
+"sku": "NL023A",
+"codigo": "FA62-1",
+"modelo": "Glimmer",
+"color": "Glimmer Brown"
+},
+{
+"tipo": "freshlady",
+"clave": "fa62-5 - glimmer gray",
+"sku": "NL023B",
+"codigo": "FA62-5",
+"modelo": "Glimmer",
+"color": "GLIMMER GRAY"
+},
+{
+"tipo": "freshlady",
+"clave": "mi23-1 - breeze hazel",
+"sku": "NL031A",
+"codigo": "MI23-1",
+"modelo": "BREEZE",
+"color": "BREEZE HAZEL"
+},
+{
+"tipo": "freshlady",
+"clave": "mi23-2 - breeze green",
+"sku": "NL031B",
+"codigo": "MI23-2",
+"modelo": "BREEZE",
+"color": "BREEZE GREEN"
+},
+{
+"tipo": "freshlady",
+"clave": "mi23-5 - breeze gray",
+"sku": "NL031C",
+"codigo": "MI23-5",
+"modelo": "BREEZE",
+"color": "BREEZE GRAY"
+},
+{
+"tipo": "freshlady",
+"clave": "mo-14 - marble",
+"sku": "NL036A",
+"codigo": "MO-14",
+"modelo": "Smokey",
+"color": "Marble"
+},
+{
+"tipo": "freshlady",
+"clave": "mo-20 - drama",
+"sku": "NL036B",
+"codigo": "Mo-20",
+"modelo": "Smokey",
+"color": "DRAMA"
+},
+{
+"tipo": "freshlady",
+"clave": "mo-21 - arabia eye",
+"sku": "NL036C",
+"codigo": "MO-21",
+"modelo": "Smokey",
+"color": "Arabia Eye"
+},
+{
+"tipo": "medida",
+"clave": "russian brown",
+"sku": "NL032C",
+"codigo": "ME15",
+"modelo": "Russian Brown",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "russian gray",
+"sku": "NL032B",
+"codigo": "ME14",
+"modelo": "Russian Gray",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "marble",
+"sku": "NL036A",
+"codigo": "ME17",
+"modelo": "Marble",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "dna brown hazel",
+"sku": "NL181",
+"codigo": "ME28",
+"modelo": "Dna Brown Hazel",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "dna blue gray",
+"sku": "NL188",
+"codigo": "ME29",
+"modelo": "DNA blue gray",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "bassia brown",
+"sku": "NL192A",
+"codigo": "",
+"modelo": "Bassia brown",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "drama",
+"sku": "NL036B",
+"codigo": "ME31",
+"modelo": "DRAMA",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "x-green flare",
+"sku": "NL191A",
+"codigo": "ME75-2",
+"modelo": "X-Green Flare",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "dawn brown",
+"sku": "NL186",
+"codigo": "FA08-1",
+"modelo": "Dawn Brown",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "stunna girl green",
+"sku": "NL152D",
+"codigo": "",
+"modelo": "Stunna girl green",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "smokey",
+"sku": "NL035D",
+"codigo": "MO-15",
+"modelo": "Smokey",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "lolite",
+"sku": "NL-MC151",
+"codigo": "W-11",
+"modelo": "Lolite",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "p l-gray",
+"sku": "NL-MC154",
+"codigo": "BL-4",
+"modelo": "P L-Gray",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "p l-brown",
+"sku": "NL-MC152",
+"codigo": "BL-1",
+"modelo": "P L-Brown",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "sepia",
+"sku": "NL-MC155",
+"codigo": "Z6",
+"modelo": "Sepia",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "p l-blue gray",
+"sku": "NL-MC153",
+"codigo": "ME13",
+"modelo": "P L-blue gray",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "russian blue",
+"sku": "NL032A",
+"codigo": "ME13",
+"modelo": "Russian Blue",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "mia gray",
+"sku": "NL005B",
+"codigo": "ME48",
+"modelo": "Mia Gray",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "hera",
+"sku": "NL006B",
+"codigo": "FA32-3",
+"modelo": "Hera",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "mia brown",
+"sku": "NL005A",
+"codigo": "ME46",
+"modelo": "Mia Brown",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "melody gray",
+"sku": "NL007A",
+"codigo": "",
+"modelo": "Melody Gray",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "sunkissed bella",
+"sku": "NL008D",
+"codigo": "FA17-5",
+"modelo": "SunKissed Bella",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "cleo gray",
+"sku": "NL001C",
+"codigo": "",
+"modelo": "Cleo Gray",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "cleo hazel",
+"sku": "NL001A",
+"codigo": "",
+"modelo": "CLEO HAZEL",
+"color": ""
+},
+{
+"tipo": "medida",
+"clave": "cleo green",
+"sku": "NL001D",
+"codigo": "",
+"modelo": "CLEO GREEN",
+"color": ""
+}
+]

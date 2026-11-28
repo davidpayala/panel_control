@@ -24,6 +24,7 @@ from waha_motor import url_waha  # motor (NOWEB/WEBJS) por acción, configurable
 try:
     from utils import marcar_chat_como_leido_waha as marcar_leido_waha
     from utils import normalizar_telefono_maestro, obtener_historial_compras, es_lid, lid_canonico
+    from utils import nombre_con_marcas, aplicar_marcas_cliente, asegurar_columnas_perfil, REGLA_COMPRADOR
 except ImportError:
     def es_lid(v): return str(v or "").strip().lower().endswith("@lid") or str(v or "").startswith("LID_")
     def lid_canonico(v): return str(v)
@@ -70,6 +71,16 @@ def obtener_archivos_mensajes(conn, ids):
                 _, viejo = _cache_media.popitem(last=False)
                 _cache_media_bytes -= len(viejo)
     return res
+
+
+def guardar_perfil_cliente(id_cliente, conflictivo, detalle):
+    """Guarda el detalle y la marca ♦️ (la 🌟 es automática según las compras)."""
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE clientes SET detalle_personalidad = :d WHERE id_cliente = :id"),
+                     {"d": (detalle or "").strip() or None, "id": id_cliente})
+        comprador = bool(conn.execute(text("SELECT COALESCE(es_comprador, FALSE) FROM clientes WHERE id_cliente = :id"),
+                                      {"id": id_cliente}).scalar())
+    return aplicar_marcas_cliente(id_cliente, conflictivo, comprador)
 
 
 def mostrar_resumen_compras_chat(telefono_activo):
@@ -232,7 +243,9 @@ def render_boton_chat(row, cat, chat_actual, cambiar_chat_func):
         
     extra = f" [{row['estado']}]" if cat in ["📁 Otros Estados", "🔴 Mensajes Nuevos"] and pd.notna(row['estado']) else ""
     
-    label = f"{icono} {row['nombre']}{indicador_envio}{extra}{texto_leidos}"
+    nombre_mostrar = nombre_con_marcas(row['nombre'], bool(row.get('es_conflictivo')), bool(row.get('es_comprador'))) \
+        if (row.get('es_conflictivo') or row.get('es_comprador')) else row['nombre']
+    label = f"{icono} {nombre_mostrar}{indicador_envio}{extra}{texto_leidos}"
     tipo = "primary" if str(chat_actual) == str(c_id) else "secondary"
     st.button(label, key=f"c_{c_id}", use_container_width=True, type=tipo, on_click=cambiar_chat_func, args=(c_id,))
 
@@ -247,6 +260,7 @@ def render_chat():
     c_time.caption(f"🔄 {lima_time.strftime('%H:%M:%S')}")
 
     poller_cambios_db()
+    asegurar_columnas_perfil()
 
     try:
         with engine.connect() as conn:
@@ -390,6 +404,8 @@ def render_chat():
                         c.estado, 
                         c.nivel_zombie, 
                         c.ultimo_msg_zombie, 
+                        COALESCE(c.es_conflictivo, FALSE) as es_conflictivo, 
+                        COALESCE(c.es_comprador, FALSE) as es_comprador, 
                         dir.tipo_envio, 
                         CASE 
                             WHEN c.nombre_corto IS NOT NULL AND c.nombre_corto != '' THEN c.nombre_corto 
@@ -535,6 +551,13 @@ def render_chat():
                                 print(f"Error marcando leído: {e}")
 
                     nombre = info.nombre_corto if info and info.nombre_corto else chat_actual
+                    perfil_conf = bool(getattr(info, 'es_conflictivo', False)) if info else False
+                    perfil_comp = bool(getattr(info, 'es_comprador', False)) if info else False
+                    perfil_detalle = (getattr(info, 'detalle_personalidad', None) or "") if info else ""
+                    perfil_ia = (getattr(info, 'perfil_ia', None) or "") if info else ""
+                    perfil_ia_fecha = getattr(info, 'perfil_ia_fecha', None) if info else None
+                    if perfil_conf or perfil_comp:
+                        nombre = nombre_con_marcas(nombre, perfil_conf, perfil_comp)
                     estado_actual_cliente = info.estado if info and hasattr(info, 'estado') and info.estado else "Sin empezar"
                     
                     dir_info = None
@@ -617,8 +640,43 @@ def render_chat():
                 else:
                     st.subheader(f"👤 {nombre}")
                 
+                # --- PERFIL DEL CLIENTE (conflictiva / compradora / personalidad) ---
+                if perfil_detalle.strip():
+                    if perfil_conf:
+                        st.error(f"♦️ **Personalidad:** {perfil_detalle}")
+                    elif perfil_comp:
+                        st.success(f"🌟 **Personalidad:** {perfil_detalle}")
+                    else:
+                        st.info(f"🧠 **Personalidad:** {perfil_detalle}")
+                elif perfil_conf:
+                    st.error("♦️ **Persona conflictiva**")
+                if perfil_ia.strip():
+                    fecha_txt = f" · {perfil_ia_fecha:%d/%m/%Y}" if perfil_ia_fecha else ""
+                    with st.expander(f"🤖 Perfil hecho por Claude (IA){fecha_txt}", expanded=False):
+                        st.markdown(perfil_ia.replace("\n", "  \n"))
+                        st.caption("Generado automáticamente a partir del chat y las compras. No lo escribió una persona del equipo.")
+
                 c_head_1, c_head_2, c_head_3 = st.columns([25, 40, 35])
-                with c_head_1: st.caption("🗂️ Chat Unificado" if es_cliente else f"📱 {chat_actual}")
+                with c_head_1:
+                    st.caption("🗂️ Chat Unificado" if es_cliente else f"📱 {chat_actual}")
+                    if info:
+                        with st.popover("🧠 Perfil", use_container_width=True):
+                            with st.form(f"perfil_{info.id_cliente}", border=False):
+                                p_conf = st.checkbox("♦️ Persona conflictiva", value=perfil_conf)
+                                st.checkbox("🌟 Persona compradora", value=perfil_comp, disabled=True, help=REGLA_COMPRADOR)
+                                p_det = st.text_area("Detalle de personalidad", value=perfil_detalle, height=120,
+                                                     placeholder="Ej.: pide muchas fotos antes de decidir, prefiere audios, regatea...")
+                                st.caption("La 🌟 se pone y quita sola según las compras. Las marcas van al inicio del nombre del panel y de Google Contacts (se ven en el WhatsApp del celular).")
+                                if st.form_submit_button("💾 Guardar perfil", type="primary", use_container_width=True):
+                                    try:
+                                        aviso = guardar_perfil_cliente(int(info.id_cliente), p_conf, p_det)
+                                        if aviso:
+                                            st.session_state['aviso_perfil'] = aviso
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error al guardar el perfil: {e}")
+                    if st.session_state.get('aviso_perfil'):
+                        st.caption(st.session_state.pop('aviso_perfil'))
                 
                 with c_head_2:
                     opciones_selectbox = todos_los_estados.copy()

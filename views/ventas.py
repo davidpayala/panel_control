@@ -6,7 +6,7 @@ from sqlalchemy import text
 from database import engine
 import os
 import threading
-from utils import sync_woo_background, actualizar_en_google
+from utils import sync_woo_background, actualizar_en_google, recalcular_comprador_en_segundo_plano
 
 # Asegurar que existan las columnas necesarias en la base de datos
 try:
@@ -550,6 +550,7 @@ def render_nueva_venta():
                             threading.Thread(target=sync_woo_background, args=(skus_vendidos,)).start()
 
                         st.balloons()
+                        recalcular_comprador_en_segundo_plano(id_cliente)
                         st.success(f"¡Venta #{id_venta} registrada exitosamente!")
                         st.session_state.carrito = []
                         if 'clave_temp' in st.session_state: del st.session_state['clave_temp']
@@ -713,6 +714,7 @@ def render_gestion_ventas():
                     if skus_anulados:
                         threading.Thread(target=sync_woo_background, args=(skus_anulados,)).start()
 
+                    recalcular_comprador_en_segundo_plano(getattr(venta_info, 'id_cliente', None))
                     st.success("✅ Venta anulada y stock restaurado en su ubicación original.")
                     time.sleep(2)
                     st.rerun()

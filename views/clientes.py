@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import text
 from database import engine
-from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_maestro, generar_nombre_ia, actualizar_en_google, obtener_lid_de_waha, get_google_service
+from utils import buscar_contacto_google, crear_en_google, normalizar_telefono_maestro, generar_nombre_ia, actualizar_en_google, obtener_lid_de_waha, get_google_service, asegurar_columnas_perfil, nombre_con_marcas, quitar_marcas_perfil, REGLA_COMPRADOR
 import time
 
 ESTADOS_CLIENTE_FALLBACK = [
@@ -14,6 +14,7 @@ ESTADOS_CLIENTE_FALLBACK = [
 ]
 
 def render_clientes():
+    asegurar_columnas_perfil()
     # --- 1. CARGA INICIAL DE ETAPAS ---
     try:
         with engine.connect() as conn:
@@ -56,6 +57,7 @@ def render_clientes():
         # Consulta centralizada en TelefonosCliente
         query = """
             SELECT c.id_cliente, c.nombre_corto, c.estado, c.excluir_publicidad, c.activo, c.nombre, c.apellido, c.etiquetas, c.google_id, c.nombre_ia,
+                   COALESCE(c.es_conflictivo, FALSE) AS es_conflictivo, COALESCE(c.es_comprador, FALSE) AS es_comprador, c.detalle_personalidad, c.perfil_ia, c.perfil_ia_fecha,
                    (SELECT telefono FROM telefonoscliente WHERE id_cliente = c.id_cliente AND es_principal = TRUE AND activo = TRUE LIMIT 1) as tel_principal,
                    (SELECT STRING_AGG(telefono, ' | ') FROM telefonoscliente WHERE id_cliente = c.id_cliente AND activo = TRUE AND telefono IS NOT NULL) as todos_telefonos
             FROM clientes c
@@ -106,7 +108,8 @@ def render_clientes():
                     "activo": st.column_config.CheckboxColumn("✅ Activo", help="Desmarca para bloquear cliente"),
                     "tel_principal": st.column_config.TextColumn("Telf. Principal", disabled=True),
                     "todos_telefonos": st.column_config.TextColumn("Todos los Teléfonos", disabled=True, width="large"),
-                    "nombre": None, "apellido": None, "google_id": None, "etiquetas": None
+                    "nombre": None, "apellido": None, "google_id": None, "etiquetas": None,
+                    "es_conflictivo": None, "es_comprador": None, "detalle_personalidad": None, "perfil_ia": None, "perfil_ia_fecha": None
                 },
                 hide_index=True, use_container_width=True
             )
@@ -174,8 +177,30 @@ def render_clientes():
                         new_apellido = c5.text_input("Apellido", value=val_ape, disabled=bloquear_google)
                         new_etiquetas = st.text_area("Etiquetas / Notas", value=val_eti)
 
+                        st.markdown("##### 🧠 Perfil del Cliente")
+                        conf_actual = bool(row_full.get('es_conflictivo', False))
+                        comp_actual = bool(row_full.get('es_comprador', False))
+                        col_p1, col_p2 = st.columns(2)
+                        new_conf = col_p1.checkbox("♦️ Persona conflictiva", value=conf_actual)
+                        new_comp = col_p2.checkbox("🌟 Persona compradora", value=comp_actual, disabled=True, help=REGLA_COMPRADOR)
+                        det_actual = row_full.get('detalle_personalidad')
+                        new_detalle = st.text_area("Detalle de personalidad", value=det_actual if pd.notna(det_actual) else "",
+                                                   placeholder="Ej.: pide muchas fotos antes de decidir, prefiere audios, regatea...")
+                        p_ia = row_full.get('perfil_ia')
+                        if pd.notna(p_ia) and str(p_ia).strip():
+                            f_ia = row_full.get('perfil_ia_fecha')
+                            f_txt = f" · {pd.to_datetime(f_ia):%d/%m/%Y}" if pd.notna(f_ia) else ""
+                            st.text_area(f"🤖 Perfil hecho por Claude (IA){f_txt}", value=str(p_ia), disabled=True, height=150,
+                                         help="Generado automáticamente cada semana a partir del chat y las compras. No lo escribió una persona.")
+                        st.caption("La 🌟 es automática según las compras. Al cambiar una marca, se pone o quita al inicio del Alias y del Nombre Real (y de Google Contacts).")
+
                         if st.form_submit_button("💾 Guardar Datos Personales"):
                             id_etapa_val = mapa_subgrupo_id.get(new_estado)
+                            if new_conf != conf_actual or new_comp != comp_actual:
+                                new_nombre = nombre_con_marcas(new_nombre, new_conf, new_comp)
+                                if not bloquear_google:
+                                    new_real_nombre = nombre_con_marcas(new_real_nombre, new_conf, new_comp)
+                                    new_apellido = quitar_marcas_perfil(new_apellido)
                             google_id_crudo = row_full['google_id']
                             tiene_google_id = pd.notna(google_id_crudo) and str(google_id_crudo).strip().lower() not in ['', 'nan', 'none']
                             nuevo_google_id_db = google_id_crudo if tiene_google_id else None
@@ -201,11 +226,13 @@ def render_clientes():
                             with engine.begin() as conn:
                                 conn.execute(text("""
                                     UPDATE clientes 
-                                    SET nombre_corto=:nc, nombre_ia=:nia, nombre=:n, apellido=:a, etiquetas=:e, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc, activo=:act, google_id=:gid
+                                    SET nombre_corto=:nc, nombre_ia=:nia, nombre=:n, apellido=:a, etiquetas=:e, estado=:est, id_etapa=:id_etapa, excluir_publicidad=:exc, activo=:act, google_id=:gid,
+                                        es_conflictivo=:conf, es_comprador=:comp, detalle_personalidad=:det
                                     WHERE id_cliente=:id
                                 """), {
                                     "nc": new_nombre, "nia": new_nombre_ia, "n": new_real_nombre, "a": new_apellido,
-                                    "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "exc": new_excluir, "act": nuevo_activo_val, "gid": nuevo_google_id_db, "id": id_cli_sel
+                                    "e": new_etiquetas, "est": new_estado, "id_etapa": id_etapa_val, "exc": new_excluir, "act": nuevo_activo_val, "gid": nuevo_google_id_db, "id": id_cli_sel,
+                                    "conf": new_conf, "comp": new_comp, "det": (new_detalle or "").strip() or None
                                 })
                                 
                             if bloquear_cliente: st.warning("🔒 Cliente bloqueado exitosamente.")
